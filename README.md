@@ -1,4 +1,10 @@
-# V5 Developer README
+# V5 Offline Scripts
+
+配套本地静态版 V5 Loader。安装与使用请先阅读 [OFFLINE.md](OFFLINE.md)。始终手动安装和更新脚本，不再依赖 requestV2、WebSocket 或后端账号。
+
+以下为保留的上游项目背景与许可说明；自动更新相关说明不适用于此版本。
+
+## Upstream Developer README
 
 General users should use the public docs:
 https://rdbt.top/docs/getting-started

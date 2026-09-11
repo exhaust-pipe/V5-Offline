@@ -32,7 +32,7 @@ export const Categories = {
             directComponents: [],
         },
         {
-            name: 'Discord',
+            name: 'Client',
             items: [],
             subcategories: [],
             directComponents: [],

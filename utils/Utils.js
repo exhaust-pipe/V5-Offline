@@ -464,33 +464,7 @@ class UtilsClass {
         return Math.hypot(dx, dz);
     }
 
-    openBrowser(url) {
-        const t = new java.lang.Thread(() => {
-            try {
-                if (isMac) {
-                    java.lang.Runtime.getRuntime().exec(['open', url]);
-                    return;
-                }
-
-                try {
-                    if (java.awt.Desktop.isDesktopSupported() && java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.BROWSE)) {
-                        java.awt.Desktop.getDesktop().browse(new java.net.URI(url));
-                        return;
-                    }
-                } catch (ignored) {}
-
-                if (isWindows) {
-                    java.lang.Runtime.getRuntime().exec(['rundll32', 'url.dll,FileProtocolHandler', url]);
-                } else if (isLinux) {
-                    java.lang.Runtime.getRuntime().exec(['xdg-open', url]);
-                }
-            } catch (e) {
-                console.error('V5 Caught error in openBrowser: ' + e + e.stack);
-            }
-        });
-        t.setDaemon(true);
-        t.start();
-    }
+    openBrowser(url) {}
 
     hasCookie() {
         return TabListUtils.hasCookie();

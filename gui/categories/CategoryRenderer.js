@@ -31,7 +31,6 @@ import { setTooltip } from '../core/GuiTooltip';
 import { SearchBar } from './CategorySearchBar';
 import { Categories, getVisibleDirectComponents } from './CategorySystem';
 import { globalAssetsDir } from '../../utils/Constants';
-import { getDiscordPfpPath } from '../../utils/NetworkUtils';
 
 const ASSETS_PATH = globalAssetsDir.getPath() + '/';
 const MODULE_ICON_PATH = ASSETS_PATH + 'folder.svg';
@@ -56,7 +55,7 @@ export const getCategoryRect = (index) => {
     };
 };
 
-export const getDiscordPfpRect = () => {
+export const getClientSettingsRect = () => {
     const leftPanel = GuiRectangles.LeftPanel;
     const pfpSize = 20;
     return {
@@ -317,7 +316,7 @@ export const drawOptionsPanel = (panel, mouseX, mouseY, macroToggleButton = null
 
 export const drawLeftPanelBackgrounds = (mouseX, mouseY) => {
     const leftPanel = GuiRectangles.LeftPanel;
-    const pfpRect = getDiscordPfpRect();
+    const pfpRect = getClientSettingsRect();
     const pfpY = pfpRect.y;
     const editIconSize = 14;
     const editIconX = leftPanel.x + (leftPanel.width - editIconSize) / 2;
@@ -344,7 +343,7 @@ export const drawLeftPanelBackgrounds = (mouseX, mouseY) => {
     const allCategoryItems = [
         ...Categories.getVisibleCategories().map((c, i) => ({ name: c.name, rect: getCategoryRect(i) })),
         {
-            name: 'Discord',
+            name: 'Client',
             rect: { x: pfpRect.x - 2, y: pfpRect.y - 2, width: pfpRect.width + 4, height: pfpRect.height + 4, radius: 16 },
         },
         { name: 'Edit', rect: editButtonRect },
@@ -421,7 +420,7 @@ export const drawLeftPanelBackgrounds = (mouseX, mouseY) => {
             const rect = item.rect;
             const easedProgress = easeOutCubic(state.progress);
             const finalRect =
-                name === 'Edit' || name === 'Discord' ? { ...item.rect, radius: name === 'Discord' ? 16 : item.rect.radius || 8 } : { ...item.rect, radius: 8 };
+                name === 'Edit' || name === 'Client' ? { ...item.rect, radius: name === 'Client' ? 16 : item.rect.radius || 8 } : { ...item.rect, radius: 8 };
 
             drawHoverHighlight(finalRect, colorWithAlpha(THEME.BG_INSET, easedProgress), name);
         }
@@ -439,7 +438,7 @@ export const drawLeftPanelBackgrounds = (mouseX, mouseY) => {
             const rect = getCategoryRect(i);
             drawRoundedRectangle({ ...rect, radius: 8, color: THEME.ACCENT_DIM });
             drawRoundedRectangle({ ...rect, radius: 8, color: colorWithAlpha(THEME.ACCENT, 0.12) });
-        } else if (displaySelectedCategory === 'Discord') {
+        } else if (displaySelectedCategory === 'Client') {
             drawRoundedRectangle({
                 x: pfpRect.x - 2,
                 y: pfpRect.y - 2,
@@ -469,7 +468,7 @@ export const drawLeftPanelIcons = (mouseX, mouseY) => {
     });
 
     const leftPanel = GuiRectangles.LeftPanel;
-    const pfpRect = getDiscordPfpRect();
+    const pfpRect = getClientSettingsRect();
 
     const editIconSize = 14;
     const editIconX = leftPanel.x + (leftPanel.width - editIconSize) / 2;
@@ -477,10 +476,7 @@ export const drawLeftPanelIcons = (mouseX, mouseY) => {
 
     drawImage(EDIT_ICON_PATH, editIconX, editIconY, editIconSize, editIconSize);
 
-    const discordPfpPath = getDiscordPfpPath();
-    if (discordPfpPath) {
-        drawCircularImage(discordPfpPath, pfpRect.x, pfpRect.y, pfpRect.width);
-    }
+    drawCenteredText('Client', pfpRect.x, pfpRect.width, FontSizes.TINY, THEME.TEXT_MUTED, pfpRect.y + 12);
     drawCenteredText(`V${SCRIPT_VERSION}`, pfpRect.x, pfpRect.width, FontSizes.TINY, THEME.TEXT_MUTED, leftPanel.y + leftPanel.height - PADDING);
 };
 

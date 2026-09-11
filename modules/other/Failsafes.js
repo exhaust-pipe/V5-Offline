@@ -2,11 +2,6 @@ import { AlertUtils } from '../../failsafes/AlertUtils';
 import { getSetting } from '../../gui/GuiSave';
 import { File, globalAssetsDir } from '../../utils/Constants';
 import { ModuleBase } from '../../utils/ModuleBase';
-import { ClientboundDisconnectPacket, ClientboundLoginDisconnectPacket } from '../../utils/Packets';
-import { MacroState } from '../../utils/MacroState';
-import { TimeUtils } from '../../utils/TimeUtils';
-const JURL = Java.type('java.net.URL');
-const JOutputStreamWriter = Java.type('java.io.OutputStreamWriter');
 
 class Failsafes extends ModuleBase {
     constructor() {
@@ -27,17 +22,9 @@ class Failsafes extends ModuleBase {
         this.clipOnBan = true;
         this.playerProximityDistance = 3;
         this.actionDelay = { low: 500, high: 2000 };
-        this.pingOnCheck = 'Ping';
+        this.pingOnCheck = 'None';
         this.playSoundOnCheck = true;
         this.lastBanLogTime = 0;
-
-        register('packetReceived', (packet) => {
-            const reason = packet?.reason();
-            const fullText = reason?.getString?.() || reason?.toString?.();
-            const lowerText = fullText?.toLowerCase();
-
-            if (this.isBanReason(lowerText)) this.postBanLog(fullText);
-        }).setFilteredClasses([ClientboundLoginDisconnectPacket, ClientboundDisconnectPacket]);
 
         const sectionName = 'Failsafes';
 
@@ -89,17 +76,6 @@ class Failsafes extends ModuleBase {
             this.clipOnBan,
             sectionName
         );
-        this.addDirectMultiToggle(
-            'Discord ping on Check',
-            ['None', 'Embed Only', 'Ping', 'Screenshot Only', 'Ping & Screenshot'],
-            true,
-            (value) => {
-                this.pingOnCheck = value;
-            },
-            'Toggle discord ping on check',
-            this.pingOnCheck,
-            sectionName
-        );
         this.addDirectToggle(
             'Play sound on check',
             (value) => {
@@ -127,71 +103,6 @@ class Failsafes extends ModuleBase {
             false,
             sectionName
         );
-    }
-
-    isBanReason(text) {
-        if (!text) return false;
-        return text.includes('banned') || text.includes('cheating') || text.includes('boosting') || text.includes('security');
-    }
-
-    postBanLog(reason) {
-        if (!reason?.includes('https://www.hypixel.net/appeal')) return;
-
-        const now = Date.now();
-        if (now - this.lastBanLogTime < 60000) return;
-        this.lastBanLogTime = now;
-
-        new Thread(() => {
-            try {
-                const jwt = V5Auth.getFreshJwtToken();
-                if (!jwt) {
-                    console.error('Skipping ban log: no fresh auth token available.');
-                    return;
-                }
-                const url = new JURL('https://backend.rdbt.top/api/logs/bans');
-                const conn = url.openConnection();
-                conn.setRequestMethod('POST');
-                conn.setDoOutput(true);
-                conn.setRequestProperty('Authorization', `Bearer ${jwt}`);
-                conn.setRequestProperty('Content-Type', 'application/json; charset=UTF-8');
-
-                const lastMacros = MacroState.getLastActiveMacros();
-                const lastMacroMeta = MacroState.getLastDisableMeta(lastMacros[0]);
-                const lastDisableTimestamp = lastMacroMeta?.timestamp;
-                const within5Minutes = typeof lastDisableTimestamp === 'number' && Date.now() - lastDisableTimestamp <= 5 * 60 * 1000;
-
-                const body = JSON.stringify({
-                    reason,
-                    lastMacro: lastMacros.join(', ') || 'None',
-                    currentlyMacroing: MacroState.isMacroRunning() || within5Minutes,
-                    macroRuntime: MacroState.isMacroRunning() ? TimeUtils.formatUptime(MacroState.getStartTime()) : null,
-                    ingame_username: Player?.getName?.() || 'unknown',
-                    config_contents: this.getConfigFileContents(),
-                    installed_mods: new File('./mods').listFiles().join('\n'),
-                });
-
-                const wr = new JOutputStreamWriter(conn.getOutputStream());
-                wr.write(body);
-                wr.close();
-
-                const status = conn.getResponseCode();
-                if (status < 200 || status >= 300) {
-                    console.error(`Error sending ban log. Status: ${status}`);
-                }
-                conn.disconnect();
-            } catch (e) {
-                console.error(`Exception sending ban log: ${e}`);
-            }
-        }).start();
-    }
-
-    getConfigFileContents() {
-        try {
-            return FileLib.read('V5Config', 'config.json');
-        } catch (e) {
-            console.error(`Exception reading config for ban log: ${e}`);
-            return null;
-        }
     }
 
     getFilesInDir() {

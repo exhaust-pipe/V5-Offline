@@ -1,6 +1,5 @@
 import { Mixin } from '../../utils/MixinManager';
 import { ModuleBase } from '../../utils/ModuleBase';
-import { Utils } from '../../utils/Utils';
 
 class ProfileHider extends ModuleBase {
     constructor() {
@@ -34,20 +33,8 @@ class ProfileHider extends ModuleBase {
         );
     }
 
-    getUsername() {
-        try {
-            const saved = Utils.getConfigFile('AuthCache/do_not_share_this_file')?.username;
-            if (saved) return saved;
-        } catch (e) {
-            console.error('V5 Caught error' + e + e.stack);
-            console.error('Failed to load saved username');
-        }
-        return null;
-    }
-
     updateMixin() {
-        if (!this.defaultName) this.defaultName = this.getUsername();
-        Mixin.set('profileHiderReplacement', (this.HIDE_USERNAME && this.USERNAME?.trim()) || this.defaultName || 'Hidden');
+        Mixin.set('profileHiderReplacement', (this.HIDE_USERNAME && this.USERNAME?.trim()) || 'Hidden');
     }
 
     onEnable() {

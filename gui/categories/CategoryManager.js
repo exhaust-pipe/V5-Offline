@@ -9,7 +9,7 @@ import { Separator } from '../components/Separator';
 import { getComponentLayoutHeight, isComponentVisible, layoutDirectComponents } from '../components/layout';
 import { GuiRectangles, GuiState } from '../core/GuiState';
 import { handleCategoryClick, handleCategoryScroll, updateCategoryTransitions } from './CategoryEvents';
-import { drawCategoryItems, drawDirectComponents, drawOptionsPanel, getCategoryContentY, getCategoryRect, getDiscordPfpRect } from './CategoryRenderer';
+import { drawCategoryItems, drawDirectComponents, drawOptionsPanel, getCategoryContentY, getCategoryRect, getClientSettingsRect } from './CategoryRenderer';
 import { SearchBar } from './CategorySearchBar';
 import { Categories, getVisibleDirectComponents } from './CategorySystem';
 import { MacroState } from '../../utils/MacroState';
@@ -57,8 +57,8 @@ export const createCategoriesManager = (deps) => {
     const SCROLL_SMOOTHING_FACTOR = 0.25;
     const AUTO_SCROLL_SMOOTHING_FACTOR = 0.06;
     const getCategorySelectionRect = (name) => {
-        if (name === 'Discord') {
-            const pfpRect = getDiscordPfpRect();
+        if (name === 'Client') {
+            const pfpRect = getClientSettingsRect();
             return { x: pfpRect.x - 2, y: pfpRect.y - 2, width: pfpRect.width + 4, height: pfpRect.height + 4, radius: 16 };
         }
         const visibleIndex = Categories.getVisibleCategories().findIndex((category) => category.name === name);

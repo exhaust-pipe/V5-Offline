@@ -9,7 +9,6 @@ import './gui/GUI';
 
 /* CORE */
 import './utils/Config';
-import './utils/backend/WebSocket';
 import { ServerboundCommandSuggestionPacket } from './utils/Packets';
 
 register('packetSent', (packet, event) => {
@@ -20,7 +19,6 @@ register('packetSent', (packet, event) => {
 import { MacroState } from './utils/MacroState';
 import './modules/other/MacroScheduler';
 import './modules/other/MacroControllers';
-import './modules/other/DiscordIntegration';
 import './utils/pathfinder/PathFinder';
 import './utils/FastEtherwarp';
 import './utils/Misc';

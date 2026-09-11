@@ -10,13 +10,13 @@ import {
 import { GuiRectangles } from '../core/GuiState';
 import { OverlayManager } from '../OverlayUtils';
 import { easeInOutQuad, FontSizes, getTextWidth, isInside, PADDING, playClickSound, SUBCATEGORY_BUTTON_HEIGHT, SUBCATEGORY_BUTTON_SPACING } from '../Utils';
-import { getCategoryContentY, getCategoryRect, getDiscordPfpRect, getModuleNavButtonRect, getModuleNavRect, getModuleNavScrollX } from './CategoryRenderer';
+import { getCategoryContentY, getCategoryRect, getClientSettingsRect, getModuleNavButtonRect, getModuleNavRect, getModuleNavScrollX } from './CategoryRenderer';
 import { Categories, getVisibleDirectComponents } from './CategorySystem';
 
 const ANIMATION_DURATION = 300;
 const getEditButtonRect = () => {
     const leftPanel = GuiRectangles.LeftPanel;
-    const pfpRect = getDiscordPfpRect();
+    const pfpRect = getClientSettingsRect();
     const editIconSize = 14;
     const editIconX = leftPanel.x + (leftPanel.width - editIconSize) / 2;
     const editIconY = pfpRect.y - editIconSize - 8;
@@ -29,8 +29,8 @@ const getEditButtonRect = () => {
 };
 
 const getCategorySelectionRect = (name) => {
-    if (name === 'Discord') {
-        const pfpRect = getDiscordPfpRect();
+    if (name === 'Client') {
+        const pfpRect = getClientSettingsRect();
         return { x: pfpRect.x - 2, y: pfpRect.y - 2, width: pfpRect.width + 4, height: pfpRect.height + 4, radius: 16 };
     }
     if (name === 'Edit') return { ...getEditButtonRect(), radius: 8 };
@@ -103,7 +103,7 @@ export const handleCategoryClick = (
     const isInsidePanel = isInside(mouseX, mouseY, panel);
     const leftPanel = GuiRectangles.LeftPanel;
     const editButtonRect = getEditButtonRect();
-    const pfpRect = getDiscordPfpRect();
+    const pfpRect = getClientSettingsRect();
     const pfpButtonRect = { x: pfpRect.x - 2, y: pfpRect.y - 2, width: pfpRect.width + 4, height: pfpRect.height + 4 };
 
     if (Categories.currentPage === 'categories') {
@@ -245,7 +245,7 @@ export const handleCategoryClick = (
             });
             clickedCategoryName = clickedCategory?.name || null;
             if (!clickedCategoryName && isInside(mouseX, mouseY, pfpButtonRect)) {
-                clickedCategoryName = 'Discord';
+                clickedCategoryName = 'Client';
             }
         }
 

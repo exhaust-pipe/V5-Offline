@@ -53,7 +53,7 @@ function warnDeveloper() {
             warnDeveloper();
         } else {
             ChatLib.chat("&cDeveloper Mode is enabled. Run '/V5 developerMode false' to disable.");
-            ChatLib.chat('&cDeveloper Mode is UAYOR and disables auto updates.');
+            ChatLib.chat('&7V5 Offline always loads local scripts; developer mode only exposes experimental modules.');
             ChatLib.chat('&cSupport is not provided for developer mode macros as they are unfinished AND DONT WORK.');
         }
     }, 7000);

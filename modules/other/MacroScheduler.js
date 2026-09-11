@@ -3,7 +3,6 @@ import { MacroState } from '../../utils/MacroState';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { TimeUtils, Timer } from '../../utils/TimeUtils';
 import { Utils } from '../../utils/Utils';
-import { Webhook } from '../../utils/Webhooks';
 
 const STATE = {
     IDLE: 'Idle',
@@ -339,8 +338,6 @@ class MacroScheduler extends ModuleBase {
 
         this.trackedMacros.splice(index, 1);
 
-        Webhook.sendScreenshot(`Disabled ${macroName}`, MacroState.getModuleDuration(macroName));
-
         if (this.trackedMacros.length === 0) {
             this.state = STATE.IDLE;
             this.timerEnd = 0;
@@ -396,20 +393,7 @@ class MacroScheduler extends ModuleBase {
         this.sendSchedulerEmbed('Scheduler Connected', `Resuming macros: ${macroList}`, 0x2ecc71);
     }
 
-    sendSchedulerEmbed(title, description, color) {
-        Webhook.sendEmbed(
-            [
-                {
-                    title,
-                    description,
-                    color,
-                    timestamp: new Date().toISOString(),
-                    footer: { text: 'V5 Scheduler' },
-                },
-            ],
-            false
-        );
-    }
+    sendSchedulerEmbed(title, description, color) {}
 
     getMacroOverlayStats(macroName) {
         const module = MacroState.getModule(macroName);

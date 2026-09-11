@@ -17,14 +17,12 @@ export const FileOutputStream = java.io.FileOutputStream;
 export const FileInputStream = java.io.FileInputStream;
 export const DataOutputStream = java.io.DataOutputStream;
 export const MessageType = java.awt.TrayIcon.MessageType;
-export const ProcessBuilder = java.lang.ProcessBuilder;
 export const TimeUnit = java.util.concurrent.TimeUnit;
 export const Files = java.nio.file.Files;
 export const StandardCopyOption = java.nio.file.StandardCopyOption;
 export const ArrayLists = java.util.ArrayList;
 export const SystemTray = java.awt.SystemTray;
 export const TrayIcon = java.awt.TrayIcon;
-export const Runtime = java.lang.Runtime;
 export const Scanner = java.util.Scanner;
 export const Toolkit = java.awt.Toolkit;
 export const GLFW = org.lwjgl.glfw.GLFW;
@@ -33,7 +31,6 @@ export const System = java.lang.System;
 export const Base64 = java.util.Base64;
 export const Color = java.awt.Color;
 export const File = java.io.File;
-export const URL = java.net.URL;
 
 export const OS = System.getProperty('os.name').toLowerCase();
 export const isWindows = OS.includes('win');
@@ -41,12 +38,6 @@ export const isMac = OS.includes('mac');
 export const isLinux = OS.includes('nux') || OS.includes('nix');
 
 export const globalAssetsDir = new File('./config/ChatTriggers/assets');
-
-export const FFMPEG_URLS = {
-    WIN_ZIP: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
-    LINUX_TAR_XZ: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz',
-    MAC_BINARY: 'https://evermeet.cx/ffmpeg/ffmpeg-8.0.1',
-};
 
 export const BP = net.minecraft.core.BlockPos;
 export const Vec3d = net.minecraft.world.phys.Vec3;
@@ -81,14 +72,3 @@ export const AlphaComposite = Java.type('java.awt.AlphaComposite');
 export const Matrix = UMatrixStack.get();
 export const modulesDir = new File('./config/ChatTriggers/modules');
 export const V5ConfigFile = new File(`${modulesDir}/V5Config/config.json`);
-export const Links = {
-    WEBSOCKET_URL: 'wss://backend.rdbt.top/api/chat',
-    BASE_API_URL: 'https://backend.rdbt.top',
-    PATHFINDER_API_URL: 'http://localhost:3000',
-};
-
-// export const Links = {
-//     WEBSOCKET_URL: 'ws://127.0.0.1:8787/api/chat',
-//     BASE_API_URL: 'http://127.0.0.1:8787',
-//     PATHFINDER_API_URL: 'http://localhost:3000',
-// };

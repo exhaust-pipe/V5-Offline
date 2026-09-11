@@ -5,7 +5,7 @@ const DEFAULT_FAILSAFE_SETTINGS = {
     isEnabled: true,
     FailsafeReactionTime: 600,
     playerProximityDistance: 3,
-    pingOnCheck: 'Ping',
+    pingOnCheck: 'None',
     playSoundOnCheck: true,
 };
 
@@ -53,29 +53,13 @@ class FailsafeUtils {
             }
         }
 
-        const pingConfig = failsafesConfig['Discord ping on Check'];
-        let pingOnCheckValue = DEFAULT_FAILSAFE_SETTINGS.pingOnCheck;
-
-        if (Array.isArray(pingConfig)) {
-            for (const option of pingConfig) {
-                if (option?.enabled) {
-                    pingOnCheckValue = option.name ?? DEFAULT_FAILSAFE_SETTINGS.pingOnCheck;
-                    break;
-                }
-            }
-        } else if (typeof pingConfig === 'boolean') {
-            pingOnCheckValue = pingConfig ? 'Ping' : 'None';
-        } else {
-            pingOnCheckValue = pingConfig ?? DEFAULT_FAILSAFE_SETTINGS.pingOnCheck;
-        }
-
         const normalized = {
             enabledMap,
             rawEnabledList: enabledList,
             reactionInput: failsafesConfig['Failsafe Detection Delay (ms)'] ?? DEFAULT_FAILSAFE_SETTINGS.FailsafeReactionTime,
             playerProximityDistance: failsafesConfig['Player Proximity Distance'] ?? DEFAULT_FAILSAFE_SETTINGS.playerProximityDistance,
             playSoundOnCheck: failsafesConfig['Play sound on check'] ?? DEFAULT_FAILSAFE_SETTINGS.playSoundOnCheck,
-            pingOnCheck: pingOnCheckValue,
+            pingOnCheck: 'None',
         };
 
         this._cache.normalized = normalized;
@@ -116,36 +100,7 @@ class FailsafeUtils {
         };
     }
 
-    sendFailsafeEmbed(type, severity, description, color) {
-        const { Webhook } = require('../utils/Webhooks');
-
-        const pingOnCheckValue = this.getFailsafeSettings(type).pingOnCheck;
-
-        if (pingOnCheckValue === 'Ping' || pingOnCheckValue === 'Embed Only') {
-            Webhook.sendFailsafeEmbed(
-                [
-                    {
-                        title: `**[${severity.toUpperCase()}]** ${type} Failsafe Triggered!`,
-                        description: `${description}`,
-                        color,
-                        footer: { text: `V5 Failsafes` },
-                        timestamp: new Date().toISOString(),
-                    },
-                ],
-                pingOnCheckValue === 'Ping'
-            );
-        } else if (pingOnCheckValue === 'Ping & Screenshot' || pingOnCheckValue === 'Screenshot Only') {
-            Client.scheduleTask(5, () =>
-                Webhook.sendFailsafeScreenshot(
-                    `**[${severity.toUpperCase()}]** ${type} Failsafe Triggered!`,
-                    description,
-                    color,
-                    `V5 Failsafes`,
-                    pingOnCheckValue === 'Ping & Screenshot'
-                )
-            );
-        }
-    }
+    sendFailsafeEmbed(type, severity, description, color) {}
 
     incrementFailsafeIntensity(amt) {
         this.failsafeIntensity += amt;
