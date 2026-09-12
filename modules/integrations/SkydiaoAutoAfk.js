@@ -6,9 +6,9 @@ import { Afk } from '../other/AfkMacro';
 const TOGGLE_CONTEXT = 'ban-wave';
 
 function parseBanTotal(message) {
-    const text = ChatLib.removeFormatting(String(message.getUnformattedText())).trim();
+    const text = ChatLib.removeFormatting(String(message)).trim();
     const match = text.match(
-        /^\[XSDChat\]\s*\[SYSTEM\]\s*\[\d{1,2}:\d{2}(?::\d{2})?\]\s*在过去的\s*10\s*分钟内\s*[,，]\s*有\s*([\d,]+)\s*人被\s*Staff\s*封禁\s*[,，]\s*([\d,]+)\s*人被\s*Watchdog\s*封禁\s*[。.!！]?$/i
+        /^(?:\[\d{1,2}:\d{2}(?::\d{2})?\]\s*)?在过去的\s*10\s*分钟内\s*[,，]\s*有\s*([\d,]+)\s*人被\s*Staff\s*封禁\s*[,，]\s*([\d,]+)\s*人被\s*Watchdog\s*封禁\s*[。.!！]?$/i
     );
     if (!match) return null;
     const total = Number(match[1].replace(/,/g, '')) + Number(match[2].replace(/,/g, ''));
@@ -50,8 +50,7 @@ class SkydiaoAutoAfk extends ModuleBase {
             },
         ]);
 
-        // Defer macro transitions until the chat HUD has finished adding the message.
-        this.on('chatAdded', (message) => {
+        this.on('skydiaoSystemMessage', (message) => {
             const total = parseBanTotal(message);
             if (total !== null) this.pendingTotals.push(total);
         });
