@@ -48,6 +48,7 @@ import './skills/RouteWalker';
 import './skills/WynnProfessionMacro';
 
 /* OTHER */
+import './other/AfkMacro';
 import './other/AutoBeg';
 import './other/AutoConversation';
 import './other/AutoForge';
@@ -67,3 +68,6 @@ import './other/SunGeckoMacro';
 import './other/RatMacro';
 import './other/PeltMacro';
 import './other/PeltQOL';
+
+/* INTEGRATIONS */
+import './integrations/SkydiaoAutoAfk';
