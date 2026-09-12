@@ -16,29 +16,27 @@ class PlayerGriefFailsafe extends Failsafe {
     constructor() {
         super();
         this.settings = FailsafeUtils.getFailsafeSettings('Player Grief');
-        this.lastInsideTrigger = 0;
-        this.lastNearbyTrigger = 0;
-        this.lastLookingTrigger = 0;
-        this.insideCooldownMs = 5000;
-        this.nearbyCooldownMs = 3000;
-        this.lookingCooldownMs = 3000;
+        this.detectionWindows = new Map();
         this.registerGriefListeners();
         this.whitelistedPlayers = ['']; // TODO: add gui textbox, i have no clue how it works so im not touching it
         this.whitelistedPlayerSet = new Set(this.whitelistedPlayers);
     }
 
     registerGriefListeners() {
-        register('step', () => {
-            if (!this.isActive() || !World.isLoaded() || !Player.asPlayerMP()) return;
-
+        register('worldUnload', () => this.detectionWindows.clear());
+        register('tick', () => {
             this.settings = FailsafeUtils.getFailsafeSettings('Player Grief');
-            if (!this.settings.isEnabled) return;
-            if (this.isNearWarpPoint()) return;
+            if (!this.isActive() || this.disabled || !World.isLoaded() || !Player.asPlayerMP() || !this.settings.isEnabled || this.isNearWarpPoint()) {
+                this.detectionWindows.clear();
+                return;
+            }
+            this.checkPlayers(Date.now());
+        });
+    }
 
-            const now = Date.now();
-            if (now - this.lastInsideTrigger >= this.insideCooldownMs) this.checkPlayerInside(now);
-            if (now - this.lastNearbyTrigger >= this.nearbyCooldownMs) this.checkPlayerNearby(now);
-        }).setDelay(1);
+    _setDisabled(durationMs) {
+        this.detectionWindows?.clear();
+        super._setDisabled(durationMs);
     }
 
     isNearWarpPoint() {
@@ -53,37 +51,15 @@ class PlayerGriefFailsafe extends Failsafe {
         });
     }
 
-    checkPlayerInside(now) {
-        const look = Player.lookingAt();
-        const lookedName = look?.getName?.();
-
-        if (!(look instanceof PlayerMP) || look.getUUID()?.version() === 2) return;
-        if (this.whitelistedPlayerSet.has(lookedName)) return;
-
-        const px = Player.getX();
-        const py = Player.getY();
-        const pz = Player.getZ();
-
-        const lx = look.getX();
-        const ly = look.getY();
-        const lz = look.getZ();
-
-        if (Math.trunc(lx) === Math.trunc(px) && Math.trunc(ly) === Math.trunc(py) && Math.trunc(lz) === Math.trunc(pz)) {
-            Chat.messageFailsafe(`&c&l${lookedName} is standing inside you!`);
-            FailsafeUtils.incrementFailsafeIntensity(120);
-            FailsafeUtils.sendFailsafeEmbed('Player Grief', 'very high', `${lookedName} is standing inside you!`, 16711680);
-
-            this.lastInsideTrigger = now;
-        }
-    }
-
-    checkPlayerNearby(now) {
+    checkPlayers(now) {
         const maxDistance = this.settings.playerProximityDistance || 3;
         const maxDistanceSq = maxDistance * maxDistance;
         const px = Player.getX();
         const py = Player.getY();
         const pz = Player.getZ();
         const selfName = Player.getName();
+        const playerBox = Player.getPlayer().getBoundingBox();
+        const candidates = { inside: new Map(), nearby: new Map() };
 
         World.getAllPlayers().forEach((player) => {
             const playerName = player.getName();
@@ -98,15 +74,45 @@ class PlayerGriefFailsafe extends Failsafe {
             const dy = ly - py;
             const dz = lz - pz;
             const distanceSq = dx * dx + dy * dy + dz * dz;
+            const inside = playerBox.intersects(player.toMC().getBoundingBox());
+            const kind = inside ? 'inside' : distanceSq <= maxDistanceSq ? 'nearby' : null;
+            if (!kind) return;
 
-            if (distanceSq <= maxDistanceSq && distanceSq > 1) {
-                const distance = Math.sqrt(distanceSq);
-                Chat.messageFailsafe(`&c&l${playerName} is ${distance.toFixed(1)} blocks away from you!`);
-                FailsafeUtils.incrementFailsafeIntensity(20);
-                FailsafeUtils.sendFailsafeEmbed('Player Grief', 'medium', `${playerName} is ${distance.toFixed(1)} blocks away!`, 16776960);
+            const id = player.getUUID().toString();
+            candidates[kind].set(id, { name: playerName, distance: Math.sqrt(distanceSq) });
+        });
+        this.checkInterference('inside', candidates.inside, now);
+        this.checkInterference('nearby', candidates.nearby, now);
+    }
 
-                this.lastNearbyTrigger = now;
+    checkInterference(kind, players, now) {
+        const inside = kind === 'inside';
+        const detectionMs = inside ? 500 : 3000;
+        const cooldownMs = inside ? 5000 : 3000;
+        const window = this.detectionWindows.get(kind);
+
+        if (window) {
+            if (window.recheckAt !== null && now >= window.recheckAt) {
+                window.recheckAt = null;
+                for (const [id, player] of players) {
+                    if (!window.playerIds.has(id)) continue;
+                    const description = inside
+                        ? `${player.name} is standing inside you!`
+                        : `${player.name} is ${player.distance.toFixed(1)} blocks away from you!`;
+                    Chat.messageFailsafe(`&c&l${description}`);
+                    FailsafeUtils.incrementFailsafeIntensity(inside ? 120 : 20);
+                    FailsafeUtils.sendFailsafeEmbed('Player Grief', inside ? 'very high' : 'medium', description, inside ? 16711680 : 16776960);
+                }
             }
+            if (now < window.cooldownUntil) return;
+            this.detectionWindows.delete(kind);
+        }
+
+        if (players.size === 0) return;
+        this.detectionWindows.set(kind, {
+            recheckAt: now + detectionMs,
+            cooldownUntil: now + detectionMs + cooldownMs,
+            playerIds: new Set(players.keys()),
         });
     }
 }

@@ -506,6 +506,7 @@ export class ModuleBase {
     // not required
     onEnable() {}
     onDisable() {}
+    onFailsafeIntensity(delta) {}
 
     /**
      * @private

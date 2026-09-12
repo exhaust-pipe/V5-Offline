@@ -72,7 +72,7 @@ class TeleportFailsafe extends Failsafe {
 
     _isTeleportItemHeld() {
         const heldItem = Player.getHeldItem()?.getName()?.removeFormatting()?.toLowerCase();
-        return !!(heldItem?.includes('aspect of the') && !heldItem?.includes('dragons'));
+        return !!(heldItem?.includes('aspect of the void') || heldItem?.includes('aspect of the end'));
     }
 
     _hasSmallRotationDiff(data) {
@@ -100,6 +100,7 @@ class TeleportFailsafe extends Failsafe {
 
     _shouldDisableTeleport(data) {
         if (this.disabled) return true;
+        if (FailsafeUtils.getFailsafeSettings('TP').ignoreTeleportItems && this._isTeleportItemHeld()) return true;
 
         const now = Date.now();
         const recentClick = data.lastRightClickTime && now - data.lastRightClickTime < 1000;
