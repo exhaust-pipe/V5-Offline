@@ -25,6 +25,7 @@ class SkydiaoAutoAfk extends ModuleBase {
 
         this.threshold = 20;
         this.previousMacros = [];
+        this.afkSession = null;
         this.pendingTotals = [];
         this.lastTotal = null;
         this.addSlider(
@@ -60,7 +61,7 @@ class SkydiaoAutoAfk extends ModuleBase {
     }
 
     ownsAfk() {
-        return Afk.enabled && Afk.isParentManaged && Afk.parent === this;
+        return this.afkSession !== null && Afk.session === this.afkSession && Afk.enabled && Afk.isParentManaged && Afk.parent === this;
     }
 
     tick() {
@@ -89,10 +90,11 @@ class SkydiaoAutoAfk extends ModuleBase {
             if (module?.enabled && module !== Afk) module.toggle(false, true, TOGGLE_CONTEXT);
         });
         this.previousMacros = roots.map((module) => ({ module, disableMeta: MacroState.getLastDisableMeta(module.name) }));
-        if (!Afk.startAsChild(this)) {
+        if (!Afk.startAsChild(this, true)) {
             this.previousMacros = [];
             return;
         }
+        this.afkSession = Afk.session;
         OverlayManager.startTime(this.oid, false);
         this.message(`&e${this.lastTotal} bans in 10 minutes. Macros paused; AFK started.`);
     }
@@ -100,7 +102,7 @@ class SkydiaoAutoAfk extends ModuleBase {
     resumeMacros() {
         if (!this.ownsAfk()) return;
         const previous = this.previousMacros;
-        Afk.stopAsChild(this);
+        if (!Afk.stopAsChild(this)) return;
         previous.forEach(({ module, disableMeta }) => {
             if (!module.enabled && MacroState.getLastDisableMeta(module.name) === disableMeta) {
                 module.toggle(true, false, TOGGLE_CONTEXT);
@@ -111,6 +113,8 @@ class SkydiaoAutoAfk extends ModuleBase {
 
     onAfkStopped() {
         this.previousMacros = [];
+        this.afkSession = null;
+        this.pendingTotals = [];
         OverlayManager.resetTime(this.oid);
     }
 

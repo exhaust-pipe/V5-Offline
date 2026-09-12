@@ -253,7 +253,7 @@ const keybind = new KeyBind(keyName, savedKeycode, 'v5_core');
 keybind.registerKeyPress(() => {
     MacroState.getEnabledMacros().forEach((name) => {
         const module = MacroState.getModule(name);
-        if (!module?.isParentManaged) module?.toggle(false);
+        if (!module?.isParentManaged || module.allowManualStop === true) module?.toggle(false);
     });
     macroToggleGui.open();
 });

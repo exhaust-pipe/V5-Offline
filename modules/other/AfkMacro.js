@@ -1,8 +1,9 @@
 import { ModuleBase } from '../../utils/ModuleBase';
-import { MacroState } from '../../utils/MacroState';
-import { Mouse } from '../../utils/Ungrab';
+import { GLFW } from '../../utils/Constants';
 
 const MOVE_KEYS = ['w', 'a', 's', 'd'];
+const KEY_MAPPINGS = { w: 'keyUp', a: 'keyLeft', s: 'keyDown', d: 'keyRight', space: 'keyJump', shift: 'keyShift' };
+const InputConstants = com.mojang.blaze3d.platform.InputConstants;
 
 class AfkMacro extends ModuleBase {
     constructor() {
@@ -23,6 +24,9 @@ class AfkMacro extends ModuleBase {
         this.moveTicks = 0;
         this.moveOrigin = null;
         this.parent = null;
+        this.allowManualStop = false;
+        this.session = null;
+        this.heldKeys = new Set();
 
         this.bindToggleKey();
         this.addToggle(
@@ -81,11 +85,20 @@ class AfkMacro extends ModuleBase {
         this.on('gameUnload', () => this.toggle(false, true, 'unload'));
     }
 
-    startAsChild(parent) {
+    startAsChild(parent, allowManualStop = false) {
         if (!parent || this.enabled) return false;
         this.parent = parent;
+        this.allowManualStop = allowManualStop;
         this.toggle(true, true, 'parent');
         return this.enabled;
+    }
+
+    requestToggleFromUser() {
+        if (this.enabled && this.isParentManaged && this.allowManualStop) {
+            this.toggle(false, false, 'user');
+            return false;
+        }
+        return super.requestToggleFromUser();
     }
 
     stopAsChild(parent) {
@@ -122,13 +135,13 @@ class AfkMacro extends ModuleBase {
             return;
         }
 
-        Client.setKey('space', false);
-        Client.setKey('shift', this.sneak);
+        this.setKey('space', false);
+        this.setKey('shift', this.sneak);
 
         if (this.moveKey) {
             const distance = Math.hypot(Player.getX() - this.moveOrigin.x, Player.getZ() - this.moveOrigin.z);
             if (!this.randomMovement || --this.moveTicks <= 0 || distance >= 0.15) {
-                Client.setKey(this.moveKey, false);
+                this.setKey(this.moveKey, false);
                 this.moveKey = null;
                 this.moveOrigin = null;
             }
@@ -140,22 +153,43 @@ class AfkMacro extends ModuleBase {
             this.moveKey = MOVE_KEYS[Math.floor(Math.random() * MOVE_KEYS.length)];
             this.moveTicks = 2;
             this.moveOrigin = { x: Player.getX(), z: Player.getZ() };
-            Client.setKey(this.moveKey, true);
+            this.setKey(this.moveKey, true);
         }
-        if (this.randomJump && Player.getPlayer().onGround()) Client.setKey('space', true);
+        if (this.randomJump && Player.getPlayer().onGround()) this.setKey('space', true);
+    }
+
+    setKey(key, pressed) {
+        if (pressed) {
+            if (Client.setKey(key, true)) this.heldKeys.add(key);
+            return;
+        }
+        if (!this.heldKeys.delete(key)) return;
+
+        Client.setKey(key, false);
+        const mc = Client.getMinecraft();
+        if (!World.isLoaded() || !Player.getPlayer() || Client.isInGui() || !mc.isWindowActive()) return;
+
+        // Ending an AFK key press must preserve a key the player is still physically holding.
+        const mapping = mc.options[KEY_MAPPINGS[key]];
+        const input = InputConstants.getKey(mapping.saveString());
+        const window = mc.getWindow();
+        if (input.getType().equals(InputConstants.Type.MOUSE)) {
+            if (GLFW.glfwGetMouseButton(window.handle(), input.getValue()) === GLFW.GLFW_PRESS) mapping.setDown(true);
+        } else if (input.getType().equals(InputConstants.Type.KEYSYM) && input.getValue() >= 0) {
+            if (InputConstants.isKeyDown(window, input.getValue())) mapping.setDown(true);
+        }
     }
 
     releaseKeys() {
-        [...MOVE_KEYS, 'space', 'shift'].forEach((key) => Client.setKey(key, false));
+        Array.from(this.heldKeys).forEach((key) => this.setKey(key, false));
         this.moveKey = null;
         this.moveTicks = 0;
         this.moveOrigin = null;
     }
 
     onEnable() {
-        Client.unpressKeys();
+        this.session = {};
         this.scheduleAction();
-        Mouse.ungrab();
         this.message('&aEnabled');
     }
 
@@ -164,7 +198,8 @@ class AfkMacro extends ModuleBase {
         this.nextActionAt = 0;
         const parent = this.parent;
         this.parent = null;
-        if (!MacroState.isMacroRunning()) Mouse.regrab();
+        this.allowManualStop = false;
+        this.session = null;
         parent?.onAfkStopped?.();
         this.message('&cDisabled');
     }
