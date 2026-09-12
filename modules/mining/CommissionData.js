@@ -22,7 +22,7 @@ export const MOB_CONFIGS = {
         boundaryCheck: (x, y, z) => y >= 127 && y <= 136 && z <= 180 && z >= 134 && x <= 80,
     },
     treasure: {
-        names: ['Treasuer Hunter'], // MISSPELLED ON PURPOSE (Hypixel typo)
+        names: ['Treasure Hoarder', 'Treasure Hunter', 'Treasuer Hunter'],
         checkVisibility: false,
         boundaryCheck: (x, y, z) => y >= 200 && y <= 210,
     },

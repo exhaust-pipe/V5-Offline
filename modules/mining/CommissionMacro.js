@@ -60,6 +60,7 @@ class CommissionMacro extends ModuleBase {
         this.occupancyCheckInterval = { low: 5, high: 10 };
         this.transitionReadyAt = 0;
         this.pendingStateAction = null;
+        this.commissionCompletionAt = null;
         this.stateRevision = 0;
         this.lobbySwitch = null;
         this.miningWaypoint = null;
@@ -121,7 +122,7 @@ class CommissionMacro extends ModuleBase {
                         Commission: () => this.currentCommission?.name || 'None',
                         Progress: () => this.getCommissionProgressDisplay(),
                         Tool: () => this.getTruncatedToolName(),
-                        'Macro Intensity': () => this.macroIntensity,
+                        'Failsafe Intensity Increase': () => this.macroIntensity,
                     },
                 },
                 {
@@ -181,22 +182,22 @@ class CommissionMacro extends ModuleBase {
             (value) => {
                 this.intensitySwitchThreshold = Math.max(1, finiteNumber(value, 200));
             },
-            'Switch servers when macro intensity exceeds this value; subtract it after a successful switch.'
+            'Switch servers when the failsafe intensity gained since enabling this macro, minus previous switch deductions, exceeds this value. Each successful switch subtracts this threshold.'
         );
         this.addRangeSlider(
             'Transition Delay (s)',
             0,
-            30,
+            15,
             this.transitionDelay,
             (value) => {
                 this.transitionDelay = value;
             },
-            'Random delay before changing activities, claiming rewards, or switching servers.'
+            'Random delay before changing activities or switching servers. Completed tasks keep running during this delay; arriving at a task starts it immediately.'
         );
         this.addRangeSlider(
             'Mining Spot Check Interval (s)',
             1,
-            60,
+            30,
             this.occupancyCheckInterval,
             (value) => {
                 this.occupancyCheckInterval = value;
@@ -223,7 +224,7 @@ class CommissionMacro extends ModuleBase {
             (value) => {
                 this.goblinWeaponSlot = value;
             },
-            'Hotbar slot with weapon for Goblin Slayer (1-8)'
+            'Hotbar slot with weapon for Goblin Slayer and Treasure Hoarder Puncher (1-8)'
         );
     }
 
@@ -262,7 +263,7 @@ class CommissionMacro extends ModuleBase {
     }
 
     getToolDisplay() {
-        if (this.isGoblinSlayerWithWeapon()) {
+        if (this.currentState === STATES.SLAYER && this.isWeaponSlayerCommission() && this.weapon) {
             return {
                 type: 'Weapon',
                 name: this.weapon.name,
@@ -289,8 +290,8 @@ class CommissionMacro extends ModuleBase {
         };
     }
 
-    isGoblinSlayerWithWeapon() {
-        return this.currentState === STATES.SLAYER && this.currentCommission?.name === 'Goblin Slayer' && this.weapon;
+    isWeaponSlayerCommission(name = this.currentCommission?.name) {
+        return name === 'Goblin Slayer' || name === 'Treasure Hoarder Puncher';
     }
 
     onEnable() {
@@ -313,7 +314,12 @@ class CommissionMacro extends ModuleBase {
 
         this.weapon = this.getWeaponFromSlot();
         if (!this.weapon) {
-            notificationManager.add(`No weapon found in slot ${this.goblinWeaponSlot}`, 'Goblin commissions will be skipped.', 'ERROR', '5000');
+            notificationManager.add(
+                `No weapon found in slot ${this.goblinWeaponSlot}`,
+                'Goblin and Treasure Hoarder commissions will be skipped.',
+                'ERROR',
+                '5000'
+            );
         }
 
         this.miningSpeed = MiningUtils.getMiningSpeed('Dwarven Mines');
@@ -338,6 +344,7 @@ class CommissionMacro extends ModuleBase {
     resetState() {
         this.stateRevision++;
         this.pendingStateAction = null;
+        this.commissionCompletionAt = null;
         this.transitionReadyAt = 0;
         this.lobbySwitch = null;
         this.miningWaypoint = null;
@@ -374,11 +381,12 @@ class CommissionMacro extends ModuleBase {
         this.delay(delay);
     }
 
-    setState(newState, onReady = null) {
+    setState(newState, onReady = null, withDelay = true) {
         this.stateRevision++;
+        this.commissionCompletionAt = null;
         this.currentState = newState;
         this.pendingStateAction = onReady;
-        this.transitionReadyAt = Date.now() + this.randomIntervalMs(this.transitionDelay, 1, 3);
+        this.transitionReadyAt = withDelay ? Date.now() + this.randomIntervalMs(this.transitionDelay, 1, 3) : 0;
     }
 
     randomIntervalMs(range, defaultLow, defaultHigh) {
@@ -410,7 +418,12 @@ class CommissionMacro extends ModuleBase {
             this.macroIntensity > this.intensitySwitchThreshold &&
             Utils.area() === 'Dwarven Mines'
         ) {
-            this.requestServerSwitch('Macro intensity exceeded the switch threshold.');
+            this.requestServerSwitch('Failsafe intensity gained since enabling this macro, after previous switch deductions, exceeded the switch threshold.');
+        }
+
+        if (this.commissionCompletionAt !== null && Date.now() >= this.commissionCompletionAt) {
+            this.finishCommission(true);
+            return;
         }
 
         this.commissionClaimer.cancelNpcRotationIfPathing();
@@ -579,7 +592,7 @@ class CommissionMacro extends ModuleBase {
         }
 
         if (task.type === 'SLAYER') {
-            return task.name !== 'Goblin Slayer' || !!this.weapon;
+            return !this.isWeaponSlayerCommission(task.name) || !!this.weapon;
         }
 
         return false;
@@ -687,7 +700,7 @@ class CommissionMacro extends ModuleBase {
         }
         if (switching.phase === 'TO_MINES' && switching.lastCommandAt !== null && area === 'Dwarven Mines') {
             this.macroIntensity = Math.max(0, this.macroIntensity - switching.threshold);
-            this.message(`&aServer switched. Macro intensity: ${this.macroIntensity}`);
+            this.message(`&aServer switched. Remaining failsafe intensity increase: ${this.macroIntensity}`);
             this.resetState();
             this.setState(STATES.CHOOSING);
             return;
@@ -698,6 +711,7 @@ class CommissionMacro extends ModuleBase {
     }
 
     handleMining() {
+        if (this.commissionCompletionAt !== null) return;
         if (Date.now() < this.nextOccupancyCheckAt) return;
         this.nextOccupancyCheckAt = Date.now() + this.randomIntervalMs(this.occupancyCheckInterval, 5, 10);
         if (!this.miningWaypoint || this.avoidanceRadius <= 0) return;
@@ -966,9 +980,9 @@ class CommissionMacro extends ModuleBase {
 
         const type = this.currentCommission?.type;
         if (type === 'MINING') {
-            this.setState(STATES.MINING, () => this.startMining());
+            this.setState(STATES.MINING, () => this.startMining(), false);
         } else if (type === 'SLAYER') {
-            this.setState(STATES.SLAYER, () => this.startSlayer());
+            this.setState(STATES.SLAYER, () => this.startSlayer(), false);
         } else {
             this.setState(STATES.IDLE);
         }
@@ -1019,11 +1033,11 @@ class CommissionMacro extends ModuleBase {
         const name = this.currentCommission.name;
         let mobType;
 
-        if (name === 'Goblin Slayer') {
-            mobType = 'goblin';
+        if (this.isWeaponSlayerCommission(name)) {
+            mobType = name === 'Goblin Slayer' ? 'goblin' : 'treasure';
             Guis.setItemSlot(this.weapon.slot);
-        } else if (name === 'Glacite Walker Slayer' || name === 'Mines Slayer' || name === 'Treasure Hoarder Puncher') {
-            mobType = name === 'Glacite Walker Slayer' || name === 'Mines Slayer' ? 'icewalker' : 'treasure';
+        } else if (name === 'Glacite Walker Slayer' || name === 'Mines Slayer') {
+            mobType = 'icewalker';
             Guis.setItemSlot(this.pickaxe.slot);
         } else {
             this.toggle(false);
@@ -1043,8 +1057,16 @@ class CommissionMacro extends ModuleBase {
     }
 
     onCommissionComplete() {
-        if (this.currentState === STATES.REFUELING || this.currentState === STATES.CLAIMING || this.lobbySwitch) return;
+        if (this.currentState === STATES.REFUELING || this.currentState === STATES.CLAIMING || this.lobbySwitch || this.commissionCompletionAt !== null) return;
 
+        if (this.currentState === STATES.MINING || this.currentState === STATES.SLAYER) {
+            this.commissionCompletionAt = Date.now() + this.randomIntervalMs(this.transitionDelay, 1, 3);
+            return;
+        }
+        this.finishCommission();
+    }
+
+    finishCommission(skipDelay = false) {
         FastEtherwarp.cancel(true);
         Pathfinder.resetPath();
         MiningBot.toggle(false, true);
@@ -1058,10 +1080,11 @@ class CommissionMacro extends ModuleBase {
         this.lastCompletedCommissionName = this.currentCommission?.name || null;
         this.lastCommissionName = this.currentCommission?.name || null;
         this.awaitingTabUpdate = true;
-        this.setState(STATES.CLAIMING);
+        this.setState(STATES.CLAIMING, null, !skipDelay);
     }
 
     onInventoryFull() {
+        if (this.commissionCompletionAt !== null) return;
         this.message('&eInventory full! Selling items...');
         MiningBot.toggle(false, true);
         this.savedState = this.currentState;
@@ -1069,6 +1092,7 @@ class CommissionMacro extends ModuleBase {
     }
 
     onDrillEmpty() {
+        if (this.commissionCompletionAt !== null) return;
         if (!this.isActualDrill) {
             return;
         }

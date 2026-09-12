@@ -48,7 +48,7 @@ class AfkMacro extends ModuleBase {
         this.addRangeSlider(
             'Action Interval (s)',
             1,
-            600,
+            300,
             this.interval,
             (value) => {
                 this.interval = { low: value.low, high: value.high };

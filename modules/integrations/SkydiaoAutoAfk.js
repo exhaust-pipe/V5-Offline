@@ -31,7 +31,7 @@ class SkydiaoAutoAfk extends ModuleBase {
         this.addSlider(
             'Ban Threshold',
             0,
-            1000,
+            200,
             20,
             (value) => {
                 this.threshold = value;
