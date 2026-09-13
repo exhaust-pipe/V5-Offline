@@ -69,6 +69,7 @@ class CommissionMacro extends ModuleBase {
         this.lobbySwitch = null;
         this.miningWaypoint = null;
         this.nextOccupancyCheckAt = 0;
+        this.choosingMiningSpot = false;
 
         this.commissions = [];
         this.currentCommission = null;
@@ -367,6 +368,7 @@ class CommissionMacro extends ModuleBase {
         this.lobbySwitch = null;
         this.miningWaypoint = null;
         this.nextOccupancyCheckAt = 0;
+        this.choosingMiningSpot = false;
         this.currentState = STATES.IDLE;
         this.commissions = [];
         this.currentCommission = null;
@@ -402,6 +404,7 @@ class CommissionMacro extends ModuleBase {
     setState(newState, onReady = null, withDelay = true) {
         this.stateRevision++;
         this.commissionCompletionAt = null;
+        this.choosingMiningSpot = false;
         this.currentState = newState;
         this.pendingStateAction = onReady;
         this.transitionReadyAt = withDelay ? Date.now() + this.randomIntervalMs(this.transitionDelay, 1, 3) : 0;
@@ -511,7 +514,7 @@ class CommissionMacro extends ModuleBase {
         this.setState(STATES.CHOOSING);
     }
 
-    handleChoosing() {
+    handleChoosing(withDelay = true) {
         const area = Utils.area();
         const now = Date.now();
         if (area !== 'Dwarven Mines') {
@@ -571,7 +574,7 @@ class CommissionMacro extends ModuleBase {
         const chosenCommission = this.findAvailableCommission(supportedTasks, avoidEntities);
 
         if (chosenCommission) {
-            this.startCommission(chosenCommission);
+            this.startCommission(chosenCommission, withDelay);
         } else {
             this.handleNoAvailableSpots();
         }
@@ -672,7 +675,7 @@ class CommissionMacro extends ModuleBase {
         });
     }
 
-    startCommission(chosenCommission) {
+    startCommission(chosenCommission, withDelay = true) {
         const { task, waypoints } = chosenCommission;
         this.currentCommission = task;
         this.travelPurpose = task.type;
@@ -682,10 +685,17 @@ class CommissionMacro extends ModuleBase {
 
         this.currentPathWaypoints = waypoints.slice();
         this.currentPathWaypoint = this.getClosestWaypoint(waypoints);
-        this.setState(STATES.TRAVELING, () => this.beginCommissionTravel(waypoints));
+        if (withDelay) {
+            this.setState(STATES.TRAVELING, () => this.beginCommissionTravel(waypoints));
+        } else {
+            this.setState(STATES.TRAVELING, null, false);
+            this.beginCommissionTravel(waypoints);
+        }
     }
 
     beginCommissionTravel(waypoints) {
+        if (MiningBot.enabled) MiningBot.toggle(false, true);
+        this.miningWaypoint = null;
         const revision = this.stateRevision;
         const onComplete = (success) => {
             if (!this.enabled || revision !== this.stateRevision) return;
@@ -748,6 +758,10 @@ class CommissionMacro extends ModuleBase {
 
     handleMining() {
         if (this.commissionCompletionAt !== null) return;
+        if (this.choosingMiningSpot) {
+            this.handleChoosing(false);
+            return;
+        }
         if (Date.now() < this.nextOccupancyCheckAt) return;
         this.nextOccupancyCheckAt = Date.now() + this.randomIntervalMs(this.occupancyCheckInterval, 5, 10);
         if (!this.miningWaypoint || this.avoidanceRadius <= 0) return;
@@ -756,10 +770,8 @@ class CommissionMacro extends ModuleBase {
         );
         if (!occupied) return;
         this.message('&eMining spot occupied. Choosing another spot...');
-        MiningBot.toggle(false, true);
-        this.miningWaypoint = null;
-        this.currentCommission = null;
-        this.setState(STATES.CHOOSING);
+        this.setState(STATES.MINING);
+        this.choosingMiningSpot = true;
     }
 
     handleSlayer() {
