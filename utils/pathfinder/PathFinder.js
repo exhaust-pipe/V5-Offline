@@ -30,6 +30,7 @@ class Finder {
         this.entityTargetResolver = null;
         this.entityGoalOffsets = null;
         this.entityTrackDistance = 8;
+        this.pitchJitter = null;
         this.silent = false;
         this.recalculateAttempts = 0;
         this.recalculateRetryQueued = false;
@@ -135,6 +136,7 @@ class Finder {
             this.entityTargetResolver = options && typeof options.resolveEntityTarget === 'function' ? options.resolveEntityTarget : null;
             this.entityGoalOffsets = this.createEntityGoalOffsets(end, this.entityTarget);
             this.entityTrackDistance = Number.isFinite(options?.entityTrackDistance) && options.entityTrackDistance > 0 ? options.entityTrackDistance : 8;
+            this.pitchJitter = options?.pitchJitter ?? null;
             this.silent = options?.silent === true;
             this.addAvoidPoints(options?.avoidPoints, options?.avoidRadius);
         }
@@ -264,7 +266,7 @@ class Finder {
                     return;
                 }
 
-                Rotations.pathRotations(splinePath, this.entityTarget, this.entityTrackDistance);
+                Rotations.pathRotations(splinePath, this.entityTarget, this.entityTrackDistance, this.pitchJitter);
                 this.applyPathRuntimeHints(result);
                 Aote.onPathTick(Rotations);
                 Jump.detectJump(result.path_between_key_nodes, result.path_flags, result.path_flag_bits);
@@ -1014,6 +1016,7 @@ class Finder {
             this.entityTargetResolver = null;
             this.entityGoalOffsets = null;
             this.entityTrackDistance = 8;
+            this.pitchJitter = null;
             this.silent = false;
             this.recalculateAttempts = 0;
             this.recalculateRetryQueued = false;

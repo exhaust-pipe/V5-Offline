@@ -2,12 +2,15 @@ import { ArmorStandEntity, EndermanEntity, Vec3d, ZombieEntity } from '../../uti
 import { MathUtils } from '../../utils/Math';
 import { ModuleBase } from '../../utils/ModuleBase';
 import Pathfinder from '../../utils/pathfinder/PathFinder';
+import { Aote } from '../../utils/pathfinder/PathWalker/PathAote';
+import { Rotations as PathRotations } from '../../utils/pathfinder/PathWalker/PathRotations';
 import { Movement } from '../../utils/player/Movement';
 import { Rotations } from '../../utils/player/Rotations';
 import { Raytrace } from '../../utils/Raytrace';
 
 const STATES = {
     IDLE: 'IDLE',
+    ROAMING: 'ROAMING',
     PATHING: 'PATHING',
     FIGHTING: 'FIGHTING',
 };
@@ -34,8 +37,10 @@ const ATTACK_REACH = 4;
 const PATH_HANDOFF_DISTANCE = 6;
 const REPATH_DISTANCE = 7;
 const REPATH_DELAY_MS = 1200;
-const PATH_FAILURE_BLACKLIST_MS = 5000;
+const PATH_FAILURE_BLACKLIST_MS = [5000, 20000, 60000];
 const VISIBILITY_GRACE_MS = 750;
+const ROAM_MEMORY_MS = 300000;
+const ROAM_PATH_TIMEOUT_MS = 15000;
 
 const BLACKHOLE_AVOID_RADIUS = 8.5;
 const BLACKHOLE_SCAN_INTERVAL = 10;
@@ -92,8 +97,14 @@ class Combat extends ModuleBase {
         this.pathStartedAt = 0;
         this.pathTargetPosition = null;
         this.nextAttackAt = 0;
+        this.nextTravelBurstAt = 0;
+        this.travelClicksRemaining = 0;
+        this.spawnLocations = [];
+        this.roamOrigin = null;
+        this.nextRoamAt = 0;
 
         this.blacklistedTargets = new Map();
+        this.targetFailureCounts = new Map();
         this.visibleUntil = new Map();
         this.activeBlackholes = [];
         this.scanTicker = 0;
@@ -101,7 +112,9 @@ class Combat extends ModuleBase {
         this.attackRange = ATTACK_REACH;
         this.pathfindingThreshold = 15;
         this.attackCPS = 10;
-        this.attackButton = 'Left Click';
+        this.rightClickChance = 0;
+        this.pathPitchJitter = 3;
+        this.travelClickInterval = 4;
         this.overrideRotationSpeed = false;
         this.combatRotationSpeed = 400;
 
@@ -127,15 +140,34 @@ class Combat extends ModuleBase {
             'Average attacks per second'
         );
 
-        this.addMultiToggle(
-            'Attack Button',
-            ['Left Click', 'Right Click'],
-            true,
-            (selected) => {
-                this.attackButton = selected.find((item) => item.enabled)?.name || 'Left Click';
+        this.addSlider(
+            'Right Click Chance (%)',
+            0,
+            100,
+            0,
+            (value) => (this.rightClickChance = value),
+            'Chance per click: 0% always left, 100% always right. Applies to combat and travel clicks.'
+        );
+
+        this.addSlider(
+            'Path Pitch Jitter',
+            0,
+            15,
+            3,
+            (value) => (this.pathPitchJitter = value),
+            'Maximum extra vertical look movement in degrees while pathfinding. 0 disables it.'
+        );
+
+        this.addSlider(
+            'Travel Click Interval',
+            2,
+            15,
+            4,
+            (value) => {
+                this.travelClickInterval = value;
+                this.resetTravelClicks();
             },
-            'Mouse button used to attack.',
-            'Left Click'
+            'Average seconds between click bursts while approaching a mob. Each burst averages Attack CPS clicks.'
         );
 
         let rotationSpeedSlider;
@@ -207,6 +239,12 @@ class Combat extends ModuleBase {
 
     onTick() {
         if (!this.enabled) return;
+        if (!Player.getPlayer() || !World.getWorld()) {
+            this.pauseMovement();
+            this.spawnLocations = [];
+            this.roamOrigin = null;
+            return;
+        }
         if (!Client.isInChat() && Client.isInGui()) {
             this.pauseMovement();
             return;
@@ -215,12 +253,13 @@ class Combat extends ModuleBase {
         this.scanBlackholes();
         this.expireTargetData();
         this.targets = this.getTargets();
+        this.rememberSpawnLocations();
 
         if (this.target && !this.isTargetUsable(this.target)) this.setTarget(null);
         if (!this.target) {
             this.setTarget(this.bestTarget());
             const position = this.getTargetPosition(this.target);
-            if (!position) this.setState(STATES.IDLE);
+            if (!position) this.roam();
             else {
                 const distance = this.getDistanceToPlayer(position);
                 if (distance.distance <= this.attackRange && this.canSeeTarget(this.target)) this.engage(position, distance);
@@ -238,6 +277,7 @@ class Combat extends ModuleBase {
         const distance = this.getDistanceToPlayer(position);
 
         if (this.state === STATES.PATHING) {
+            this.tryTravelClicks(distance.distance);
             if (
                 Date.now() - this.pathStartedAt >= REPATH_DELAY_MS &&
                 this.pathTargetPosition &&
@@ -266,6 +306,7 @@ class Combat extends ModuleBase {
         this.trackedTarget = null;
         this.target = target;
         this.nextAttackAt = 0;
+        this.resetTravelClicks();
         this.setState(STATES.IDLE);
 
         this.trackTarget();
@@ -295,7 +336,11 @@ class Combat extends ModuleBase {
         }
 
         if (distance.distanceY < -1.5) Client.setKey('space', true);
-        this.tryAttack(distance.distance);
+        if (distance.distance > this.attackRange + 0.35) this.tryTravelClicks(distance.distance);
+        else {
+            this.resetTravelClicks();
+            this.tryAttack(distance.distance);
+        }
     }
 
     tryAttack(distance) {
@@ -303,10 +348,43 @@ class Combat extends ModuleBase {
         if (distance > this.attackRange + 0.35 || now < this.nextAttackAt) return;
         if (!Raytrace.isLookingAtEntity(this.target, this.attackRange + 0.5)) return;
 
-        if (this.attackButton === 'Right Click') Client.rightClick();
+        this.clickMouse(now);
+    }
+
+    clickMouse(now) {
+        if (Math.random() * 100 < this.rightClickChance) Client.rightClick();
         else Client.leftClick();
         const jitter = 0.82 + Math.random() * 0.36;
-        this.nextAttackAt = now + (1000 / this.attackCPS) * jitter;
+        this.nextAttackAt = Math.max(now - 50, this.nextAttackAt) + (1000 / this.attackCPS) * jitter;
+    }
+
+    resetTravelClicks() {
+        this.nextTravelBurstAt = 0;
+        this.travelClicksRemaining = 0;
+    }
+
+    tryTravelClicks(distance) {
+        if (distance <= this.attackRange + 0.35) {
+            this.resetTravelClicks();
+            return;
+        }
+        if (this.state === STATES.PATHING && (!PathRotations.rotationActive || Aote.originalSlot !== -1)) {
+            this.resetTravelClicks();
+            return;
+        }
+
+        const now = Date.now();
+        if (!this.nextTravelBurstAt) {
+            this.nextTravelBurstAt = now + this.travelClickInterval * 1000 * (0.7 + Math.random() * 0.6);
+        }
+        if (now >= this.nextTravelBurstAt && this.travelClicksRemaining === 0) {
+            this.travelClicksRemaining = Math.max(1, Math.round(this.attackCPS * (0.7 + Math.random() * 0.6)));
+            this.nextTravelBurstAt = now + this.travelClickInterval * 1000 * (0.7 + Math.random() * 0.6);
+        }
+        if (this.travelClicksRemaining > 0 && now >= this.nextAttackAt) {
+            this.clickMouse(now);
+            this.travelClicksRemaining--;
+        }
     }
 
     startPath(position) {
@@ -341,12 +419,14 @@ class Combat extends ModuleBase {
                     this.target = selected;
                     this.trackedTarget = null;
                     this.nextAttackAt = 0;
+                    this.resetTravelClicks();
                     this.trackTarget();
                 }
 
                 return { target: selected, goals: this.buildPathGoals(selectedPosition) };
             },
             entityTrackDistance: 8,
+            pitchJitter: () => this.pathPitchJitter,
             walkArrivalRadius: PATH_HANDOFF_DISTANCE,
             avoidPoints: this.activeBlackholes,
             avoidRadius: Math.ceil(BLACKHOLE_AVOID_RADIUS),
@@ -378,14 +458,14 @@ class Combat extends ModuleBase {
             return;
         }
 
-        this.blacklistTarget(target, PATH_FAILURE_BLACKLIST_MS);
+        this.blacklistTarget(target);
         this.setTarget(null);
     }
 
     cancelPath() {
         this.pathToken++;
         this.pathTargetPosition = null;
-        if (this.state === STATES.PATHING || Pathfinder.isPathing()) Pathfinder.resetPath();
+        if (this.state === STATES.PATHING || this.state === STATES.ROAMING || Pathfinder.isPathing()) Pathfinder.resetPath();
     }
 
     pauseMovement() {
@@ -394,7 +474,89 @@ class Combat extends ModuleBase {
         Client.stopMovement();
         Rotations.stop();
         this.trackedTarget = null;
+        this.resetTravelClicks();
         this.setState(STATES.IDLE);
+    }
+
+    rememberSpawnLocations() {
+        const now = Date.now();
+        this.spawnLocations = this.spawnLocations.filter((location) => now - location.lastSeen < ROAM_MEMORY_MS);
+        if (!this.roamOrigin) this.roamOrigin = { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
+        for (const target of this.targets) {
+            const position = this.getTargetPosition(target);
+            if (!position || !this.isPositionSafe(position.x, position.y, position.z) || this.blacklistedTargets.has(this.getTargetUuid(target))) continue;
+            this.roamOrigin = { ...position };
+            const known = this.spawnLocations.find((location) => this.getDistanceBetween(location, position).distance < 4);
+            if (known) known.lastSeen = now;
+            else this.spawnLocations.push({ ...position, lastSeen: now });
+        }
+        this.spawnLocations.sort((a, b) => b.lastSeen - a.lastSeen);
+        this.spawnLocations.length = Math.min(this.spawnLocations.length, 32);
+    }
+
+    isRoamPositionSafe(position) {
+        if (!this.isPositionSafe(position.x, position.y, position.z)) return false;
+        if (this.externalTargets !== null || this.targetNames.length) return true;
+        return [...this.enabledPresets].some((name) => {
+            const check = COMBAT_PRESETS[name]?.boundaryCheck;
+            return !check || check(position.x, position.y, position.z);
+        });
+    }
+
+    roam() {
+        const now = Date.now();
+        if (this.state === STATES.ROAMING) {
+            if (now - this.pathStartedAt < ROAM_PATH_TIMEOUT_MS) return;
+            this.cancelPath();
+            this.setState(STATES.IDLE);
+            this.nextRoamAt = now + 500;
+        }
+        if (now < this.nextRoamAt || !this.roamOrigin) return;
+        if (this.externalTargets === null && !this.targetNames.length && !this.enabledPresets.size) return;
+
+        const locations = this.spawnLocations.length ? this.spawnLocations : [this.roamOrigin];
+        const anchor = locations[Math.floor(Math.random() * locations.length)];
+        const goals = [];
+        for (let attempt = 0; attempt < 16; attempt++) {
+            const angle = Math.random() * Math.PI * 2;
+            const radius = attempt === 0 ? 0 : 2 + Math.random() * 4;
+            const x = Math.floor(anchor.x + Math.cos(angle) * radius);
+            const z = Math.floor(anchor.z + Math.sin(angle) * radius);
+            for (const offset of [0, 1, -1, 2, -2, 3, -3]) {
+                const y = Math.floor(anchor.y) + offset;
+                const position = { x: x + 0.5, y, z: z + 0.5 };
+                if (!this.isRoamPositionSafe(position) || this.getDistanceToPlayer(position).distanceFlat < 3) continue;
+                if (!Pathfinder.isBlockWalkable(x, y, z) || !Pathfinder.isBlockWalkable(x, y + 1, z) || Pathfinder.isBlockWalkable(x, y - 1, z)) continue;
+                goals.push([x, y - 1, z]);
+                break;
+            }
+            if (goals.length >= 4) break;
+        }
+        this.nextRoamAt = now + 1000;
+        if (!goals.length) return;
+
+        this.cancelPath();
+        Rotations.stop();
+        this.trackedTarget = null;
+        this.resetTravelClicks();
+        this.setState(STATES.ROAMING);
+        this.pathStartedAt = now;
+        const token = ++this.pathToken;
+        Pathfinder.findPath(
+            goals,
+            (success) => {
+                if (!this.enabled || token !== this.pathToken || this.state !== STATES.ROAMING) return;
+                this.setState(STATES.IDLE);
+                this.nextRoamAt = Date.now() + (success ? 100 + Math.random() * 300 : 1000 + Math.random() * 1000);
+            },
+            {
+                pitchJitter: () => this.pathPitchJitter,
+                walkArrivalRadius: 1.5,
+                avoidPoints: this.activeBlackholes,
+                avoidRadius: Math.ceil(BLACKHOLE_AVOID_RADIUS),
+                silent: true,
+            }
+        );
     }
 
     setState(state) {
@@ -494,9 +656,12 @@ class Combat extends ModuleBase {
         }
     }
 
-    blacklistTarget(target, duration) {
+    blacklistTarget(target) {
         const uuid = this.getTargetUuid(target);
-        if (uuid) this.blacklistedTargets.set(uuid, Date.now() + duration);
+        if (!uuid) return;
+        const index = Math.min(this.targetFailureCounts.get(uuid) || 0, PATH_FAILURE_BLACKLIST_MS.length - 1);
+        this.targetFailureCounts.set(uuid, index + 1);
+        this.blacklistedTargets.set(uuid, Date.now() + PATH_FAILURE_BLACKLIST_MS[index]);
     }
 
     expireTargetData() {
@@ -647,6 +812,10 @@ class Combat extends ModuleBase {
     }
 
     onEnable() {
+        this.spawnLocations = [];
+        this.roamOrigin = null;
+        this.nextRoamAt = 0;
+        this.resetTravelClicks();
         this.activeBlackholes = [];
         this.scanTicker = 0;
         if (!this.isParentManaged) {
@@ -666,7 +835,12 @@ class Combat extends ModuleBase {
         this.trackedTarget = null;
         this.state = STATES.IDLE;
         this.nextAttackAt = 0;
+        this.resetTravelClicks();
+        this.spawnLocations = [];
+        this.roamOrigin = null;
+        this.nextRoamAt = 0;
         this.blacklistedTargets.clear();
+        this.targetFailureCounts.clear();
         this.visibleUntil.clear();
         this.activeBlackholes = [];
     }
