@@ -767,7 +767,11 @@ class Bot extends ModuleBase {
 
     handleBreaking(blockName, fakeLookMode) {
         if (fakeLookMode === 'Off') {
-            Client.setKey('leftclick', true);
+            const wasAttacking = Client.isKeyDown('leftclick');
+            if (Client.setKey('leftclick', true) && !wasAttacking) {
+                // Mining-stat menus leave an attack cooldown behind when mining was paused before they closed.
+                Client.resumeHeldKeys();
+            }
         } else {
             Client.setKey('leftclick', false);
             if (this.isAirOrBedrock(blockName)) {
