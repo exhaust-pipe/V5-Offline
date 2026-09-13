@@ -72,6 +72,18 @@ class MacroStateClass {
         return false;
     }
 
+    notifyFailsafeIntensity(delta) {
+        for (const name of this.getEnabledMacros()) {
+            const module = this.getModule(name);
+            if (!module?.enabled || module.ignoreFailsafes || typeof module.onFailsafeIntensity !== 'function') continue;
+            try {
+                module.onFailsafeIntensity(delta);
+            } catch (e) {
+                console.error(`Error in ${name}.onFailsafeIntensity: ${e}\n${e.stack}`);
+            }
+        }
+    }
+
     onModuleEnabled(moduleName) {
         if (!moduleName) return;
         const module = this.getModule(moduleName);

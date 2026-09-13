@@ -67751,6 +67751,7 @@ declare global {
                         }
                         const TriggerType: {
                             CHAT: com.chattriggers.ctjs.api.triggers.TriggerType;
+                            SKYDIAO_SYSTEM_MESSAGE: com.chattriggers.ctjs.api.triggers.TriggerType;
                             ACTION_BAR: com.chattriggers.ctjs.api.triggers.TriggerType;
                             TICK: com.chattriggers.ctjs.api.triggers.TriggerType;
                             STEP: com.chattriggers.ctjs.api.triggers.TriggerType;
@@ -68073,6 +68074,7 @@ declare global {
                          *  @return The trigger for additional modification
                          */
                         registerChat(method: any): com.chattriggers.ctjs.api.triggers.Trigger;
+                        registerSkydiaoSystemMessage(method: any): com.chattriggers.ctjs.api.triggers.Trigger;
                         /**
                          * Registers a new trigger that runs before an action bar message is received.
                          *
@@ -68642,6 +68644,7 @@ declare global {
                          *  @return The trigger for additional modification
                          */
                         registerChat(method: any): com.chattriggers.ctjs.api.triggers.Trigger;
+                        registerSkydiaoSystemMessage(method: any): com.chattriggers.ctjs.api.triggers.Trigger;
                         /**
                          * Registers a new trigger that runs before an action bar message is received.
                          *

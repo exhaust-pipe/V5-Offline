@@ -2,7 +2,9 @@
 
 [English](README.md) | 简体中文
 
-V5的离线版本，删除了所有包含联网的功能，配合 [V5Loader-Offline](https://github.com/exhaust-pipe/V5Loader-Offline) 运行。无需单独构建，但需要手动安装和更新。
+V5的离线版本，删除了所有包含联网的功能，并添加/完善了一些其它功能。配合 [V5Loader-Offline](https://github.com/exhaust-pipe/V5Loader-Offline) 运行。无需单独构建，但需要手动安装和更新。
+
+安装方法见[V5Loader-Offline](https://github.com/exhaust-pipe/V5Loader-Offline)
 
 ## 原项目链接
 

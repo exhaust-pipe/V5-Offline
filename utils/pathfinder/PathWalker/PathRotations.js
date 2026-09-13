@@ -97,6 +97,11 @@ class PathRotations {
         this.entityTrackDistance = this.ENTITY_TRACK_DISTANCE;
         this.entityBlend = 0;
         this.lastEntityLookPoint = null;
+        this.pitchJitter = null;
+        this.pitchDriftFrom = 0;
+        this.pitchDriftTo = 0;
+        this.pitchDriftStartedAt = 0;
+        this.pitchDriftDuration = 0;
         PathRotationsUtility.stopRotation();
     }
 
@@ -450,10 +455,27 @@ class PathRotations {
         }
     }
 
+    getPitchDrift() {
+        const amplitude = typeof this.pitchJitter === 'function' ? this.pitchJitter() : this.pitchJitter;
+        if (!Number.isFinite(amplitude) || amplitude <= 0) return 0;
+
+        const now = Date.now();
+        if (now >= this.pitchDriftStartedAt + this.pitchDriftDuration) {
+            this.pitchDriftFrom = this.pitchDriftTo;
+            this.pitchDriftTo = Math.random() < 0.2 ? 0 : Math.random() * 2 - 1;
+            this.pitchDriftStartedAt = now;
+            this.pitchDriftDuration = 700 + Math.random() * 1500;
+        }
+        const progress = Math.max(0, Math.min(1, (now - this.pitchDriftStartedAt) / this.pitchDriftDuration));
+        const blend = progress * progress * (3 - 2 * progress);
+        return (this.pitchDriftFrom + (this.pitchDriftTo - this.pitchDriftFrom) * blend) * Math.min(15, amplitude) * (1 - this.entityBlend);
+    }
+
     applyHumanizedPhysics(timeScale = 1) {
         this.currentYaw = MathUtils.wrapTo180(this.currentYaw);
         const yawError = MathUtils.getAngleDifference(this.currentYaw, this.rawTargetYaw);
-        const pitchError = this.rawTargetPitch - this.currentPitch;
+        const targetPitch = Math.max(-90, Math.min(90, this.rawTargetPitch + this.getPitchDrift()));
+        const pitchError = targetPitch - this.currentPitch;
         const absYawError = Math.abs(yawError);
         const isStraight = this.currentPathCurvature < 0.2;
         const initialTurnBoostFactor = this.getInitialTurnBoostFactor(yawError);
@@ -476,7 +498,7 @@ class PathRotations {
         }
 
         if (Math.abs(pitchError) < this.SETTLE_THRESHOLD && Math.abs(this.pitchVelocity) < 0.02) {
-            this.currentPitch = this.rawTargetPitch;
+            this.currentPitch = targetPitch;
             this.pitchVelocity = 0;
         } else {
             let desiredPitchAccel = (pitchError * dynamicKp - this.pitchVelocity * dynamicKd) * timeScale;
@@ -621,7 +643,8 @@ class PathRotations {
         );
     }
 
-    pathRotations(splineData, entityTarget = null, entityTrackDistance = this.ENTITY_TRACK_DISTANCE) {
+    pathRotations(splineData, entityTarget = null, entityTrackDistance = this.ENTITY_TRACK_DISTANCE, pitchJitter = null) {
+        this.pitchJitter = pitchJitter;
         if (this.entityTarget !== entityTarget) {
             this.entityBlend = 0;
             this.lastEntityLookPoint = null;

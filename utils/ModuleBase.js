@@ -29,7 +29,7 @@ export class ModuleBase {
      * @param {string} [subcategory] - Subcategory name (required if nameOrOpts is string)
      * @param {string} [description=''] - Module description (required if nameOrOpts is string)
      * @param {string} [tooltip=null] - Tooltip text (required if nameOrOpts is string)
-     * @param {object} [opts] - Options object with properties: name, subcategory, description, tooltip, theme, developerMode, showEnabledToggle, autoDisableOnWorldUnload, isMacro, ignoreFailsafes
+     * @param {object} [opts] - Options object with properties: name, subcategory, description, tooltip, theme, developerMode, showEnabledToggle, autoDisableOnWorldUnload, isMacro, ignoreFailsafes, recoverFromLimbo
      */
     constructor(nameOrOpts, subcategory, description = '', tooltip = null) {
         const opts = typeof nameOrOpts === 'object' ? nameOrOpts : { name: nameOrOpts, subcategory, description, tooltip };
@@ -64,7 +64,7 @@ export class ModuleBase {
             register('worldUnload', () => this.toggle(false));
         }
 
-        if (opts.isMacro) {
+        if (opts.isMacro && opts.recoverFromLimbo !== false) {
             manager.subscribe('limbo', () => {
                 if (!this.enabled) return;
                 this.toggle(false);
@@ -506,6 +506,7 @@ export class ModuleBase {
     // not required
     onEnable() {}
     onDisable() {}
+    onFailsafeIntensity(delta) {}
 
     /**
      * @private

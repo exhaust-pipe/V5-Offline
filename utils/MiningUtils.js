@@ -419,9 +419,10 @@ class MineTimeCalculations {
         if (!blockName) {
             return this.clamp(100);
         }
-        let data = BLOCK_HARDNESS_DATA[blockName];
-        let hardness = data ? data.hardness : 20000;
+        return this.calculateTicksForBlock(blockName, this.getEffectiveSpeed(speed, boosted));
+    }
 
+    getEffectiveSpeed(speed, boosted) {
         let effectiveSpeed = speed + Flowstate.CurrentFlowstate();
 
         if (boosted) {
@@ -429,7 +430,12 @@ class MineTimeCalculations {
             let multiplier = (stats?.cotm || 0) >= 2 ? 3.5 : 3.0;
             effectiveSpeed = effectiveSpeed * multiplier;
         }
+        return effectiveSpeed;
+    }
 
+    calculateTicksForBlock(blockName, effectiveSpeed) {
+        const data = BLOCK_HARDNESS_DATA[blockName];
+        const hardness = data ? data.hardness : 20000;
         let rawTicks = (hardness * 30) / effectiveSpeed;
         return this.clamp(Math.round(rawTicks));
     }
@@ -1044,6 +1050,12 @@ export const MiningUtils = {
     },
     getMineTime: function (pos, speed, boost) {
         return timeCalc.calculateTicks(pos, speed, boost);
+    },
+    getEffectiveMiningSpeed: function (speed, boost) {
+        return timeCalc.getEffectiveSpeed(speed, boost);
+    },
+    getMineTimeForBlock: function (registryName, effectiveSpeed) {
+        return timeCalc.calculateTicksForBlock(registryName, effectiveSpeed);
     },
     getBlockInfo: function (registryName) {
         return lookupBlock(registryName);

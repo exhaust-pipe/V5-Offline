@@ -2,6 +2,7 @@ import { BP, ClipContext, CritParticle, HappyVillagerParticle, MCHand, Vec3d } f
 import { MathUtils } from '../../utils/Math';
 import { MiningUtils } from '../../utils/MiningUtils';
 import { ModuleBase } from '../../utils/ModuleBase';
+import { finiteNumber } from '../../utils/NumberUtils';
 import { NukerUtils } from '../../utils/NukerUtils';
 import { ClientboundLevelParticlesPacket } from '../../utils/Packets';
 import { Raytrace, visibilityChecker } from '../../utils/Raytrace';
@@ -33,6 +34,8 @@ const TARGET_MODES = {
     APPROACH: 'approach',
 };
 const PRECISION_MINER_PARTICLE_LIFETIME_MS = 500;
+const SKIPPED_BLOCK_RETRY_MS = 5000;
+const RANDOM_MOVEMENT_KEYS = ['w', 'a', 's', 'd'];
 
 class Bot extends ModuleBase {
     constructor() {
@@ -60,6 +63,19 @@ class Bot extends ModuleBase {
         this.rotationSpeed = 0.48;
         this.sneakWhileMining = true;
         this.minimumVisibleRays = 0;
+        this.miningSpeedAdaptation = true;
+        this.abilityDelay = { low: 1, high: 3 };
+        this.clickTicks = 0;
+        this.expectedMiningSpeed = null;
+        this.miningTiming = null;
+        this.miningReactionTime = { low: 0.5, high: 2 };
+        this.skippedBlocks = new Map();
+        this.randomMovement = false;
+        this.randomMovementDuration = { low: 0.5, high: 1 };
+        this.randomMovementInterval = { low: 15, high: 30 };
+        this.randomMovementKey = null;
+        this.randomMovementUntil = 0;
+        this.nextRandomMovementAt = 0;
 
         this.STATES = { WAITING: 0, ABILITY: 1, MINING: 2, BUFF: 3, REFUEL: 4 };
 
@@ -88,6 +104,7 @@ class Bot extends ModuleBase {
         this.lastUse = Date.now();
         this.ABILITY_COOLDOWN_MS = 200000;
         this._pendingAbilityActivation = false;
+        this.abilityActivationAt = 0;
         this.fakeLookModeName = 'Off';
         this.selectedTypeName = 'Mithril';
         this._renderPalette = {
@@ -132,7 +149,7 @@ class Bot extends ModuleBase {
                         this.currentTarget
                             ? `${Math.floor(this.currentTarget.x)}, ${Math.floor(this.currentTarget.y)}, ${Math.floor(this.currentTarget.z)}`
                             : 'None',
-                    Ticks: () => `${this.mineTickCount}/${this.totalTicks}`,
+                    Ticks: () => `${this.mineTickCount}/${this.miningSpeedAdaptation ? this.clickTicks : this.totalTicks}`,
                 },
             },
         ]);
@@ -240,14 +257,20 @@ class Bot extends ModuleBase {
         this.normalRender = register('postRenderWorld', () => this.renderNormal()).unregister();
 
         this.on('packetReceived', (packet) => this.onPrecisionMinerParticle(packet)).setFilteredClass(ClientboundLevelParticlesPacket);
+        this.on('worldUnload', () => {
+            this.resetMiningTiming();
+            this.cancelPendingAbility();
+            this.resetRandomMovement();
+        });
         this.on('tick', () => {
-            if (!this.enabled) return;
+            if (!this.enabled || !World.isLoaded() || !Player.getPlayer()) return;
             if (this.refreshingMiningStats) {
                 this.stopMiningControls(true);
                 OreRotations.stop();
                 return;
             }
             if (Client.isInGui()) {
+                this.stopRandomMovement();
                 Client.unpressKeys();
                 OreRotations.stop();
                 return;
@@ -265,10 +288,9 @@ class Bot extends ModuleBase {
 
         manager.subscribe('abilityready', () => {
             if (!this.enabled || this.refreshingMiningStats) return;
-            this.resetTickCounters();
             this.abilityFromChat = true;
-            this.state = this.STATES.ABILITY;
-            if (this.DEBUG_MODE) this.message(`&a[DEBUG] abilityready → state=ABILITY, abilityFromChat=true`);
+            this.scheduleAbilityActivation();
+            if (this.DEBUG_MODE) this.message('&a[DEBUG] abilityready → scheduled ability while mining');
         });
 
         manager.subscribe('abilityused', () => {
@@ -276,7 +298,9 @@ class Bot extends ModuleBase {
             if (this.ability === 'SpeedBoost') this.speedBoost = true;
             this.abilityFromChat = false;
             this.lastUse = Date.now();
-            this.resetTickCounters();
+            this.cancelPendingAbility();
+            if (this.state === this.STATES.ABILITY) this.state = this.STATES.MINING;
+            if (!this.miningSpeedAdaptation) this.resetTickCounters();
             if (this.DEBUG_MODE) this.message(`&e[DEBUG] abilityused → abilityFromChat=false, lastUse=${this.lastUse}`);
         });
 
@@ -285,13 +309,14 @@ class Bot extends ModuleBase {
             this.speedBoost = false;
             this.abilityFromChat = false;
             this.lastUse = Date.now();
-            this.resetTickCounters();
+            if (!this.miningSpeedAdaptation) this.resetTickCounters();
             if (this.DEBUG_MODE) this.message(`&e[DEBUG] abilitygone → abilityFromChat=false, lastUse=${this.lastUse}`);
         });
 
         manager.subscribe('abilitycooldown', () => {
             if (!this.enabled) return;
             this.lastUse = Date.now();
+            this.cancelPendingAbility();
             this.state = this.STATES.MINING;
             if (this.DEBUG_MODE) this.message(`&c[DEBUG] abilitycooldown → lastUse=${this.lastUse}, state=MINING`);
         });
@@ -300,9 +325,79 @@ class Bot extends ModuleBase {
     resetTickCounters() {
         this.mineTickCount = 0;
         this.tickCount = 0;
+        this.clickTicks = 0;
+        this.miningTiming = null;
     }
 
     initSettings() {
+        let miningReactionSlider;
+        this.addToggle(
+            'Mining Speed Adaptation',
+            (value) => {
+                this.miningSpeedAdaptation = value;
+                this.resetMiningTiming();
+                if (miningReactionSlider) miningReactionSlider.visible = value;
+            },
+            'Simulate human reaction times when mining speeds suddenly change, which may occasionally skipping block or causing a short delay before switching targets.',
+            true
+        );
+        miningReactionSlider = this.addRangeSlider(
+            'Mining Reaction Time (s)',
+            0,
+            5,
+            this.miningReactionTime,
+            (value) => {
+                this.miningReactionTime = value;
+            },
+            'Minimum and maximum reaction time, determines how long it takes to react when the mining speed suddenly changes.'
+        );
+        miningReactionSlider.visible = this.miningSpeedAdaptation;
+        this.addRangeSlider(
+            'Pickaxe Ability Delay (s)',
+            0,
+            15,
+            this.abilityDelay,
+            (value) => {
+                this.abilityDelay = value;
+            },
+            'Continue mining for a random delay before right-clicking to activate the pickaxe ability.'
+        );
+        let randomMovementDurationSlider;
+        let randomMovementIntervalSlider;
+        this.addToggle(
+            'Random Movement',
+            (value) => {
+                this.randomMovement = value;
+                this.resetRandomMovement();
+                if (randomMovementDurationSlider) randomMovementDurationSlider.visible = value;
+                if (randomMovementIntervalSlider) randomMovementIntervalSlider.visible = value;
+            },
+            'Occasionally move while mining, independently of ore approach movement.',
+            false
+        );
+        randomMovementDurationSlider = this.addRangeSlider(
+            'Random Movement Duration (s)',
+            0.1,
+            5,
+            this.randomMovementDuration,
+            (value) => {
+                this.randomMovementDuration = value;
+            },
+            'Minimum and maximum time to hold the selected movement key.'
+        );
+        randomMovementIntervalSlider = this.addRangeSlider(
+            'Random Movement Interval (s)',
+            1,
+            120,
+            this.randomMovementInterval,
+            (value) => {
+                this.randomMovementInterval = value;
+                this.resetRandomMovement();
+            },
+            'Minimum and maximum time between random movements.'
+        );
+        randomMovementDurationSlider.visible = this.randomMovement;
+        randomMovementIntervalSlider.visible = this.randomMovement;
         this.addToggle(
             'Movement',
             (value) => {
@@ -505,6 +600,85 @@ class Bot extends ModuleBase {
         this.ability = file?.ability || null;
     }
 
+    resetMiningTiming() {
+        this.clickTicks = 0;
+        this.expectedMiningSpeed = null;
+        this.miningTiming = null;
+        this.skippedBlocks.clear();
+    }
+
+    updateMiningTiming(mineTicks, actualSpeed, blockName) {
+        if (!this.miningSpeedAdaptation) return;
+        if (this.expectedMiningSpeed === null) this.expectedMiningSpeed = actualSpeed;
+        if (!this.miningTiming) {
+            this.miningTiming = {
+                expectedTicks: MiningUtils.getMineTimeForBlock(blockName, this.expectedMiningSpeed) * (0.8 + Math.random() * 0.4),
+                reactionTicks: this.randomDelayMs(this.miningReactionTime, 0.5, 2, 0, 5) / 50,
+                actualSpeed,
+                observedTicks: null,
+                missed: false,
+            };
+        }
+        this.miningTiming.actualSpeed = actualSpeed;
+        this.updateMiningStayDuration(mineTicks);
+    }
+
+    updateMiningStayDuration(actualTicks) {
+        const timing = this.miningTiming;
+        const { expectedTicks, reactionTicks } = timing;
+        timing.missed = actualTicks > expectedTicks && expectedTicks < reactionTicks;
+        const stayTicks = actualTicks < expectedTicks ? Math.min(actualTicks + reactionTicks, expectedTicks) : timing.missed ? expectedTicks : actualTicks;
+        this.clickTicks = Math.max(1, Math.ceil(stayTicks));
+    }
+
+    finishMiningTimingAttempt() {
+        if (!this.miningSpeedAdaptation || !this.miningTiming) return;
+        const { missed, actualSpeed } = this.miningTiming;
+        this.expectedMiningSpeed = missed ? (this.expectedMiningSpeed + actualSpeed) / 2 : actualSpeed;
+        this.clickTicks = 0;
+        this.miningTiming = null;
+    }
+
+    handleFinishedTimingTarget() {
+        if (!this.miningSpeedAdaptation || !this.currentTarget || !this.miningTiming || !this.lastBlockPos) return false;
+        const target = this.currentTarget;
+        if (target.x !== this.lastBlockPos.x || target.y !== this.lastBlockPos.y || target.z !== this.lastBlockPos.z) return false;
+        const name = World.getBlockAt(target.x, target.y, target.z)?.type?.getRegistryName() || '';
+        if (name === this.lastBlockType) return false;
+        if (this.miningTiming.observedTicks === null) {
+            this.miningTiming.observedTicks = this.mineTickCount;
+            this.updateMiningStayDuration(this.miningTiming.observedTicks);
+        }
+
+        if (this.mineTickCount > 0 && this.mineTickCount < this.clickTicks) {
+            this.stopMiningControls(true);
+            const aim = this.getAimVectorForTarget(target);
+            if (aim) OreRotations.trackVector(aim, this.rotationSpeed);
+            Player.getPlayer().swing(MCHand.MAIN_HAND);
+            this.mineTickCount++;
+            return true;
+        }
+        this.finishMiningTimingAttempt();
+        return false;
+    }
+
+    cancelPendingAbility() {
+        this._pendingAbilityActivation = false;
+        this.abilityActivationAt = 0;
+    }
+
+    randomDelayMs(range, defaultLow, defaultHigh, min, max) {
+        const low = Math.max(min, Math.min(max, finiteNumber(range?.low, defaultLow)));
+        const high = Math.max(min, Math.min(max, finiteNumber(range?.high, defaultHigh)));
+        return (Math.min(low, high) + Math.random() * Math.abs(high - low)) * 1000;
+    }
+
+    scheduleAbilityActivation() {
+        if (this._pendingAbilityActivation || this.SCAN_ONLY) return;
+        this.abilityActivationAt = Date.now() + this.randomDelayMs(this.abilityDelay, 1, 3, 0, 15);
+        this._pendingAbilityActivation = true;
+    }
+
     shouldScanForNewBlock() {
         if (!this.currentTarget || this.allowScan) return true;
 
@@ -582,6 +756,7 @@ class Bot extends ModuleBase {
     }
 
     stopMiningControls(stopMovement = false) {
+        this.stopRandomMovement();
         if (stopMovement) {
             Client.stopMovement();
             Client.setKey('space', false);
@@ -592,7 +767,11 @@ class Bot extends ModuleBase {
 
     handleBreaking(blockName, fakeLookMode) {
         if (fakeLookMode === 'Off') {
-            Client.setKey('leftclick', true);
+            const wasAttacking = Client.isKeyDown('leftclick');
+            if (Client.setKey('leftclick', true) && !wasAttacking) {
+                // Mining-stat menus leave an attack cooldown behind when mining was paused before they closed.
+                Client.resumeHeldKeys();
+            }
         } else {
             Client.setKey('leftclick', false);
             if (this.isAirOrBedrock(blockName)) {
@@ -604,13 +783,16 @@ class Bot extends ModuleBase {
                 if (fakeLookMode === 'Instant') {
                     // Instant nuker might be bad dont use it
                     //NukerUtils.nuke(pos, this.totalTicks);
-                } else if (fakeLookMode === 'Queued') NukerUtils.nukeQueueAdd(pos, this.totalTicks);
+                } else if (fakeLookMode === 'Queued') NukerUtils.nukeQueueAdd(pos, this.miningSpeedAdaptation ? this.clickTicks : this.totalTicks);
                 this.nukedBlock = true;
             }
         }
     }
 
     shouldGlideToNextBlock(blockName) {
+        if (this.miningSpeedAdaptation) {
+            return !this.currentTarget || this.allowScan || (this.miningTiming?.missed && this.mineTickCount >= this.clickTicks);
+        }
         return this.TICKGLIDE
             ? this.mineTickCount >= this.totalTicks || this.tickCount > this.totalTicks * 2 || this.allowScan
             : !this.currentTarget || this.isAirOrBedrock(blockName) || this.allowScan;
@@ -645,10 +827,10 @@ class Bot extends ModuleBase {
     }
 
     handleAbilityState() {
-        if (this.SCAN_ONLY) return (this.state = this.STATES.MINING);
-
-        this.stopMiningControls(true);
-        OreRotations.stop();
+        if (this.SCAN_ONLY) {
+            this.cancelPendingAbility();
+            return (this.state = this.STATES.MINING);
+        }
 
         const now = Date.now();
         const abilityStatus = TabListUtils.getPickaxeAbilityStatus();
@@ -660,7 +842,15 @@ class Bot extends ModuleBase {
         }
 
         if (this._pendingAbilityActivation) {
-            this._pendingAbilityActivation = false;
+            if (now < this.abilityActivationAt) {
+                this.state = this.STATES.MINING;
+                this.handleMiningState();
+                return;
+            }
+            this.stopMiningControls(true);
+            OreRotations.stop();
+            if (this.ensureDrillEquipped(this.drill)) return;
+            this.cancelPendingAbility();
             Client.rightClick();
             if (this.DEBUG_MODE) this.message(`&a[DEBUG] RIGHT-CLICKED status="${abilityStatus}"`);
             this.lastUse = now;
@@ -670,16 +860,11 @@ class Bot extends ModuleBase {
         }
 
         if (abilityStatus.includes('Available') || this.abilityFromChat || this.lastUse + this.ABILITY_COOLDOWN_MS < now) {
-            if (this.ensureDrillEquipped(this.drill)) return;
-
-            Client.setKey('leftclick', false);
-            this._pendingAbilityActivation = true;
-            if (this.DEBUG_MODE) this.message(`&e[DEBUG] Released left-click, will right-click next tick (swing=${Player.getPlayer().handSwinging})`);
-            return;
+            this.scheduleAbilityActivation();
+            if (this.DEBUG_MODE) this.message(`&e[DEBUG] Mining during ability delay=${Math.round(this.abilityActivationAt - now)}ms`);
         }
-
-        if (this.DEBUG_MODE) this.message(`&c[DEBUG] No condition met, going MINING`);
         this.state = this.STATES.MINING;
+        this.handleMiningState();
     }
 
     handleMiningState() {
@@ -687,6 +872,7 @@ class Bot extends ModuleBase {
         this.tickCount++;
 
         if (this.SCAN_ONLY) {
+            this.cancelPendingAbility();
             this.scanForBlock(this.COSTTYPE);
             this.stopMiningControls(this.MOVEMENT);
             OreRotations.stop();
@@ -695,7 +881,17 @@ class Bot extends ModuleBase {
 
         if (this.ensureDrillEquipped(this.drill)) return;
 
-        if (this.lastUse + this.ABILITY_COOLDOWN_MS < now) return (this.state = this.STATES.ABILITY);
+        if (!this._pendingAbilityActivation && (this.abilityFromChat || this.lastUse + this.ABILITY_COOLDOWN_MS < now)) {
+            this.scheduleAbilityActivation();
+        }
+        if (this._pendingAbilityActivation && now >= this.abilityActivationAt) {
+            this.stopMiningControls(true);
+            OreRotations.stop();
+            this.state = this.STATES.ABILITY;
+            return;
+        }
+
+        if (this.handleFinishedTimingTarget()) return;
 
         if (this.shouldScanForNewBlock()) {
             if (this.manualScan) {
@@ -767,11 +963,17 @@ class Bot extends ModuleBase {
         const tunnelMode = this.isTunnelMode();
         const precisionMinerAim = this.getPrecisionMinerAim();
         this.miningspeed = ((tunnelMode ? MiningUtils.getSpeedWithCold() : MiningUtils.getMiningSpeed()) || 1) * (precisionMinerAim?.boosted ? 1.3 : 1);
-        this.totalTicks = MiningUtils.getMineTime(this.currentTarget, this.miningspeed, this.speedBoost) + this.glideDelay();
+        const actualSpeed = this.miningSpeedAdaptation ? MiningUtils.getEffectiveMiningSpeed(this.miningspeed, this.speedBoost) : null;
+        const mineTicks = this.miningSpeedAdaptation
+            ? MiningUtils.getMineTimeForBlock(blockName, actualSpeed)
+            : MiningUtils.getMineTime(this.currentTarget, this.miningspeed, this.speedBoost);
+        const lagTicks = this.glideDelay();
+        this.totalTicks = mineTicks + lagTicks;
+        this.updateMiningTiming(mineTicks, actualSpeed, blockName);
 
         this.handleBreaking(blockName, fakeLookMode);
 
-        const timedOut = this.tickCount > this.totalTicks * 2;
+        const timedOut = this.tickCount > (this.miningSpeedAdaptation ? Math.max(this.totalTicks, this.clickTicks) : this.totalTicks) * 2;
         const shouldGlide = this.shouldGlideToNextBlock(blockName);
         if (timedOut && !this.isAirOrBedrock(blockName)) {
             const failedAim = {
@@ -784,6 +986,10 @@ class Bot extends ModuleBase {
             this.currentTarget.aimX = this.currentTarget.aimY = this.currentTarget.aimZ = null;
             if (!this.refreshCurrentTargetAimPoint(failedAim)) this.handleRotationOrScan(false);
         } else if (shouldGlide) {
+            if (this.miningSpeedAdaptation && this.miningTiming?.missed && !this.isAirOrBedrock(blockName)) {
+                this.skippedBlocks.set(`${this.currentTarget.x},${this.currentTarget.y},${this.currentTarget.z}`, now + SKIPPED_BLOCK_RETRY_MS);
+            }
+            this.finishMiningTimingAttempt();
             this.resetTickCounters();
             this.handleRotationOrScan(false);
         }
@@ -878,6 +1084,12 @@ class Bot extends ModuleBase {
     }
 
     collectScanTargets(targetCosts, eyePos, lookVec, scanReach, excludedBlock = null, collectReachableCandidates = true, collectApproachTargets = false) {
+        if (this.miningSpeedAdaptation) {
+            const now = Date.now();
+            for (const [key, expiresAt] of this.skippedBlocks) {
+                if (now >= expiresAt) this.skippedBlocks.delete(key);
+            }
+        }
         const reachableCandidateReach = this.mineReach + this.bfsPad;
         const reachableCandidateReachSq = reachableCandidateReach * reachableCandidateReach;
         const approachReachSq = this.approachScanReach * this.approachScanReach;
@@ -911,6 +1123,7 @@ class Bot extends ModuleBase {
             const z = block.z;
 
             if (excludedBlock && x === excludedBlock.x && y === excludedBlock.y && z === excludedBlock.z) continue;
+            if (this.miningSpeedAdaptation && this.skippedBlocks.has(`${x},${y},${z}`)) continue;
 
             const blockName = block.type.getRegistryName();
             const targetCost = blockName ? targetCosts[blockName] : undefined;
@@ -1382,13 +1595,68 @@ class Bot extends ModuleBase {
         }
     }
 
+    stopRandomMovement() {
+        if (!this.randomMovementKey) return;
+        Client.setKey(this.randomMovementKey, false);
+        this.randomMovementKey = null;
+        this.randomMovementUntil = 0;
+        this.nextRandomMovementAt = Date.now() + this.randomDelayMs(this.randomMovementInterval, 15, 30, 1, 120);
+    }
+
+    resetRandomMovement() {
+        this.stopRandomMovement();
+        this.nextRandomMovementAt = 0;
+    }
+
+    isRandomMovementSafe(key) {
+        if (!Player.getPlayer()?.onGround()) return false;
+        const offset = { w: 0, a: -90, s: 180, d: 90 }[key];
+        const angle = ((Player.getYaw() + offset) * Math.PI) / 180;
+        const x = Player.getX() - Math.sin(angle) * 0.7;
+        const z = Player.getZ() + Math.cos(angle) * 0.7;
+        const y = Math.floor(Player.getY());
+        return this.isSolidBlockAt(x, y - 1, z) && !this.isSolidBlockAt(x, y, z) && !this.isSolidBlockAt(x, y + 1, z);
+    }
+
+    handleRandomMovement() {
+        if (!this.randomMovement) return false;
+        const now = Date.now();
+        if (this.randomMovementKey) {
+            if (now >= this.randomMovementUntil || !this.isRandomMovementSafe(this.randomMovementKey)) {
+                this.stopRandomMovement();
+                return false;
+            }
+        } else {
+            if (!this.nextRandomMovementAt) {
+                this.nextRandomMovementAt = now + this.randomDelayMs(this.randomMovementInterval, 15, 30, 1, 120);
+            }
+            if (now < this.nextRandomMovementAt) return false;
+            const keys = RANDOM_MOVEMENT_KEYS.filter((key) => this.isRandomMovementSafe(key));
+            if (keys.length === 0) {
+                this.nextRandomMovementAt = now + this.randomDelayMs(this.randomMovementInterval, 15, 30, 1, 120);
+                return false;
+            }
+            this.randomMovementKey = keys[Math.floor(Math.random() * keys.length)];
+            this.randomMovementUntil = now + this.randomDelayMs(this.randomMovementDuration, 0.5, 1, 0.1, 5);
+        }
+        for (const key of RANDOM_MOVEMENT_KEYS) Client.setKey(key, key === this.randomMovementKey);
+        Client.setKey('space', false);
+        Client.setKey('sprint', false);
+        this.setSneak(this.sneakWhileMining);
+        return true;
+    }
+
     handleVeinMovement() {
         if (!this.currentTarget) {
+            this.stopRandomMovement();
             Client.stopMovement();
             Client.setKey('space', false);
             this.setSneak(false);
             return;
         }
+
+        if (!this.isApproachTarget() && this.handleRandomMovement()) return;
+        this.stopRandomMovement();
 
         if (!this.MOVEMENT) {
             Client.stopMovement();
@@ -1583,6 +1851,9 @@ class Bot extends ModuleBase {
     }
 
     onEnable() {
+        this.resetMiningTiming();
+        this.cancelPendingAbility();
+        this.resetRandomMovement();
         this.drill = MiningUtils.getDrills()?.drill;
         if (!this.drill) {
             this.message('&cNo drill detected!');
@@ -1621,7 +1892,9 @@ class Bot extends ModuleBase {
         }
 
         this.state = this.STATES.WAITING;
-        this._pendingAbilityActivation = false;
+        this.cancelPendingAbility();
+        this.resetMiningTiming();
+        this.resetRandomMovement();
         Client.stopMovement();
         Client.setKey('space', false);
         this.setSneak(false, true);

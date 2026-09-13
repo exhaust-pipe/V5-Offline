@@ -251,7 +251,10 @@ const keyName = 'Macro Toggle GUI';
 const savedKeycode = Utils.getConfigFile('keybinds.json')?.[keyName] ?? Keyboard.KEY_M;
 const keybind = new KeyBind(keyName, savedKeycode, 'v5_core');
 keybind.registerKeyPress(() => {
-    MacroState.getEnabledMacros().forEach((name) => MacroState.getModule(name)?.toggle(false));
+    MacroState.getEnabledMacros().forEach((name) => {
+        const module = MacroState.getModule(name);
+        if (!module?.isParentManaged || module.allowManualStop === true) module?.toggle(false);
+    });
     macroToggleGui.open();
 });
 register('gameUnload', () => {
