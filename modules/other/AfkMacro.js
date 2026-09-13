@@ -1,5 +1,7 @@
 import { ModuleBase } from '../../utils/ModuleBase';
 import { GLFW } from '../../utils/Constants';
+import { MacroState } from '../../utils/MacroState';
+import { Mouse } from '../../utils/Ungrab';
 
 const MOVE_KEYS = ['w', 'a', 's', 'd'];
 const KEY_MAPPINGS = { w: 'keyUp', a: 'keyLeft', s: 'keyDown', d: 'keyRight', space: 'keyJump', shift: 'keyShift' };
@@ -190,6 +192,7 @@ class AfkMacro extends ModuleBase {
     onEnable() {
         this.session = {};
         this.scheduleAction();
+        Mouse.ungrab();
         this.message('&aEnabled');
     }
 
@@ -200,6 +203,7 @@ class AfkMacro extends ModuleBase {
         this.parent = null;
         this.allowManualStop = false;
         this.session = null;
+        if (!MacroState.isMacroRunning()) Mouse.regrab();
         parent?.onAfkStopped?.();
         this.message('&cDisabled');
     }

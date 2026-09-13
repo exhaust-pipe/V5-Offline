@@ -30,6 +30,7 @@ const STATES = {
     SWITCHING: 'Switching Server',
 };
 const TRAVEL_MODES = ['Walk', 'Fast Etherwarp'];
+const INTENSITY_DECAY_INTERVAL_MS = 10000;
 
 class CommissionMacro extends ModuleBase {
     constructor() {
@@ -55,6 +56,9 @@ class CommissionMacro extends ModuleBase {
         this.currentPathWaypoint = null;
         this.currentPathWaypoints = [];
         this.macroIntensity = 0;
+        this.intensityDecayAmount = 5;
+        this.nextIntensityDecayAt = 0;
+        this.intensityIncreasedThisWindow = false;
         this.intensitySwitchThreshold = 200;
         this.transitionDelay = { low: 1, high: 3 };
         this.occupancyCheckInterval = { low: 5, high: 10 };
@@ -182,7 +186,17 @@ class CommissionMacro extends ModuleBase {
             (value) => {
                 this.intensitySwitchThreshold = Math.max(1, finiteNumber(value, 200));
             },
-            'Switch servers when the failsafe intensity gained since enabling this macro, minus previous switch deductions, exceeds this value. Each successful switch subtracts this threshold.'
+            'Record the increase in failsafe intensity after enabling the macro; once this threshold is exceeded, the server will auto-switch and the recording will restart from zero.'
+        );
+        this.addSlider(
+            'Intensity Decay Amount',
+            0,
+            50,
+            this.intensityDecayAmount,
+            (value) => {
+                this.intensityDecayAmount = Math.max(0, Math.min(50, finiteNumber(value, 5)));
+            },
+            'Reduce accumulated intensity every 10 seconds unless a failsafe intensity increase was received during that interval. Set to 0 to disable decay.'
         );
         this.addRangeSlider(
             'Transition Delay (s)',
@@ -296,6 +310,8 @@ class CommissionMacro extends ModuleBase {
 
     onEnable() {
         this.macroIntensity = 0;
+        this.nextIntensityDecayAt = Date.now() + INTENSITY_DECAY_INTERVAL_MS;
+        this.intensityIncreasedThisWindow = false;
         this.message('&aEnabled');
         this.emissariesUnlocked = true;
 
@@ -335,6 +351,8 @@ class CommissionMacro extends ModuleBase {
 
     onDisable() {
         this.macroIntensity = 0;
+        this.nextIntensityDecayAt = 0;
+        this.intensityIncreasedThisWindow = false;
         this.message('&cDisabled');
         this.resetState();
 
@@ -396,7 +414,23 @@ class CommissionMacro extends ModuleBase {
     }
 
     onFailsafeIntensity(delta) {
-        if (this.enabled) this.macroIntensity += Math.max(0, finiteNumber(delta));
+        const increase = Math.max(0, finiteNumber(delta));
+        if (!this.enabled || increase === 0) return;
+        this.updateIntensityDecay();
+        this.intensityIncreasedThisWindow = true;
+        this.macroIntensity += increase;
+    }
+
+    updateIntensityDecay() {
+        if (!this.enabled || this.nextIntensityDecayAt === 0) return;
+        const now = Date.now();
+        if (now < this.nextIntensityDecayAt) return;
+
+        const elapsedWindows = Math.floor((now - this.nextIntensityDecayAt) / INTENSITY_DECAY_INTERVAL_MS) + 1;
+        const decayWindows = elapsedWindows - (this.intensityIncreasedThisWindow ? 1 : 0);
+        this.macroIntensity = Math.max(0, this.macroIntensity - decayWindows * this.intensityDecayAmount);
+        this.intensityIncreasedThisWindow = false;
+        this.nextIntensityDecayAt += elapsedWindows * INTENSITY_DECAY_INTERVAL_MS;
     }
 
     onWorldTransition() {
@@ -409,7 +443,9 @@ class CommissionMacro extends ModuleBase {
     }
 
     runLogic() {
-        if (!this.enabled || !World.isLoaded() || !Player.getPlayer()) return;
+        if (!this.enabled) return;
+        this.updateIntensityDecay();
+        if (!World.isLoaded() || !Player.getPlayer()) return;
         MiningBot.setCost(MiningBot.mithrilCosts);
 
         if (
