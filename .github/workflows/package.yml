@@ -31,7 +31,7 @@ jobs:
                   set -euo pipefail
 
                   SAFE_TAG="${TAG//\//-}"
-                  ASSET="V5-Offline-${SAFE_TAG}.zip"
+                  ASSET="V5-Offline-Scripts-${SAFE_TAG}.zip"
 
                   python3 - "$ASSET" <<'PY'
                   import pathlib
@@ -83,12 +83,6 @@ jobs:
                       LOADER_URL=""
                   fi
 
-                  if [[ -n "$LOADER_TAG" && -n "$LOADER_URL" ]]; then
-                      DEPENDENCY="need [V5Loader-Offline ${LOADER_TAG}](${LOADER_URL})"
-                  else
-                      DEPENDENCY="need [V5Loader-Offline](https://github.com/exhaust-pipe/V5Loader-Offline/releases/latest)"
-                  fi
-
                   GENERATED="$(
                       gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
                           -f tag_name="$TAG" \
@@ -97,12 +91,17 @@ jobs:
                           2>/dev/null || true
                   )"
 
-                  {
-                      printf '%s\n\n---\n' "$DEPENDENCY"
+                  : > release-notes.md
+                  if [[ -n "$LOADER_TAG" && -n "$LOADER_URL" ]]; then
+                      printf 'need [V5Loader-Offline %s](%s)\n\n---\n' "$LOADER_TAG" "$LOADER_URL" >> release-notes.md
                       if [[ -n "$GENERATED" ]]; then
-                          printf '\n%s\n' "$GENERATED"
+                          printf '\n' >> release-notes.md
                       fi
-                  } > release-notes.md
+                  fi
+
+                  if [[ -n "$GENERATED" ]]; then
+                      printf '%s\n' "$GENERATED" >> release-notes.md
+                  fi
 
                   cat release-notes.md
 
