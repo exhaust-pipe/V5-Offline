@@ -4,6 +4,7 @@ on:
     push:
         branches:
             - '**'
+    workflow_dispatch:
 
 permissions:
     contents: write
@@ -11,7 +12,7 @@ permissions:
 jobs:
     prettier:
         if: github.actor != 'prettier-bot' && github.actor != 'github-actions[bot]'
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         steps:
             - name: Checkout
               uses: actions/checkout@v4
@@ -21,7 +22,7 @@ jobs:
             - name: Setup Node
               uses: actions/setup-node@v4
               with:
-                  node-version: 20
+                  node-version: 22
 
             - name: Cache Prettier
               uses: actions/cache@v4
@@ -30,7 +31,7 @@ jobs:
                   key: ${{ runner.os }}-prettier-cache
 
             - name: Run Prettier
-              run: npx --yes prettier@3 --write "**/*.js"
+              run: npx --yes prettier@3.6.2 --write "**/*.js"
 
             - name: Commit changes
               uses: stefanzweifel/git-auto-commit-action@v5
@@ -38,4 +39,5 @@ jobs:
                   commit_message: 'chore: auto-format with Prettier'
                   commit_user_name: 'prettier-bot'
                   commit_user_email: 'prettier-bot@users.noreply.github.com'
-                  branch: ${{ github.head_ref }}
+                  branch: ${{ github.ref_name }}
+                  file_pattern: '*.js'

@@ -1,0 +1,108 @@
+name: Package Offline Scripts
+
+on:
+    push:
+        branches: ['**']
+    pull_request:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    package:
+        runs-on: ubuntu-24.04
+        steps:
+            - name: Checkout
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+              with:
+                  persist-credentials: false
+
+            - name: Build script ZIP
+              shell: python
+              run: |
+                  import pathlib
+                  import subprocess
+                  import zipfile
+
+                  excluded_dirs = {'.github', '.vscode', '.AI_work'}
+                  excluded_files = {'.gitignore', '.gitattributes', '.prettierrc.json', '.prettierignore', 'jsconfig.json', 'typings.d.ts', 'AGENTS.md'}
+                  files = subprocess.check_output(['git', 'ls-files', '-z']).decode('utf-8').split('\0')
+                  with zipfile.ZipFile('V5-Offline-scripts.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+                      for name in files:
+                          if not name:
+                              continue
+                          path = pathlib.Path(name)
+                          if path.parts[0] in excluded_dirs or name in excluded_files:
+                              continue
+                          archive.write(path, name)
+
+            - name: Upload scripts
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: V5-Offline-scripts
+                  path: V5-Offline-scripts.zip
+                  if-no-files-found: error
+
+    publish:
+        needs: package
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: write
+        concurrency:
+            group: scripts-release
+            cancel-in-progress: false
+        steps:
+            - name: Download scripts
+              uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+              with:
+                  name: V5-Offline-scripts
+                  path: release
+
+            - name: Publish GitHub release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
+                  SHA: ${{ github.sha }}
+              shell: python
+              run: |
+                  import json
+                  import os
+                  import re
+                  import subprocess
+                  import zipfile
+
+                  artifact = 'release/V5-Offline-scripts.zip'
+                  with zipfile.ZipFile(artifact) as archive:
+                      version = json.loads(archive.read('metadata.json'))['version']
+                  if not isinstance(version, str) or not re.fullmatch(r'[0-9A-Za-z][0-9A-Za-z._+-]*', version):
+                      raise ValueError('metadata.json contains an invalid release version')
+
+                  sha = os.environ['SHA']
+                  repository = os.environ['GH_REPO']
+                  pages = json.loads(subprocess.check_output([
+                      'gh', 'api', '--paginate', '--slurp',
+                      f'repos/{repository}/releases?per_page=100',
+                  ], text=True))
+                  pattern = re.compile(re.escape(version) + r'-r([0-9]+)')
+                  revision = 0
+                  tag = None
+                  for page in pages:
+                      for release in page:
+                          match = pattern.fullmatch(release['tag_name'])
+                          if not match:
+                              continue
+                          revision = max(revision, int(match.group(1)))
+                          if release['target_commitish'] == sha:
+                              tag = release['tag_name']
+
+                  if tag is None:
+                      tag = f'{version}-r{revision + 1}'
+                      subprocess.run([
+                          'gh', 'release', 'create', tag, '--target', sha,
+                          '--title', tag, '--generate-notes',
+                      ], check=True)
+                  subprocess.run([
+                      'gh', 'release', 'upload', tag, artifact, '--clobber',
+                  ], check=True)
