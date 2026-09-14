@@ -1,0 +1,128 @@
+name: Release Scripts
+
+on:
+    push:
+        tags:
+            - '*'
+
+permissions:
+    contents: write
+
+concurrency:
+    group: release-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    release:
+        runs-on: ubuntu-24.04
+
+        steps:
+            - name: Checkout tag
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+              with:
+                  persist-credentials: false
+
+            - name: Build cleaned script ZIP
+              id: package
+              env:
+                  TAG: ${{ github.ref_name }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  SAFE_TAG="${TAG//\//-}"
+                  ASSET="V5-Offline-Scripts-${SAFE_TAG}.zip"
+
+                  python3 - "$ASSET" <<'PY'
+                  import pathlib
+                  import subprocess
+                  import sys
+                  import zipfile
+
+                  output = sys.argv[1]
+                  excluded_dirs = {'.github', '.vscode', '.AI_work'}
+                  excluded_files = {
+                      '.gitignore',
+                      '.gitattributes',
+                      '.prettierrc.json',
+                      '.prettierignore',
+                      'jsconfig.json',
+                      'typings.d.ts',
+                      'AGENTS.md',
+                  }
+
+                  files = subprocess.check_output(['git', 'ls-files', '-z']).decode('utf-8').split('\0')
+                  with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+                      for name in files:
+                          if not name:
+                              continue
+                          path = pathlib.Path(name)
+                          if path.parts[0] in excluded_dirs or name in excluded_files:
+                              continue
+                          archive.write(path, name)
+                  PY
+
+                  test -s "$ASSET"
+                  echo "path=$ASSET" >> "$GITHUB_OUTPUT"
+
+            - name: Prepare release notes
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  TAG: ${{ github.ref_name }}
+                  SHA: ${{ github.sha }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  LOADER_JSON="$(gh api repos/exhaust-pipe/V5Loader-Offline/releases/latest 2>/dev/null || true)"
+                  if [[ -n "$LOADER_JSON" ]]; then
+                      LOADER_TAG="$(jq -r '.tag_name // empty' <<<"$LOADER_JSON")"
+                      LOADER_URL="$(jq -r '.html_url // empty' <<<"$LOADER_JSON")"
+                  else
+                      LOADER_TAG=""
+                      LOADER_URL=""
+                  fi
+
+                  GENERATED="$(
+                      gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+                          -f tag_name="$TAG" \
+                          -f target_commitish="$SHA" \
+                          --jq '.body // ""' \
+                          2>/dev/null || true
+                  )"
+
+                  : > release-notes.md
+                  if [[ -n "$LOADER_TAG" && -n "$LOADER_URL" ]]; then
+                      printf 'need [V5Loader-Offline %s](%s)\n\n---\n' "$LOADER_TAG" "$LOADER_URL" >> release-notes.md
+                      if [[ -n "$GENERATED" ]]; then
+                          printf '\n' >> release-notes.md
+                      fi
+                  fi
+
+                  if [[ -n "$GENERATED" ]]; then
+                      printf '%s\n' "$GENERATED" >> release-notes.md
+                  fi
+
+                  cat release-notes.md
+
+            - name: Publish GitHub release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  TAG: ${{ github.ref_name }}
+                  ASSET: ${{ steps.package.outputs.path }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  if RELEASE_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.id' 2>/dev/null)"; then
+                      BODY="$(cat release-notes.md)"
+                      gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+                          -f name="$TAG" \
+                          -f body="$BODY" >/dev/null
+                      gh release upload "$TAG" "$ASSET" --clobber
+                  else
+                      gh release create "$TAG" "$ASSET" \
+                          --verify-tag \
+                          --title "$TAG" \
+                          --notes-file release-notes.md
+                  fi
