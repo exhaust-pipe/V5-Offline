@@ -43,6 +43,7 @@ export class ModuleBase {
         this.hexCode = null;
         this.hideInModules = opts.hideInModules === true;
         this.isMacro = opts.isMacro === true;
+        this.autoDisableOnWorldUnload = opts.autoDisableOnWorldUnload === true;
         this.showEnabledToggle = opts.showEnabledToggle ?? !this.isMacro;
         this.setTheme(opts.theme || ModuleBase.getDefaultTheme(this.subcategory));
 
@@ -61,7 +62,7 @@ export class ModuleBase {
         }
 
         if (opts.autoDisableOnWorldUnload) {
-            register('worldUnload', () => this.toggle(false));
+            register('worldUnload', () => this.toggle(false, this.isParentManaged, 'world-unload'));
         }
 
         if (opts.isMacro && opts.recoverFromLimbo !== false) {
@@ -191,6 +192,7 @@ export class ModuleBase {
 
             this.isParentManaged = false;
         }
+        if (this.isMacro) MacroState.notifyModuleChange(this, this.enabled, toggleContext);
     }
 
     setTheme(hexCode) {

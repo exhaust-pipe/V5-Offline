@@ -1,16 +1,11 @@
 import { OverlayManager } from '../../gui/OverlayUtils';
+import { GameState } from '../../utils/GameState';
 import { MacroState } from '../../utils/MacroState';
 import { ModuleBase } from '../../utils/ModuleBase';
-import { TimeUtils, Timer } from '../../utils/TimeUtils';
+import { TimeUtils } from '../../utils/TimeUtils';
 import { Utils } from '../../utils/Utils';
 
-const STATE = {
-    IDLE: 'Idle',
-    RUNNING: 'Running',
-    RESTING: 'Resting',
-    RETURNING: 'Returning',
-    PAUSED: 'Paused',
-};
+const STATE = { IDLE: 'Idle', RUNNING: 'Running', PAUSED: 'Paused', RESTING: 'Resting', RETURNING: 'Returning', WORLD: 'Changing world' };
 
 class MacroScheduler extends ModuleBase {
     constructor() {
@@ -21,447 +16,379 @@ class MacroScheduler extends ModuleBase {
             theme: '#7c8cff',
             hideInModules: true,
         });
-
         this.macroTimeMin = 80;
         this.macroTimeMax = 140;
         this.breakTimeMin = 50;
         this.breakTimeMax = 100;
-
+        this.restoreAfterWorldChange = false;
+        this.restoreAfterDisconnect = false;
         this.configPath = 'scheduler_data.json';
         this.state = STATE.IDLE;
-        this.trackedMacros = [];
+        this.candidates = new Map();
         this.timerEnd = 0;
-        this.breakDurationMs = 0;
+        this.remainingMs = 0;
+        this.server = '';
         this.returnStep = 0;
+        this.readyAt = 0;
         this.overlayShown = false;
-        this.pausedRemainingMs = 0;
+        this.manualHold = false;
+        this.disconnectRequested = false;
+        this.generation = 0;
 
-        this.worldUnloadTimer = new Timer();
-
-        const sectionName = 'Scheduler';
-        this.addDirectToggle('Enable Scheduler', (v) => this.toggle(!!v), 'Toggles the scheduler.', true, sectionName);
+        const section = 'Scheduler';
+        this.addDirectToggle('Enable Scheduler', (value) => this.toggle(!!value), 'Toggles the scheduler.', true, section);
+        this.addDirectToggle(
+            'Restore After World Change',
+            (value) => {
+                this.restoreAfterWorldChange = !!value;
+            },
+            'Resume macros automatically stopped by changing worlds or server transfers. Applies to pending recovery immediately.',
+            false,
+            section
+        );
+        this.addDirectToggle(
+            'Restore After Disconnect',
+            (value) => {
+                this.restoreAfterDisconnect = !!value;
+            },
+            'Also resume world-unload-sensitive macros after scheduled breaks or unexpected disconnects. Manual disconnects and bans never resume macros.',
+            false,
+            section
+        );
         this.addDirectRangeSlider(
             'Macro Duration (m)',
             10,
             240,
-            { low: this.macroTimeMin, high: this.macroTimeMax },
-            (v) => {
-                this.macroTimeMin = v.low;
-                this.macroTimeMax = v.high;
+            { low: 80, high: 140 },
+            (value) => {
+                this.macroTimeMin = value.low;
+                this.macroTimeMax = value.high;
             },
-            'Minimum session duration.',
-            sectionName
+            'Minimum and maximum session duration.',
+            section
         );
         this.addDirectRangeSlider(
             'Break Duration (m)',
             10,
             180,
-            { low: this.breakTimeMin, high: this.breakTimeMax },
-            (v) => {
-                this.breakTimeMin = v.low;
-                this.breakTimeMax = v.high;
+            { low: 50, high: 100 },
+            (value) => {
+                this.breakTimeMin = value.low;
+                this.breakTimeMax = value.high;
             },
-            'Minimum break duration.',
-            sectionName
+            'Minimum and maximum break duration.',
+            section
         );
-
         this.createSchedulerOverlay([
             {
                 title: 'Scheduler',
                 data: {
                     Status: () => this.state,
                     'Time Left': () => this.formatTimeLeft(),
-                    Active: () => this.getActiveMacroDisplay(),
+                    Active: () => this.getSchedulableMacros().join(', ') || 'None',
+                    Resume: () => this.getRecoveryNames().join(', ') || 'None',
                 },
             },
         ]);
 
         this.loadState();
+        GameState.subscribe((event) => this.onGameState(event), 100);
+        MacroState.subscribe((event) => this.onMacroChange(event));
         register('gameUnload', () => this.saveState());
         this.on('step', () => this.tick()).setFps(20);
     }
 
     loadState() {
         const data = Utils.getConfigFile(this.configPath);
-        if (!data) return;
-
-        const savedState = Object.values(STATE).includes(data.state) ? data.state : STATE.IDLE;
-        this.state = savedState === STATE.PAUSED ? STATE.IDLE : savedState;
-        this.trackedMacros = Array.isArray(data.trackedMacros) ? data.trackedMacros.filter((v) => typeof v === 'string') : [];
+        // Old trackedMacros mixed running state with recovery intent and cannot be migrated safely.
+        if (data?.version !== 2 || ![STATE.RESTING, STATE.RETURNING].includes(data.state)) return;
+        if (typeof data.server !== 'string' || !data.server) return;
+        this.server = data.server;
+        this.state = data.state;
         this.timerEnd = Number.isFinite(data.timerEnd) ? data.timerEnd : 0;
-        this.breakDurationMs = Number.isFinite(data.breakDurationMs) ? data.breakDurationMs : 0;
-        this.returnStep = Number.isFinite(data.returnStep) ? Math.max(0, Math.min(3, data.returnStep)) : 0;
+        this.remainingMs = Number.isFinite(data.remainingMs) ? Math.max(0, data.remainingMs) : 0;
+        (Array.isArray(data.candidates) ? data.candidates : []).forEach((entry) => {
+            if (typeof entry?.name === 'string')
+                this.candidates.set(entry.name, { ...entry, recoveryKind: entry.recoveryKind === 'world' ? 'world' : 'disconnect', persisted: true });
+        });
+        if (!this.candidates.size) this.state = STATE.IDLE;
     }
 
     saveState() {
         Utils.writeConfigFile(this.configPath, {
+            version: 2,
             state: this.state,
-            trackedMacros: this.trackedMacros,
+            server: this.server,
             timerEnd: this.timerEnd,
-            breakDurationMs: this.breakDurationMs,
-            returnStep: this.returnStep,
+            remainingMs: this.remainingMs,
+            candidates: Array.from(this.candidates.values()).map(({ name, worldStopped, recoveryKind, token }) => ({
+                name,
+                worldStopped,
+                recoveryKind,
+                token,
+            })),
         });
     }
 
     onEnable() {
-        const now = Date.now();
-        if (this.state !== STATE.IDLE && this.trackedMacros.length === 0) {
-            this.state = STATE.IDLE;
-            this.timerEnd = 0;
-            this.returnStep = 0;
-            this.pausedRemainingMs = 0;
-        }
-
-        if (this.state === STATE.RUNNING && now >= this.timerEnd) {
-            this.endSession();
-        } else if (this.state === STATE.RESTING && now >= this.timerEnd) {
-            this.beginReturn();
-        }
-        this.saveState();
-        if (this.state === STATE.IDLE) {
-            OverlayManager.resetTime(this.oid);
-            this.overlayShown = false;
-        } else {
-            this.updateOverlay();
-        }
+        const event = GameState.current;
+        if (event.state === 'DISCONNECTED' && ['manual', 'banned'].includes(event.cause)) this.cancelRecovery(true);
+        if (event.state === 'PLAYING') this.readyAt = Date.now() + 5000;
+        this.updateOverlay();
         this.message('&aStarted.');
     }
 
     onDisable() {
-        this.saveState();
-        OverlayManager.resetTime(this.oid);
-        this.overlayShown = false;
+        this.cancelRecovery();
+        this.updateOverlay();
         this.message('&cStopped.');
     }
 
-    tick() {
+    isRecovering() {
+        return [STATE.RESTING, STATE.RETURNING, STATE.WORLD].includes(this.state);
+    }
+
+    onGameState(event) {
         if (!this.enabled) return;
-        this.updateOverlay();
-
-        switch (this.state) {
-            case STATE.IDLE:
-                this.handleIdle();
-                break;
-            case STATE.RUNNING:
-                this.handleRunning();
-                break;
-            case STATE.PAUSED:
-                this.handlePaused();
-                break;
-            case STATE.RESTING:
-                this.handleResting();
-                break;
-            case STATE.RETURNING:
-                this.handleReturning();
-                break;
-        }
-    }
-
-    updateOverlay() {
-        const shouldShow = this.state !== STATE.IDLE && this.state !== STATE.PAUSED;
-        if (shouldShow && !this.overlayShown) {
-            OverlayManager.startTime(this.oid, true);
-            this.overlayShown = true;
-        } else if (!shouldShow && this.overlayShown) {
-            OverlayManager.resetTime(this.oid);
-            this.overlayShown = false;
-        }
-    }
-
-    handleIdle() {
-        const enabled = this.getSchedulableMacros();
-
-        if (enabled.length > 0) {
-            this.trackedMacros = [...enabled];
-            this.beginSession();
-        }
-    }
-
-    handleRunning() {
-        const now = Date.now();
-        const enabled = this.getSchedulableMacros();
-
-        if (enabled.length === 0) {
-            this.pauseSession();
+        if (
+            (event.state === 'DISCONNECTED' && ['manual', 'banned'].includes(event.cause)) ||
+            (event.state === 'CONNECTING' && event.cause !== 'transfer' && event.source !== 'scheduler')
+        ) {
+            this.cancelRecovery(true);
+            if (event.cause === 'banned') this.message('&cBan detected. Automatic recovery cancelled.');
             return;
         }
-
-        const trackedSet = new Set(this.trackedMacros);
-        if (enabled.length !== this.trackedMacros.length || enabled.some((m) => !trackedSet.has(m))) {
-            this.trackedMacros = [...enabled];
-            this.saveState();
-        }
-
-        if (now >= this.timerEnd) {
-            this.endSession();
+        if (event.state === 'PLAYING') {
+            this.server = event.server || this.server;
+            this.readyAt = Date.now() + 5000;
             return;
         }
-
-        if (!World.isLoaded()) {
-            if (!this.worldUnloadTimer.running) this.worldUnloadTimer.setDelayRandom(7000, 13000);
+        if (this.manualHold) return;
+        if (event.state === 'TRANSITION') {
+            this.generation++;
+            this.readyAt = 0;
+            if (this.state === STATE.RUNNING) {
+                this.remainingMs = Math.max(0, this.timerEnd - Date.now());
+                this.state = STATE.WORLD;
+            }
+            return;
+        }
+        if (event.state !== 'DISCONNECTED') return;
+        if (!this.getSchedulableMacros().length && !this.isRecovering()) return;
+        if (this.state === STATE.RUNNING) this.remainingMs = Math.max(0, this.timerEnd - Date.now());
+        this.server = event.server || this.server;
+        this.disconnectRequested = false;
+        this.readyAt = 0;
+        this.returnStep = 0;
+        this.generation++;
+        if (event.cause === 'script') {
+            this.state = STATE.RESTING;
+            this.remainingMs = 0;
+            this.timerEnd = Date.now() + this.randomDuration(this.breakTimeMin, this.breakTimeMax);
+            this.message(`&eResting for ${TimeUtils.formatDurationMs(this.timerEnd - Date.now())}.`);
         } else {
-            this.worldUnloadTimer.reset();
+            this.state = STATE.RETURNING;
+            this.timerEnd = Date.now() + 7000 + Math.random() * 6000;
+            this.message('&eUnexpected disconnect. Recovery scheduled.');
         }
-
-        if (this.worldUnloadTimer.hasReachedDelay()) {
-            this.worldUnloadTimer.reset();
-            this.message('&eConnecting to Hypixel...');
-            Client.connect('mc.hypixel.net');
-        }
-    }
-
-    pauseSession() {
-        this.pausedRemainingMs = Math.max(0, this.timerEnd - Date.now());
-        this.timerEnd = 0;
-        this.state = STATE.PAUSED;
         this.saveState();
+    }
+
+    onMacroChange({ module, enabled, context, meta }) {
         this.updateOverlay();
-    }
-
-    handlePaused() {
-        const enabled = this.getSchedulableMacros();
-
-        if (enabled.length > 0) {
-            this.trackedMacros = [...enabled];
-            this.timerEnd = Date.now() + this.pausedRemainingMs;
-            this.pausedRemainingMs = 0;
-            this.state = STATE.RUNNING;
+        if (!this.enabled || !module.isMacro) return;
+        if (enabled) {
+            if (context === 'scheduler' || module.isParentManaged) return;
+            if (this.isRecovering()) this.cancelRecovery();
+            this.candidates.delete(module.name);
+            this.manualHold = false;
+            return;
+        }
+        if (meta?.isParentManaged) return;
+        const automatic = ['world-unload', 'game-state', 'disconnect'].includes(context);
+        if (automatic && this.isRecovering() && !this.manualHold) {
+            this.candidates.set(module.name, {
+                name: module.name,
+                worldStopped: module.autoDisableOnWorldUnload || context === 'world-unload',
+                recoveryKind: meta.gameState.state === 'DISCONNECTED' ? 'disconnect' : 'world',
+                meta,
+                token: `${meta.timestamp}:${meta.gameState.id}`,
+            });
             this.saveState();
-            this.updateOverlay();
+        } else if (!automatic) {
+            this.candidates.delete(module.name);
+            this.saveState();
         }
     }
 
-    handleResting() {
-        if (Date.now() >= this.timerEnd) {
-            if (this.trackedMacros.length === 0) {
-                this.state = STATE.IDLE;
-                this.timerEnd = 0;
-                this.saveState();
-                this.updateOverlay();
-                return;
-            }
-            this.beginReturn();
-        }
+    getRecoveryNames() {
+        return Array.from(this.candidates.values())
+            .filter((entry) => {
+                const module = MacroState.getModule(entry.name);
+                return (
+                    module?.isMacro &&
+                    !module.isParentManaged &&
+                    (!entry.persisted || module.resumeAfterReload !== false) &&
+                    (!(entry.worldStopped || module.autoDisableOnWorldUnload) ||
+                        (entry.recoveryKind === 'world' ? this.restoreAfterWorldChange : this.restoreAfterDisconnect)) &&
+                    (entry.persisted || MacroState.getLastDisableMeta(entry.name) === entry.meta)
+                );
+            })
+            .map((entry) => entry.name);
     }
 
-    handleReturning() {
+    getRecoveryToken(name) {
+        return this.enabled && this.isRecovering() ? this.candidates.get(name)?.token || null : null;
+    }
+
+    cancelScheduledMacro(name) {
+        if (!this.enabled || !this.isRecovering() || !this.candidates.has(name)) return false;
+        this.candidates.delete(name);
+        if (!this.candidates.size) this.cancelRecovery();
+        else this.saveState();
+        this.message(`&e${name} recovery cancelled.`);
+        return true;
+    }
+
+    cancelRecovery(manual = false) {
+        this.generation++;
+        this.state = STATE.IDLE;
+        this.candidates.clear();
+        this.timerEnd = 0;
+        this.remainingMs = 0;
+        this.returnStep = 0;
+        this.readyAt = 0;
+        this.disconnectRequested = false;
+        this.manualHold = manual;
+        this.saveState();
+    }
+
+    tick() {
+        this.updateOverlay();
         const now = Date.now();
-
-        if (this.returnStep === 0) {
-            if (World.isLoaded()) {
+        if ([STATE.IDLE, STATE.PAUSED].includes(this.state)) {
+            if (!this.manualHold && this.isWorldReady() && GameState.current.server && this.getSchedulableMacros().length) this.beginSession();
+            return;
+        }
+        if (this.state === STATE.RUNNING) {
+            if (!this.getSchedulableMacros().length) {
+                this.remainingMs = Math.max(0, this.timerEnd - now);
+                this.state = STATE.PAUSED;
+                this.saveState();
+            } else if (now >= this.timerEnd && !this.disconnectRequested) {
+                this.disconnectRequested = true;
+                const generation = this.generation;
+                Client.scheduleTask(() => {
+                    if (this.enabled && generation === this.generation && this.state === STATE.RUNNING)
+                        GameState.disconnect('Scheduler: taking a break', 'scheduler');
+                });
+            }
+            return;
+        }
+        if (this.state === STATE.WORLD) {
+            if (this.isWorldReady() && this.readyAt && now >= this.readyAt) this.restoreMacros();
+            return;
+        }
+        if (this.state === STATE.RESTING) {
+            if (now < this.timerEnd) return;
+            this.state = STATE.RETURNING;
+            this.returnStep = 0;
+            this.saveState();
+        }
+        if (!this.getRecoveryNames().length && now >= this.timerEnd) {
+            this.cancelRecovery();
+            return;
+        }
+        if (this.isWorldReady()) {
+            if (!this.readyAt || now < this.readyAt) return;
+            if (this.isHypixel() && !this.isSkyblock()) {
+                if (now < this.timerEnd && this.returnStep === 2) return;
                 this.returnStep = 2;
-                this.timerEnd = now + 5000;
-                this.saveState();
+                this.timerEnd = now + 15000;
+                const generation = this.generation;
+                Client.scheduleTask(() => {
+                    if (this.enabled && this.generation === generation && this.isWorldReady()) ChatLib.command('play skyblock');
+                });
                 return;
             }
-            this.message('&eConnecting to Hypixel...');
-            Client.connect('mc.hypixel.net');
-            this.returnStep = 1;
-            this.timerEnd = now + 12000;
-            this.saveState();
+            this.restoreMacros();
             return;
         }
+        if (now < this.timerEnd || !this.server) return;
+        this.timerEnd = now + 30000;
+        this.returnStep = 1;
+        const generation = this.generation;
+        Client.scheduleTask(() => {
+            if (this.enabled && this.generation === generation && this.state === STATE.RETURNING && !World.isLoaded())
+                GameState.connect(this.server, 'scheduler');
+        });
+        this.saveState();
+    }
 
-        if (this.returnStep === 1) {
-            if (!World.isLoaded()) {
-                if (now < this.timerEnd) return;
-                this.message('&eRetrying connection...');
-                Client.connect('mc.hypixel.net');
-                this.timerEnd = now + 12000;
+    restoreMacros() {
+        const generation = this.generation;
+        const worldEventId = GameState.current.id;
+        const names = this.getRecoveryNames();
+        this.readyAt = Date.now() + 5000;
+        Client.scheduleTask(() => {
+            if (!this.enabled || generation !== this.generation || worldEventId !== GameState.current.id || !this.isWorldReady()) return;
+            names.forEach((name) => {
+                if (generation !== this.generation) return;
+                if (!this.getRecoveryNames().includes(name)) return;
+                const module = MacroState.getModule(name);
+                if (!module.enabled) module.toggle(true, false, 'scheduler');
+            });
+            if (generation !== this.generation) return;
+            this.candidates.clear();
+            if (this.getSchedulableMacros().length) this.beginSession();
+            else {
+                this.state = STATE.PAUSED;
                 this.saveState();
-                return;
             }
-            this.returnStep = 2;
-            this.timerEnd = now + 5000;
-            this.saveState();
-            return;
-        }
-
-        if (this.returnStep === 2) {
-            if (now < this.timerEnd) return;
-            this.message('&eJoining Skyblock...');
-            ChatLib.command('play skyblock');
-            this.returnStep = 3;
-            this.timerEnd = Date.now() + 3000;
-            this.saveState();
-            return;
-        }
-
-        if (this.returnStep === 3) {
-            if (now < this.timerEnd) return;
-            this.message('&aStarting macros.');
-            this.startTrackedMacros();
-            this.sendSchedulerConnectEmbed();
-            this.beginSession();
-        }
+        });
     }
 
     beginSession() {
         this.state = STATE.RUNNING;
-        const duration = this.randomDuration(this.macroTimeMin, this.macroTimeMax);
-        this.timerEnd = Date.now() + duration;
+        this.timerEnd = Date.now() + (this.remainingMs || this.randomDuration(this.macroTimeMin, this.macroTimeMax));
+        this.remainingMs = 0;
         this.returnStep = 0;
+        this.disconnectRequested = false;
+        this.server = GameState.current.server || this.server;
         this.saveState();
-        this.updateOverlay();
     }
 
-    endSession() {
-        this.breakDurationMs = this.randomDuration(this.breakTimeMin, this.breakTimeMax);
-        const breakTime = TimeUtils.formatDurationMs(this.breakDurationMs);
-        const cleanBreakTime = breakTime.includes(' ') ? breakTime.replace(/ (?=[^ ]+$)/, ' and ') : breakTime;
-
-        this.stopTrackedMacros();
-        this.sendSchedulerDisconnectEmbed(cleanBreakTime);
-
-        const reason = `Scheduler: Resting for ${cleanBreakTime}`;
-        this.disconnect(reason);
-
-        this.state = STATE.RESTING;
-        this.timerEnd = Date.now() + this.breakDurationMs;
-        this.saveState();
-        this.updateOverlay();
+    isWorldReady() {
+        return GameState.current.state === 'PLAYING' && World.isLoaded() && !!Player.getPlayer();
     }
 
-    beginReturn() {
-        this.state = STATE.RETURNING;
-        this.returnStep = 0;
-        this.saveState();
-        this.updateOverlay();
+    isHypixel() {
+        return /(^|\.)hypixel\.net(?::\d+)?$/i.test(this.server);
     }
 
-    cancelScheduledMacro(macroName) {
-        if (!macroName || !this.enabled) return false;
-        if (this.state !== STATE.RESTING && this.state !== STATE.RETURNING) return false;
-
-        const index = this.trackedMacros.indexOf(macroName);
-        if (index === -1) return false;
-
-        this.trackedMacros.splice(index, 1);
-
-        if (this.trackedMacros.length === 0) {
-            this.state = STATE.IDLE;
-            this.timerEnd = 0;
-            this.breakDurationMs = 0;
-            this.returnStep = 0;
-            this.message(`&e${macroName} disabled.`);
-        } else {
-            this.message(`&e${macroName} disabled, ${this.trackedMacros.length} others remaining.`);
-        }
-
-        this.saveState();
-        this.updateOverlay();
-        return true;
-    }
-
-    startTrackedMacros() {
-        this.trackedMacros.forEach((name) => {
-            const module = MacroState.getModule(name);
-            if (module && module.isMacro && !module.enabled) module.toggle(true, false, 'scheduler');
-        });
-    }
-
-    stopTrackedMacros() {
-        this.trackedMacros.forEach((name) => {
-            const module = MacroState.getModule(name);
-            if (module && module.isMacro) module.toggle(false, true, 'scheduler');
-        });
-    }
-
-    sendSchedulerDisconnectEmbed(cleanBreakTime) {
-        const lines = [];
-
-        this.trackedMacros.forEach((name) => {
-            const meta = MacroState.getLastDisableMeta(name);
-            if (!meta || meta.context !== 'scheduler') return;
-
-            const macroLines = [];
-            const runtime = MacroState.getModuleDuration(name);
-            if (runtime) macroLines.push(`Runtime: ${runtime}`);
-
-            const stats = this.getMacroOverlayStats(name);
-            if (stats.length) macroLines.push(...stats.slice(0, 4));
-
-            lines.push('**' + name + '**' + (macroLines.length ? '\n' + macroLines.join('\n') : ''));
-        });
-
-        const description = [`Break Time: ${cleanBreakTime}`, lines.length ? lines.join('\n\n') : 'No macro stats available.'].join('\n\n');
-        this.sendSchedulerEmbed('Scheduler Disconnected', description, 0xe67e22);
-    }
-
-    sendSchedulerConnectEmbed() {
-        const macroList = this.trackedMacros.length ? this.trackedMacros.join(', ') : 'None';
-        this.sendSchedulerEmbed('Scheduler Connected', `Resuming macros: ${macroList}`, 0x2ecc71);
-    }
-
-    sendSchedulerEmbed(title, description, color) {}
-
-    getMacroOverlayStats(macroName) {
-        const module = MacroState.getModule(macroName);
-        if (!module) return [];
-
-        const overlayName = module.oid || macroName;
-        const overlay = Array.isArray(OverlayManager.ids) ? OverlayManager.ids.find((id) => id && id.name === overlayName) : null;
-        if (!overlay || !Array.isArray(overlay.sections)) return [];
-
-        const lines = [];
-        overlay.sections.forEach((section) => {
-            const data = section && section.data ? section.data : null;
-            if (!data || typeof data !== 'object') return;
-
-            Object.entries(data).forEach(([key, value]) => {
-                try {
-                    const resolved = typeof value === 'function' ? value() : value;
-                    if (resolved === undefined || resolved === null || String(resolved).trim() === '') return;
-                    lines.push(`${key}: ${resolved}`);
-                } catch (e) {
-                    console.error('V5 Caught error' + e + e.stack);
-                }
-            });
-        });
-
-        return lines;
+    isSkyblock() {
+        return ChatLib.removeFormatting(String(Scoreboard.getTitle())).includes('SKYBLOCK');
     }
 
     getSchedulableMacros() {
-        return MacroState.getEnabledMacros().filter((name) => {
-            const module = MacroState.getModule(name);
-            return module && module.isMacro && !module.isParentManaged;
-        });
+        return MacroState.getEnabledMacros().filter((name) => !MacroState.getModule(name)?.isParentManaged);
     }
 
-    disconnect(reason) {
-        try {
-            const mc = Client.getMinecraft();
-            if (mc.getConnection()) {
-                const text = net.minecraft.network.chat.Component.literal(String(reason ?? ''));
-                mc.getConnection().getConnection().disconnect(text);
-            }
-        } catch (e) {
-            console.error('Scheduler disconnect error:', e);
-        }
+    randomDuration(min, max) {
+        return (Math.min(min, max) + Math.random() * Math.abs(max - min)) * 60000;
     }
 
-    randomDuration(minMinutes, maxMinutes) {
-        const min = Math.min(minMinutes, maxMinutes);
-        const max = Math.max(minMinutes, maxMinutes);
-        return (min + Math.random() * (max - min)) * 60000;
+    updateOverlay() {
+        const visible = this.enabled && this.getSchedulableMacros().length > 0 && ![STATE.IDLE, STATE.PAUSED].includes(this.state);
+        if (visible && !this.overlayShown) OverlayManager.startTime(this.oid, true);
+        else if (!visible && (this.overlayShown || OverlayManager.startTimes[this.oid] !== undefined)) OverlayManager.resetTime(this.oid);
+        this.overlayShown = visible;
     }
 
     formatTimeLeft() {
-        if (this.state === STATE.IDLE) return 'Waiting';
-
-        const remaining = this.state === STATE.PAUSED ? Math.max(0, this.pausedRemainingMs) : Math.max(0, this.timerEnd - Date.now());
-        const timeStr = TimeUtils.formatDurationMs(remaining);
-
-        if (this.state === STATE.RETURNING) return `Returning (${timeStr})`;
-        if (this.state === STATE.PAUSED) return `Paused (${timeStr})`;
-        return timeStr;
-    }
-
-    getActiveMacroDisplay() {
-        if (this.trackedMacros.length === 0) return 'None';
-        if (this.trackedMacros.length === 1) return this.trackedMacros[0];
-        return `${this.trackedMacros[0]} +${this.trackedMacros.length - 1}`;
+        if (this.state === STATE.IDLE) return this.manualHold ? 'Manual control' : 'Waiting';
+        if (this.state === STATE.WORLD) return 'Waiting for world';
+        return TimeUtils.formatDurationMs(Math.max(0, this.state === STATE.PAUSED ? this.remainingMs : this.timerEnd - Date.now()));
     }
 }
 

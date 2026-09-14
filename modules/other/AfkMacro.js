@@ -28,6 +28,7 @@ class AfkMacro extends ModuleBase {
         this.parent = null;
         this.allowManualStop = false;
         this.session = null;
+        this.resumeAfterReload = false;
         this.heldKeys = new Set();
 
         this.bindToggleKey();
@@ -116,12 +117,14 @@ class AfkMacro extends ModuleBase {
     }
 
     getStatus() {
+        if (!this.enabled) return 'Disabled';
         if (!World.isLoaded() || !Player.getPlayer()) return 'Waiting for world';
         if (Client.isInGui()) return 'Paused in GUI';
         return this.moveKey ? 'Moving' : 'Idle';
     }
 
     getNextAction() {
+        if (!this.enabled) return 'Off';
         if (!this.randomMovement && !this.randomJump) return 'Off';
         return `${Math.max(0, Math.ceil((this.nextActionAt - Date.now()) / 1000))}s`;
     }

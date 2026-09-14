@@ -1,6 +1,7 @@
 import { Chat } from './Chat';
 import { TimeUtils } from './TimeUtils';
 import { Utils } from './Utils';
+import { GameState } from './GameState';
 
 class MacroStateClass {
     constructor() {
@@ -18,6 +19,31 @@ class MacroStateClass {
         this.lastMacroToggleKey = null;
         this.hasBoundLastMacroToggleKey = false;
         this.lastMacroToggleTitle = 'Global Toggle Last Used Macro';
+        this.listeners = [];
+        GameState.subscribe((event) => {
+            if (event.state !== 'DISCONNECTED') return;
+            const running = this.getEnabledMacros().map((name) => this.getModule(name));
+            running.sort((a, b) => Number(a.isParentManaged) - Number(b.isParentManaged));
+            running.forEach((module) => module.toggle(false, module.isParentManaged, 'game-state'));
+        });
+    }
+
+    subscribe(callback) {
+        this.listeners.push(callback);
+        return () => {
+            this.listeners = this.listeners.filter((listener) => listener !== callback);
+        };
+    }
+
+    notifyModuleChange(module, enabled, context) {
+        const event = { module, enabled, context, meta: enabled ? null : this.getLastDisableMeta(module.name) };
+        this.listeners.slice().forEach((listener) => {
+            try {
+                listener(event);
+            } catch (e) {
+                console.error(`Macro lifecycle listener: ${e}\n${e.stack}`);
+            }
+        });
     }
 
     getLastActiveMacro() {
@@ -155,6 +181,8 @@ class MacroStateClass {
         const now = Date.now();
         return {
             context: context || 'user',
+            gameState: GameState.current,
+            isParentManaged: this.getModule(moduleName)?.isParentManaged === true,
             timestamp: now,
             durationMs: startTime ? now - startTime : 0,
         };

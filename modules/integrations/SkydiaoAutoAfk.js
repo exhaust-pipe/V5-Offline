@@ -1,4 +1,5 @@
 import { OverlayManager } from '../../gui/OverlayUtils';
+import { GuiState } from '../../gui/core/GuiState';
 import { MacroState } from '../../utils/MacroState';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { Afk } from '../other/AfkMacro';
@@ -26,6 +27,7 @@ class SkydiaoAutoAfk extends ModuleBase {
         this.threshold = 20;
         this.previousMacros = [];
         this.afkSession = null;
+        this.recoveryToken = null;
         this.pendingTotals = [];
         this.lastTotal = null;
         this.addSlider(
@@ -56,12 +58,51 @@ class SkydiaoAutoAfk extends ModuleBase {
             if (total !== null) this.pendingTotals.push(total);
         });
         this.on('tick', () => this.tick());
-        this.on('serverDisconnect', () => this.clearSession());
+        this.on('guiOpened', () => {
+            if (GuiState.macroToggleOpen) this.clearSession();
+        });
+        MacroState.subscribe((event) => this.onMacroChange(event));
+        this.on('step', () => {
+            if (this.recoveryToken && this.recoveryToken !== this.getScheduledAfkToken()) this.clearSession();
+        }).setFps(2);
         this.on('gameUnload', () => this.clearSession());
     }
 
     ownsAfk() {
-        return this.afkSession !== null && Afk.session === this.afkSession && Afk.enabled && Afk.isParentManaged && Afk.parent === this;
+        return this.afkSession !== null && Afk.session === this.afkSession && Afk.enabled && !Afk.isParentManaged;
+    }
+
+    getScheduledAfkToken() {
+        return MacroState.getModule('Scheduler')?.getRecoveryToken(Afk.name) || null;
+    }
+
+    onMacroChange({ module, enabled, context }) {
+        if (!this.enabled) return;
+        if (module !== Afk) {
+            if (enabled && !module.isParentManaged && (this.afkSession || this.recoveryToken)) this.clearSession();
+            return;
+        }
+        if (context === 'user') {
+            this.clearSession();
+            return;
+        }
+        if (enabled) {
+            if (context === TOGGLE_CONTEXT) return;
+            if (context === 'scheduler' && this.recoveryToken && this.recoveryToken === this.getScheduledAfkToken()) {
+                this.afkSession = Afk.session;
+                this.recoveryToken = null;
+                OverlayManager.startTime(this.oid, false);
+            } else this.clearSession();
+            return;
+        }
+        if (!this.afkSession) return;
+        const token = this.getScheduledAfkToken();
+        if (token && ['game-state', 'world-unload', 'disconnect'].includes(context)) {
+            this.afkSession = null;
+            this.recoveryToken = token;
+            this.pendingTotals = [];
+            OverlayManager.pauseTime(this.oid);
+        } else this.onAfkStopped();
     }
 
     tick() {
@@ -80,7 +121,7 @@ class SkydiaoAutoAfk extends ModuleBase {
     }
 
     pauseMacros() {
-        if (Afk.enabled) return;
+        if (GuiState.macroToggleOpen || Afk.enabled || this.recoveryToken) return;
         const running = MacroState.getEnabledMacros().map((name) => MacroState.getModule(name));
         const roots = running.filter((module) => module?.enabled && module.isMacro && !module.isParentManaged && module !== Afk);
         if (!roots.length) return;
@@ -90,7 +131,8 @@ class SkydiaoAutoAfk extends ModuleBase {
             if (module?.enabled && module !== Afk) module.toggle(false, true, TOGGLE_CONTEXT);
         });
         this.previousMacros = roots.map((module) => ({ module, disableMeta: MacroState.getLastDisableMeta(module.name) }));
-        if (!Afk.startAsChild(this, true)) {
+        Afk.toggle(true, false, TOGGLE_CONTEXT);
+        if (!Afk.enabled) {
             this.previousMacros = [];
             return;
         }
@@ -102,7 +144,7 @@ class SkydiaoAutoAfk extends ModuleBase {
     resumeMacros() {
         if (!this.ownsAfk()) return;
         const previous = this.previousMacros;
-        if (!Afk.stopAsChild(this)) return;
+        Afk.toggle(false, false, TOGGLE_CONTEXT);
         previous.forEach(({ module, disableMeta }) => {
             if (!module.enabled && MacroState.getLastDisableMeta(module.name) === disableMeta) {
                 module.toggle(true, false, TOGGLE_CONTEXT);
@@ -114,13 +156,15 @@ class SkydiaoAutoAfk extends ModuleBase {
     onAfkStopped() {
         this.previousMacros = [];
         this.afkSession = null;
+        this.recoveryToken = null;
         this.pendingTotals = [];
         OverlayManager.resetTime(this.oid);
     }
 
     clearSession() {
         this.pendingTotals = [];
-        if (this.ownsAfk()) Afk.stopAsChild(this);
+        if (this.recoveryToken) MacroState.getModule('Scheduler')?.cancelScheduledMacro(Afk.name);
+        if (this.ownsAfk()) Afk.toggle(false, false, TOGGLE_CONTEXT);
         this.onAfkStopped();
     }
 
