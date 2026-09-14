@@ -3,6 +3,7 @@ import { GameState } from '../../utils/GameState';
 import { MacroState } from '../../utils/MacroState';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { TimeUtils } from '../../utils/TimeUtils';
+import { Mouse } from '../../utils/Ungrab';
 import { Utils } from '../../utils/Utils';
 
 const STATE = { IDLE: 'Idle', RUNNING: 'Running', PAUSED: 'Paused', RESTING: 'Resting', RETURNING: 'Returning', WORLD: 'Changing world' };
@@ -33,6 +34,7 @@ class MacroScheduler extends ModuleBase {
         this.overlayShown = false;
         this.manualHold = false;
         this.disconnectRequested = false;
+        this.restInputReleased = false;
         this.generation = 0;
 
         const section = 'Scheduler';
@@ -57,7 +59,7 @@ class MacroScheduler extends ModuleBase {
         );
         this.addDirectRangeSlider(
             'Macro Duration (m)',
-            10,
+            1,
             240,
             { low: 80, high: 140 },
             (value) => {
@@ -69,7 +71,7 @@ class MacroScheduler extends ModuleBase {
         );
         this.addDirectRangeSlider(
             'Break Duration (m)',
-            10,
+            1,
             180,
             { low: 50, high: 100 },
             (value) => {
@@ -159,6 +161,7 @@ class MacroScheduler extends ModuleBase {
             return;
         }
         if (event.state === 'PLAYING') {
+            this.restoreRestInput();
             this.server = event.server || this.server;
             this.readyAt = Date.now() + 5000;
             return;
@@ -191,6 +194,7 @@ class MacroScheduler extends ModuleBase {
             this.timerEnd = Date.now() + 7000 + Math.random() * 6000;
             this.message('&eUnexpected disconnect. Recovery scheduled.');
         }
+        this.releaseInputForRest();
         this.saveState();
     }
 
@@ -252,6 +256,7 @@ class MacroScheduler extends ModuleBase {
 
     cancelRecovery(manual = false) {
         this.generation++;
+        this.restoreRestInput();
         this.state = STATE.IDLE;
         this.candidates.clear();
         this.timerEnd = 0;
@@ -290,6 +295,7 @@ class MacroScheduler extends ModuleBase {
             return;
         }
         if (this.state === STATE.RESTING) {
+            this.releaseInputForRest();
             if (now < this.timerEnd) return;
             this.state = STATE.RETURNING;
             this.returnStep = 0;
@@ -314,6 +320,7 @@ class MacroScheduler extends ModuleBase {
             this.restoreMacros();
             return;
         }
+        this.releaseInputForRest();
         if (now < this.timerEnd || !this.server) return;
         this.timerEnd = now + 30000;
         this.returnStep = 1;
@@ -378,8 +385,21 @@ class MacroScheduler extends ModuleBase {
         return (Math.min(min, max) + Math.random() * Math.abs(max - min)) * 60000;
     }
 
+    releaseInputForRest() {
+        if (GameState.current.state !== 'DISCONNECTED') return;
+        // Macro shutdown callbacks may regrab after the disconnect event, so enforce this while offline.
+        this.restInputReleased = true;
+        Mouse.ungrab();
+    }
+
+    restoreRestInput() {
+        if (!this.restInputReleased) return;
+        this.restInputReleased = false;
+        Mouse.regrab();
+    }
+
     updateOverlay() {
-        const visible = this.enabled && this.getSchedulableMacros().length > 0 && ![STATE.IDLE, STATE.PAUSED].includes(this.state);
+        const visible = this.enabled && ![STATE.IDLE, STATE.PAUSED].includes(this.state) && (this.getSchedulableMacros().length > 0 || this.isRecovering());
         if (visible && !this.overlayShown) OverlayManager.startTime(this.oid, true);
         else if (!visible && (this.overlayShown || OverlayManager.startTimes[this.oid] !== undefined)) OverlayManager.resetTime(this.oid);
         this.overlayShown = visible;
