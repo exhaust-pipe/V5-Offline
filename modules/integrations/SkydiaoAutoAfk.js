@@ -30,6 +30,7 @@ class SkydiaoAutoAfk extends ModuleBase {
         this.recoveryToken = null;
         this.pendingTotals = [];
         this.lastTotal = null;
+        this.resumePending = false;
         this.addSlider(
             'Ban Threshold',
             0,
@@ -101,6 +102,7 @@ class SkydiaoAutoAfk extends ModuleBase {
             this.afkSession = null;
             this.recoveryToken = token;
             this.pendingTotals = [];
+            this.resumePending = false;
             OverlayManager.pauseTime(this.oid);
         } else this.onAfkStopped();
     }
@@ -115,9 +117,16 @@ class SkydiaoAutoAfk extends ModuleBase {
         totals.forEach((total) => {
             this.lastTotal = total;
             if (!World.isLoaded() || !Player.getPlayer()) return;
-            if (total > this.threshold) this.pauseMacros();
-            else if (total < this.threshold) this.resumeMacros();
+            if (total > this.threshold) {
+                this.resumePending = false;
+                this.pauseMacros();
+            } else if (total < this.threshold) this.resumePending = this.ownsAfk();
+            else this.resumePending = false;
         });
+        if (this.resumePending && this.canResumeMacros()) {
+            this.resumePending = false;
+            this.resumeMacros();
+        }
     }
 
     pauseMacros() {
@@ -141,8 +150,13 @@ class SkydiaoAutoAfk extends ModuleBase {
         this.message(`&e${this.lastTotal} bans in 10 minutes. Macros paused; AFK started.`);
     }
 
+    canResumeMacros() {
+        const mc = Client.getMinecraft();
+        return this.ownsAfk() && World.isLoaded() && !!Player.getPlayer() && mc.screen == null && mc.isWindowActive();
+    }
+
     resumeMacros() {
-        if (!this.ownsAfk()) return;
+        if (!this.canResumeMacros()) return;
         const previous = this.previousMacros;
         Afk.toggle(false, false, TOGGLE_CONTEXT);
         previous.forEach(({ module, disableMeta }) => {
@@ -158,11 +172,13 @@ class SkydiaoAutoAfk extends ModuleBase {
         this.afkSession = null;
         this.recoveryToken = null;
         this.pendingTotals = [];
+        this.resumePending = false;
         OverlayManager.resetTime(this.oid);
     }
 
     clearSession() {
         this.pendingTotals = [];
+        this.resumePending = false;
         if (this.recoveryToken) MacroState.getModule('Scheduler')?.cancelScheduledMacro(Afk.name);
         if (this.ownsAfk()) Afk.toggle(false, false, TOGGLE_CONTEXT);
         this.onAfkStopped();
