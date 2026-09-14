@@ -161,7 +161,6 @@ class MacroScheduler extends ModuleBase {
             return;
         }
         if (event.state === 'PLAYING') {
-            this.restoreRestInput();
             this.server = event.server || this.server;
             this.readyAt = Date.now() + 5000;
             return;
@@ -271,6 +270,7 @@ class MacroScheduler extends ModuleBase {
     tick() {
         this.updateOverlay();
         const now = Date.now();
+        if (this.restInputReleased && this.isWorldReady() && !this.restoreRestInput()) return;
         if ([STATE.IDLE, STATE.PAUSED].includes(this.state)) {
             if (!this.manualHold && this.isWorldReady() && GameState.current.server && this.getSchedulableMacros().length) this.beginSession();
             return;
@@ -393,9 +393,11 @@ class MacroScheduler extends ModuleBase {
     }
 
     restoreRestInput() {
-        if (!this.restInputReleased) return;
+        if (!this.restInputReleased) return true;
+        if (GameState.current.state === 'PLAYING' && Client.getMinecraft().screen != null) return false;
         this.restInputReleased = false;
         Mouse.regrab();
+        return true;
     }
 
     updateOverlay() {
