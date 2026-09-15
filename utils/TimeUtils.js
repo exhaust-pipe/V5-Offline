@@ -54,3 +54,8 @@ export function formatDurationMs(durationMs) {
 }
 
 export const formatUptime = (startTimeMs) => (startTimeMs ? formatDurationMs(Date.now() - startTimeMs) : '0.00s');
+
+export const TimeUtils = {
+    formatDurationMs,
+    formatUptime,
+};
