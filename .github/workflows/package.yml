@@ -93,7 +93,7 @@ jobs:
 
                   : > release-notes.md
                   if [[ -n "$LOADER_TAG" && -n "$LOADER_URL" ]]; then
-                      printf 'need [V5Loader-Offline %s](%s)\n\n---\n' "$LOADER_TAG" "$LOADER_URL" >> release-notes.md
+                      printf '**need [V5Loader-Offline %s](%s)**\n\n---\n' "$LOADER_TAG" "$LOADER_URL" >> release-notes.md
                       if [[ -n "$GENERATED" ]]; then
                           printf '\n' >> release-notes.md
                       fi
