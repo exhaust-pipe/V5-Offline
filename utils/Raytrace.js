@@ -239,6 +239,31 @@ export const clearCache = () => {
     eyeCache = { pos: null, time: 0 };
 };
 
+export const visibilityChecker = {
+    getPlayerEyePosition,
+    checkBlockVisibility: getVisiblePoint,
+    testPointNative,
+    testPointCustom: testPointVisibility,
+    nonAirFilter: (block) => !!block?.type && block.type.getID() !== AIR_BLOCK_ID,
+    clearCache,
+};
+
+export const voxelTraverser = {
+    checkLineClearance: isLineClear,
+};
+
+export const blockScanner = {
+    scanPlayerView: scanBlocks,
+    scanBetweenPoints: scanPath,
+    findLookingAtBlock: getLookingAt,
+};
+
+export const entityRaytracer = {
+    getPlayerLookDirection: playerLookDirection,
+    isLookingAtEntity,
+    getEntityHitboxCenter,
+};
+
 export const Raytrace = {
     getVisiblePoint,
     getPointOnBlock,
