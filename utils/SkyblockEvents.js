@@ -60,3 +60,7 @@ export const registerSkyblockEvent = (name, callback) => {
     if (!CALLBACKS.has(name)) CALLBACKS.set(name, []);
     CALLBACKS.get(name).push(callback);
 };
+
+export const manager = {
+    subscribe: registerSkyblockEvent,
+};
