@@ -18,3 +18,11 @@ export function chatFailsafe(message, includeIntensity = true) {
 }
 
 export const chatPathfinder = (message) => sendGradient('V5 Pathfinding »', message);
+
+// Compatibility facade for Offline modules written against the pre-5.2 object API.
+export const Chat = {
+    message: chat,
+    debug: chatDebug,
+    failsafe: chatFailsafe,
+    pathfinder: chatPathfinder,
+};
