@@ -23,7 +23,9 @@ class MacroStateClass {
         this.listeners = [];
         GameState.subscribe((event) => {
             if (event.state !== 'DISCONNECTED') return;
-            const running = this.getEnabledMacros().map((name) => this.getModule(name)).filter(Boolean);
+            const running = this.getEnabledMacros()
+                .map((name) => this.getModule(name))
+                .filter(Boolean);
             running.sort((a, b) => Number(a.isParentManaged) - Number(b.isParentManaged));
             running.forEach((module) => module.toggle(false, module.isParentManaged, 'game-state'));
         });

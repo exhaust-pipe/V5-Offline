@@ -11,14 +11,24 @@ class ProfileHider extends ModuleBase {
         this.HIDE_USERNAME = true;
         this.USERNAME = null;
 
-        this.addToggle('Custom Username', (v) => {
-            this.HIDE_USERNAME = v;
-            this.updateName();
-        }, 'Allows for custom usernames', true);
-        this.addTextInput('Username', ' ', (v) => {
-            this.USERNAME = v;
-            this.updateName();
-        }, 'The username you want to use');
+        this.addToggle(
+            'Custom Username',
+            (v) => {
+                this.HIDE_USERNAME = v;
+                this.updateName();
+            },
+            'Allows for custom usernames',
+            true
+        );
+        this.addTextInput(
+            'Username',
+            ' ',
+            (v) => {
+                this.USERNAME = v;
+                this.updateName();
+            },
+            'The username you want to use'
+        );
 
         Client.setNameProcessor(null);
         register('gameUnload', () => Client.setNameReplacement(null, null));

@@ -1,7 +1,6 @@
 Config.setAutoUpdateModules(false);
 Config.setOpenConsoleOnError(true);
 
-
 /* COMMANDS */
 import { registerV5Commands } from './utils/V5Commands';
 
