@@ -138,3 +138,11 @@ export function clearSplineCache() {
     cachedLookPoints = [];
     lastPath = null;
 }
+
+export const Spline = {
+    generateSpline,
+    createLookPoints,
+    drawLookPoints,
+    drawFloatingSpline,
+    clearCache: clearSplineCache,
+};
