@@ -81,3 +81,15 @@ register('tick', () => {
         Client.sendPacket(new ServerboundSwingPacket(MCHand.MAIN_HAND));
     }
 });
+
+export const NukerUtils = {
+    nukeQueue,
+    nukeQueueAdd: queueNuke,
+    queueNuke,
+    nuke,
+    isBlockInRange,
+    createBlockPosition,
+    closestDirection,
+    getFaceCenterPosition,
+    sendBreakPackets,
+};
