@@ -1,6 +1,25 @@
 import { playerIsCollided } from '../Utils';
 
-function setKeysForStraightLine(yaw, shouldJump, ignoreBottomSlab) {
+let lastActionTime = Date.now();
+
+export function setKeysBasedOnYaw(yaw, shouldJump) {
+    if (Client.isInGui() && !Client.isInChat()) {
+        Client.stopMovement();
+        return;
+    }
+
+    Client.setKey('w', yaw > -50 && yaw < 50);
+    Client.setKey('a', yaw > -135.5 && yaw < -7);
+    Client.setKey('d', yaw > 7 && yaw < 135.5);
+    Client.setKey('s', yaw > 135.5 || yaw < -135.5);
+
+    const motionScale = Math.abs(Player.getMotionX()) + Math.abs(Player.getMotionZ());
+    const jump = shouldJump && motionScale < 0.04 && Date.now() - lastActionTime > 500 && playerIsCollided();
+    Client.setKey('space', jump);
+    if (jump) lastActionTime = Date.now();
+}
+
+export function setKeysForStraightLine(yaw, shouldJump, ignoreBottomSlab) {
     Client.stopMovement();
     if (Client.isInGui() && !Client.isInChat()) return;
 
@@ -38,3 +57,9 @@ export function setKeysForStraightLineCoords(x, y, z, shouldJump, ignoreBottomSl
 
     setKeysForStraightLine(angle, shouldJump, ignoreBottomSlab);
 }
+
+export const Movement = {
+    setKeysBasedOnYaw,
+    setKeysForStraightLine,
+    setKeysForStraightLineCoords,
+};
