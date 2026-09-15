@@ -11,6 +11,14 @@ const compat = {
         Render3D.drawFilledBox(position, color, depthFromThroughWalls(throughWalls));
     },
 
+    drawHitbox(entity, color, lineWidth = 2, throughWalls = false) {
+        Render3D.drawHitbox(entity, color, lineWidth, depthFromThroughWalls(throughWalls));
+    },
+
+    drawHitboxes(entities, color, lineWidth = 2, throughWalls = false) {
+        Render3D.drawHitboxes(entities, color, lineWidth, depthFromThroughWalls(throughWalls));
+    },
+
     drawLine(startOrPoints, endOrColor, colorOrWidth, lineWidthOrThroughWalls = 1, throughWalls = false) {
         // Legacy RenderUtils primarily used drawLine(start, end, color, width, throughWalls).
         // Keep array support as well for any callers that already pass a polyline.
