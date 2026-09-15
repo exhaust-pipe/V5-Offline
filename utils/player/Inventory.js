@@ -1,6 +1,7 @@
 import { chat } from '../Chat';
 import { ServerboundContainerClosePacket } from '../Packets';
 import { ScheduleTask } from '../ScheduleTask';
+import { Rotations } from './Rotations';
 
 export const stripItemFormatting = (text) => (typeof text === 'string' ? ChatLib.removeFormatting(text) : text);
 
@@ -16,6 +17,15 @@ export function findFirstItem(inventory, name, exact = false) {
         if (itemNameMatches(inventory.getStackInSlot(slot), name, exact)) return slot;
     }
     return -1;
+}
+
+export function findAllItems(inventory, name) {
+    const slots = [];
+    if (!inventory) return slots;
+    for (let slot = 0; slot < inventory.getSize(); slot++) {
+        if (itemNameMatches(inventory.getStackInSlot(slot), name)) slots.push(slot);
+    }
+    return slots;
 }
 
 export function findItemInHotbar(name) {
@@ -80,3 +90,27 @@ export function getGuiName() {
     const container = Player.getContainer();
     return container ? ChatLib.removeFormatting(String(container.getName())) : null;
 }
+
+// Compatibility facade for Offline modules written against the pre-5.2 inventory API.
+export const Guis = {
+    stripFormatting: stripItemFormatting,
+    getInventory: () => Player.getInventory(),
+    findFirst: (inventory, name) => findFirstItem(inventory, name),
+    findAll: findAllItems,
+    findItemInHotbar,
+    findItemInInventory: (name) => findFirstItem(Player.getInventory(), name),
+    closeInv: closeInventory,
+    clickItem,
+    clickSlot,
+    clickItems,
+    setItemSlot,
+    getHeldItemStackSize: () => Player.getHeldItem()?.getStackSize?.() || 0,
+    stopInGui: () => {
+        if (getGuiName() == null) return;
+        Client.stopMovement();
+        Client.setKey('shift', false);
+        Client.setKey('leftclick', false);
+        Rotations.stop();
+    },
+    guiName: getGuiName,
+};
