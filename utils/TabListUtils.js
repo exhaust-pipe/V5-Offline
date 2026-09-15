@@ -1,8 +1,11 @@
 const AREA_CACHE_MS = 1000;
+const COOKIE_CACHE_MS = 2000;
 const PICKAXE_ABILITY_CACHE_MS = 200;
 
 let currentArea = 'unknown';
 let areaLastChecked = 0;
+let hasCookieBuff = false;
+let cookieLastChecked = 0;
 let pickaxeAbility = '';
 let pickaxeAbilityExpiresAt = 0;
 
@@ -26,6 +29,28 @@ export function getArea() {
     }
 
     return currentArea;
+}
+
+export function resetAreaCache() {
+    currentArea = 'unknown';
+    areaLastChecked = 0;
+}
+
+export function hasCookie() {
+    const now = Date.now();
+    if (now - cookieLastChecked < COOKIE_CACHE_MS) return hasCookieBuff;
+    cookieLastChecked = now;
+
+    try {
+        const footer = TabList.getFooter();
+        if (!footer) return hasCookieBuff;
+        const raw = ChatLib.removeFormatting(String(footer));
+        if (raw.includes('Cookie Buff') && raw.includes('Not active! Obtain booster cookies')) hasCookieBuff = false;
+        else if (raw.includes('Cookie Buff')) hasCookieBuff = true;
+    } catch (error) {
+        console.error('V5 Caught error checking cookie: ' + error);
+    }
+    return hasCookieBuff;
 }
 
 export function getPickaxeAbilityStatus() {
@@ -130,3 +155,17 @@ export function getPestCooldown() {
     }
     return 0;
 }
+
+export const TabListUtils = {
+    stripFormatting: stripTabFormatting,
+    getNames: getTabListNames,
+    getArea,
+    resetAreaCache,
+    hasCookie,
+    getPickaxeAbilityStatus,
+    readCommissions,
+    readVisitors,
+    readPests,
+    getPestCooldown,
+    findIndex: findTabListIndex,
+};
