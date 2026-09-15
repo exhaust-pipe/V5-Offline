@@ -195,3 +195,59 @@ export function isLookingAtEntity(entity, maxDistance = 6) {
         return false;
     }
 }
+
+export const isBlockVisible = (blockX, blockY, blockZ, useNative = true) => getVisiblePoint(blockX, blockY, blockZ, useNative) !== null;
+
+export function scanBlocks(maxDistance, filter = null) {
+    const eye = getPlayerEyePosition();
+    if (!eye) return [];
+    const filterFunction = filter || ((block) => !!block?.type && block.type.getID() !== AIR_BLOCK_ID);
+    return raytraceBlocks([eye.x, eye.y, eye.z], null, maxDistance, filterFunction, false, false);
+}
+
+export function scanPath(start, end) {
+    const dx = end[0] - start[0];
+    const dy = end[1] - start[1];
+    const dz = end[2] - start[2];
+    const distance = Math.hypot(dx, dy, dz);
+    if (!distance) return [];
+    return raytraceBlocks(start, new Vector3(dx / distance, dy / distance, dz / distance), distance, null, false, false);
+}
+
+export function getEntityHitboxCenter(entity) {
+    try {
+        const mcEntity = entity.toMC ? entity.toMC() : entity;
+        const box = mcEntity.getBoundingBox();
+        if (box) {
+            return {
+                x: (box.minX + box.maxX) / 2,
+                y: (box.minY + box.maxY) / 2,
+                z: (box.minZ + box.maxZ) / 2,
+            };
+        }
+    } catch (error) {
+        console.error(error);
+    }
+
+    if (typeof entity?.getX === 'function') {
+        return { x: entity.getX(), y: entity.getY() + 1, z: entity.getZ() };
+    }
+    return null;
+}
+
+export const clearCache = () => {
+    eyeCache = { pos: null, time: 0 };
+};
+
+export const Raytrace = {
+    getVisiblePoint,
+    getPointOnBlock,
+    isBlockVisible,
+    isLineClear,
+    scanBlocks,
+    scanPath,
+    getLookingAt,
+    isLookingAtEntity,
+    getEntityHitboxCenter,
+    clearCache,
+};
