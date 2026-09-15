@@ -33,3 +33,10 @@ export function onPathTick(callback) {
 export function onPathStep(callback) {
     if (typeof callback === 'function') stepCallbacks.push(callback);
 }
+
+export const PathExecutor = {
+    execute: startPathExecutor,
+    destroy: destroyPathExecutor,
+    onTick: onPathTick,
+    onStep: onPathStep,
+};
