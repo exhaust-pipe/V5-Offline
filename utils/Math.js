@@ -1,6 +1,7 @@
 import { convertToVector } from './Utils';
 
 const RAD_TO_DEG = 180 / Math.PI;
+const DEG_TO_RAD = Math.PI / 180;
 const point = (x, y, z) => ({ x: x || 0, y: y || 0, z: z || 0 });
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 const horizontalDistance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -125,12 +126,70 @@ export const formatRoundedNumber = (value) => {
     return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 };
 
-export function offsetPitch(point, degrees) {
-    const target = toPoint(point);
+export function offsetPitch(input, degrees) {
+    const target = toPoint(input);
     const eyes = playerEyes();
-    if (!target || !eyes) return point;
+    if (!target || !eyes) return input;
     const horizontal = Math.hypot(target.x - eyes.x, target.z - eyes.z);
-    if (!horizontal) return point;
+    if (!horizontal) return input;
     const pitch = calculateAbsoluteAngles(target).pitch + degrees;
-    return { ...point, y: eyes.y - horizontal * Math.tan(pitch * DEG_TO_RAD) };
+    return { ...input, y: eyes.y - horizontal * Math.tan(pitch * DEG_TO_RAD) };
 }
+
+const distanceToPlayerCenter = (targetInput) => {
+    const target = toPoint(targetInput);
+    if (!target || !Player.getPlayer()) return 0;
+    const center = point(Player.getX(), Player.getY() + Player.asPlayerMP().getHeight() / 2, Player.getZ());
+    return distances(center, target);
+};
+
+const distanceToEntity = (entity) => {
+    if (!entity) return 0;
+    const eyes = playerEyes();
+    const target = point(entity.getX(), entity.getY(), entity.getZ());
+    return eyes ? distances(eyes, target) : 0;
+};
+
+const distanceToBox = (position, min, max) => {
+    const p = toPoint(position);
+    const lo = toPoint(min);
+    const hi = toPoint(max);
+    if (!p || !lo || !hi) return 0;
+    return Math.hypot(Math.max(lo.x - p.x, 0, p.x - hi.x), Math.max(lo.y - p.y, 0, p.y - hi.y), Math.max(lo.z - p.z, 0, p.z - hi.z));
+};
+
+// Compatibility facade for Offline modules written against the pre-5.2 object API.
+export const MathUtils = {
+    distanceToPlayerPoint,
+    distanceToPlayer: (target) => {
+        const eyes = playerEyes();
+        const pointTarget = toPoint(target);
+        return eyes && pointTarget ? distances(eyes, pointTarget) : 0;
+    },
+    distanceToPlayerFeet,
+    distanceToPlayerCenter,
+    distanceToPlayerCT: distanceToEntity,
+    distanceToPlayerMC: distanceToEntity,
+    calculateDistanceBP: calculateDistance,
+    calculateDistance,
+    getDistanceToPlayer,
+    getDistanceToPlayerEyes,
+    getDistance,
+    fastDistance,
+    blockCenter,
+    distanceToBlockCenter: (x, y, z) => distanceToPlayerFeet(blockCenter(x, y, z)),
+    distanceToBox,
+    toFixed: (value) => Math.round(value * 10) / 10,
+    angleToPlayer,
+    degreeToRad: (degrees) => degrees * DEG_TO_RAD,
+    getAngleDifference,
+    wrapTo180,
+    calculateAngles,
+    calculateAbsoluteAngles,
+    offsetPitch,
+    getNumbersFromString: (str) => {
+        if (!str) return 0;
+        const match = String(str).match(/\d+/g);
+        return match ? Number.parseInt(match.join('')) : 0;
+    },
+};
