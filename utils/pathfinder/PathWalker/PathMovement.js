@@ -54,3 +54,11 @@ export function stopMovement() {
     Client.stopMovement();
     for (const key of ['w', 's', 'a', 'd', 'space', 'shift', 'sprint']) Client.setKey(key, false);
 }
+
+export const Movement = {
+    beginMovement,
+    forceJump,
+    backup,
+    isRecovering,
+    stopMovement,
+};
