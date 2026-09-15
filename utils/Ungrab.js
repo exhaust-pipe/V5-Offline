@@ -43,3 +43,10 @@ export function releaseForcedGrab() {
     forcedGrab = false;
     if (requestedUngrab) applyUngrab();
 }
+
+export const Mouse = {
+    ungrab,
+    regrab,
+    forceGrab,
+    releaseForcedGrab,
+};
