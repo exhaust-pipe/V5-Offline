@@ -100,3 +100,12 @@ export function getPingColor(ping) {
 }
 
 export const getServerInfo = () => ({ ping: getPing(), tps: getTPS() });
+
+// Legacy compatibility for Offline files that still use the pre-5.2 object API.
+export const ServerInfo = {
+    getPing,
+    getTPS,
+    getTpsColor,
+    getPingColor,
+    getServerInfo,
+};
