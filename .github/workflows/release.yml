@@ -1,0 +1,94 @@
+name: Release Scripts
+
+on:
+    push:
+        tags:
+            - '*'
+
+permissions:
+    contents: read
+
+concurrency:
+    group: release-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    package:
+        uses: ./.github/workflows/package.yml
+        with:
+            package_suffix: ${{ github.ref_name }}
+
+    release:
+        needs: package
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: write
+
+        steps:
+            - name: Download packaged scripts
+              uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+              with:
+                  name: ${{ needs.package.outputs.artifact_name }}
+
+            - name: Prepare release notes
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  TAG: ${{ github.ref_name }}
+                  SHA: ${{ github.sha }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  LOADER_JSON="$(gh api repos/exhaust-pipe/V5Loader-Offline/releases/latest 2>/dev/null || true)"
+                  if [[ -n "$LOADER_JSON" ]]; then
+                      LOADER_TAG="$(jq -r '.tag_name // empty' <<<"$LOADER_JSON")"
+                      LOADER_URL="$(jq -r '.html_url // empty' <<<"$LOADER_JSON")"
+                  else
+                      LOADER_TAG=""
+                      LOADER_URL=""
+                  fi
+
+                  GENERATED="$(
+                      gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+                          -f tag_name="$TAG" \
+                          -f target_commitish="$SHA" \
+                          --jq '.body // ""' \
+                          2>/dev/null || true
+                  )"
+
+                  : > release-notes.md
+                  if [[ -n "$LOADER_TAG" && -n "$LOADER_URL" ]]; then
+                      printf '**need [V5Loader-Offline %s](%s)**\n\n---\n' "$LOADER_TAG" "$LOADER_URL" >> release-notes.md
+                      if [[ -n "$GENERATED" ]]; then
+                          printf '\n' >> release-notes.md
+                      fi
+                  fi
+
+                  if [[ -n "$GENERATED" ]]; then
+                      printf '%s\n' "$GENERATED" >> release-notes.md
+                  fi
+
+                  cat release-notes.md
+
+            - name: Publish GitHub release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  TAG: ${{ github.ref_name }}
+                  ASSET: ${{ needs.package.outputs.asset_name }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  test -s "$ASSET"
+
+                  if RELEASE_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.id' 2>/dev/null)"; then
+                      BODY="$(cat release-notes.md)"
+                      gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+                          -f name="$TAG" \
+                          -f body="$BODY" >/dev/null
+                      gh release upload "$TAG" "$ASSET" --clobber
+                  else
+                      gh release create "$TAG" "$ASSET" \
+                          --verify-tag \
+                          --title "$TAG" \
+                          --notes-file release-notes.md
+                  fi
