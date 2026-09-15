@@ -1,27 +1,17 @@
-import { AtomicInteger, Executors } from './Constants';
-
-const threadNumber = new AtomicInteger(1);
-const service = Executors.newCachedThreadPool((runnable) => {
-    const thread = new java.lang.Thread(runnable);
-    thread.setDaemon(true);
-    thread.setName(`V5-Executor-${threadNumber.getAndIncrement()}`);
-    return thread;
-});
-
 export function executeAsync(task) {
-    if (service.isShutdown() || typeof task !== 'function') return;
-    service.execute(() => {
+    if (typeof task !== 'function') return;
+
+    const generation = ChatTriggers.getScriptGeneration();
+    new Thread(() => {
+        if (!ChatTriggers.isScriptGenerationCurrent(generation)) return;
         try {
             task();
         } catch (error) {
+            if (!ChatTriggers.isScriptGenerationCurrent(generation)) return;
             console.error('[V5 Thread Error]:');
             console.error(error);
         }
-    });
+    }).start();
 }
 
 export const Executor = { execute: executeAsync };
-
-const shutdownExecutor = () => service.shutdownNow();
-
-register('gameUnload', shutdownExecutor);

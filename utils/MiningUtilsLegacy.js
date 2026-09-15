@@ -837,7 +837,7 @@ class ExplorerUpgrade {
     upgrade(callback) {
         let self = this;
 
-        const t = new java.lang.Thread(function () {
+        const t = new Thread(function () {
             let stats = self.collector.getStoredStats();
 
             if (stats?.maxge) {
@@ -1064,9 +1064,13 @@ export const MiningUtils = {
         return miningStatsCollector.getStoredStats()?.maxge === true;
     },
     refreshMiningStatsIfNeeded: function (callback = null) {
+        const generation = ChatTriggers.getScriptGeneration();
         Executor.execute(() => {
             const refreshed = miningStatsCollector.refreshIfNeeded();
-            if (callback) Client.scheduleTask(0, () => callback(refreshed));
+            if (callback)
+                Client.scheduleTask(0, () => {
+                    if (ChatTriggers.isScriptGenerationCurrent(generation)) callback(refreshed);
+                });
         });
     },
     getDrills: function () {

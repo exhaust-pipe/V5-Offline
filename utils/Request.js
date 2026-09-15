@@ -18,14 +18,20 @@ export default function requestV2(options) {
             return;
         }
 
-        const thread = new java.lang.Thread(() => {
+        const generation = ChatTriggers.getScriptGeneration();
+        const thread = new Thread(() => {
+            if (!ChatTriggers.isScriptGenerationCurrent(generation)) return;
             try {
                 const body = fetchURL(url);
                 if (body == null) throw new Error('Public Hypixel data unavailable');
                 const result = options?.json === false ? String(body) : JSON.parse(String(body));
-                Client.scheduleTask(0, () => resolve(result));
+                Client.scheduleTask(0, () => {
+                    if (ChatTriggers.isScriptGenerationCurrent(generation)) resolve(result);
+                });
             } catch (error) {
-                Client.scheduleTask(0, () => reject(error));
+                Client.scheduleTask(0, () => {
+                    if (ChatTriggers.isScriptGenerationCurrent(generation)) reject(error);
+                });
             }
         });
         thread.setDaemon(true);

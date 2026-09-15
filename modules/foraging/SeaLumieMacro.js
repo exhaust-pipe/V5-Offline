@@ -39,7 +39,9 @@ class SeaLumie extends ModuleBase {
                     if (!this.startedScan) {
                         this.startedScan = true;
 
-                        const scanThread = new java.lang.Thread(() => {
+                        const generation = ChatTriggers.getScriptGeneration();
+                        const scanThread = new Thread(() => {
+                            if (!ChatTriggers.isScriptGenerationCurrent(generation)) return;
                             let queue = [
                                 {
                                     x: Math.floor(Player.getX()),
@@ -58,7 +60,7 @@ class SeaLumie extends ModuleBase {
                             let count = 0;
                             let maxIterations = radius * radius * radius * 8;
 
-                            while (queue.length > 0 && count < maxIterations) {
+                            while (queue.length > 0 && count < maxIterations && ChatTriggers.isScriptGenerationCurrent(generation)) {
                                 let currentBlock = queue.shift();
                                 count++;
 
@@ -131,6 +133,7 @@ class SeaLumie extends ModuleBase {
                                 });
                             }
 
+                            if (!ChatTriggers.isScriptGenerationCurrent(generation)) return;
                             this.closestPickle = null;
                             this.message('Failed to find a pickle!');
                             this.startedScan = false;

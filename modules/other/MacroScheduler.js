@@ -8,6 +8,13 @@ import { Utils } from '../../utils/Utils';
 
 const STATE = { IDLE: 'Idle', RUNNING: 'Running', PAUSED: 'Paused', RESTING: 'Resting', RETURNING: 'Returning', WORLD: 'Changing world' };
 
+const scheduleForCurrentGeneration = (callback) => {
+    const generation = ChatTriggers.getScriptGeneration();
+    Client.scheduleTask(() => {
+        if (ChatTriggers.isScriptGenerationCurrent(generation)) callback();
+    });
+};
+
 class MacroScheduler extends ModuleBase {
     constructor() {
         super({
@@ -283,7 +290,7 @@ class MacroScheduler extends ModuleBase {
             } else if (now >= this.timerEnd && !this.disconnectRequested) {
                 this.disconnectRequested = true;
                 const generation = this.generation;
-                Client.scheduleTask(() => {
+                scheduleForCurrentGeneration(() => {
                     if (this.enabled && generation === this.generation && this.state === STATE.RUNNING)
                         GameState.disconnect('Scheduler: taking a break', 'scheduler');
                 });
@@ -312,7 +319,7 @@ class MacroScheduler extends ModuleBase {
                 this.returnStep = 2;
                 this.timerEnd = now + 15000;
                 const generation = this.generation;
-                Client.scheduleTask(() => {
+                scheduleForCurrentGeneration(() => {
                     if (this.enabled && this.generation === generation && this.isWorldReady()) ChatLib.command('play skyblock');
                 });
                 return;
@@ -325,7 +332,7 @@ class MacroScheduler extends ModuleBase {
         this.timerEnd = now + 30000;
         this.returnStep = 1;
         const generation = this.generation;
-        Client.scheduleTask(() => {
+        scheduleForCurrentGeneration(() => {
             if (this.enabled && this.generation === generation && this.state === STATE.RETURNING && !World.isLoaded())
                 GameState.connect(this.server, 'scheduler');
         });
@@ -337,7 +344,7 @@ class MacroScheduler extends ModuleBase {
         const worldEventId = GameState.current.id;
         const names = this.getRecoveryNames();
         this.readyAt = Date.now() + 5000;
-        Client.scheduleTask(() => {
+        scheduleForCurrentGeneration(() => {
             if (!this.enabled || generation !== this.generation || worldEventId !== GameState.current.id || !this.isWorldReady()) return;
             names.forEach((name) => {
                 if (generation !== this.generation) return;
