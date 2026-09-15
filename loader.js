@@ -1,6 +1,8 @@
 Config.setAutoUpdateModules(false);
 Config.setOpenConsoleOnError(true);
 
+import './utils/RenderCompat';
+
 /* COMMANDS */
 import { registerV5Commands } from './utils/V5Commands';
 
