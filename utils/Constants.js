@@ -67,7 +67,6 @@ export const PortalParticle = net.minecraft.client.particle.PortalParticle;
 export const ParticleTypes = net.minecraft.core.particles.ParticleTypes;
 export const DataComponents = net.minecraft.core.component.DataComponents;
 export const InputConstants = com.mojang.blaze3d.platform.InputConstants;
-export const SkijaPIP = Java.type('com.chattriggers.ctjs.api.render.skia.SkijaPIP');
 export const CritParticle = ParticleTypes.CRIT;
 export const HappyVillagerParticle = ParticleTypes.HAPPY_VILLAGER;
 

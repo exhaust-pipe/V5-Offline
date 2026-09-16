@@ -1,9 +1,8 @@
-import { drawInventoryHudBackground, drawStatsHud, getInventoryHudBounds, getStatsHudBounds, getStatsHudLines } from '../../gui/OverlayRenderers';
+import { drawStatsHud, getInventoryHudBounds, getStatsHudBounds, getStatsHudLines } from '../../gui/OverlayRenderers';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { getConfigFile, writeConfigFile } from '../../utils/Utils';
 import { OverlayManager } from '../../gui/OverlayUtils';
 import { GuiState } from '../../gui/core/GuiState';
-import { SkijaPIP } from '../../utils/Constants';
 
 const DrawContextHolder = com.chattriggers.ctjs.api.render.DrawContextHolder;
 
@@ -42,7 +41,6 @@ class HUD extends ModuleBase {
             'postGuiRender',
             () => this.renderOverlay()
         );
-        this.inventoryBackgroundCallback = () => drawInventoryHudBackground(this.inventory);
         this.statsCallback = () => this.renderStatsOverlay();
         this.statsRegistration = null;
 
@@ -197,8 +195,8 @@ class HUD extends ModuleBase {
         if (!this.prepareOverlay(this.INVENTORY_HUD && this.inventory.enabled !== false, this.recalcInventoryBounds)) return;
 
         try {
-            // ponytail: queue directly until Render2D exposes ordered callbacks.
-            SkijaPIP.draw(DrawContextHolder.currentContext, this.inventoryBackgroundCallback, false);
+            // The old SkijaPIP background layer was renderer-specific. Keep the functional
+            // inventory HUD and draw the item grid directly without that decorative layer.
             this.drawInventoryHudItems();
         } catch (e) {
             console.error(e);
