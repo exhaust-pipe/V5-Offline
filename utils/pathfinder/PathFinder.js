@@ -334,12 +334,12 @@ class Finder {
                 this.render = register('postRenderWorld', () => {
                     if (PathConfig.RENDER_KEY_NODES && result.keynodes?.length >= 2) {
                         result.keynodes.forEach((node) => {
-                            RenderUtils.drawStyledBox(
+                            Render3D.drawStyledBox(
                                 new Vec3d(node.x, node.y, node.z),
                                 new RenderColor(0, 100, 200, 120),
                                 new RenderColor(0, 100, 200, 255),
                                 4,
-                                true
+                                false
                             );
                         });
                     }
@@ -349,7 +349,7 @@ class Finder {
                     }
 
                     if (PathConfig.RENDER_LOOK_POINTS) {
-                        PathFlyer.path?.forEach((p) => RenderUtils.drawFilledBox(new Vec3d(p.x, p.y, p.z), new RenderColor(0, 255, 0, 150), true));
+                        PathFlyer.path?.forEach((p) => Render3D.drawFilledBox(new Vec3d(p.x, p.y, p.z), new RenderColor(0, 255, 0, 150), false));
                     }
                 });
             }
@@ -948,7 +948,7 @@ class Finder {
         this.render = register('postRenderWorld', () => {
             if (PathConfig.RENDER_KEY_NODES && result.keynodes?.length >= 2) {
                 result.keynodes.forEach((node) => {
-                    RenderUtils.drawStyledBox(new Vec3d(node.x, node.y, node.z), new RenderColor(0, 100, 200, 120), new RenderColor(0, 100, 200, 255), 4, true);
+                    Render3D.drawStyledBox(new Vec3d(node.x, node.y, node.z), new RenderColor(0, 100, 200, 120), new RenderColor(0, 100, 200, 255), 4, false);
                 });
             }
             if (PathConfig.RENDER_FLOATING_SPLINE) Spline.drawFloatingSpline(splinePath);

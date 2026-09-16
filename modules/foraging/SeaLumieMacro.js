@@ -39,7 +39,9 @@ class SeaLumie extends ModuleBase {
                     if (!this.startedScan) {
                         this.startedScan = true;
 
-                        const scanThread = new java.lang.Thread(() => {
+                        const generation = ChatTriggers.getScriptGeneration();
+                        const scanThread = new Thread(() => {
+                            if (!ChatTriggers.isScriptGenerationCurrent(generation)) return;
                             let queue = [
                                 {
                                     x: Math.floor(Player.getX()),
@@ -58,7 +60,7 @@ class SeaLumie extends ModuleBase {
                             let count = 0;
                             let maxIterations = radius * radius * radius * 8;
 
-                            while (queue.length > 0 && count < maxIterations) {
+                            while (queue.length > 0 && count < maxIterations && ChatTriggers.isScriptGenerationCurrent(generation)) {
                                 let currentBlock = queue.shift();
                                 count++;
 
@@ -131,6 +133,7 @@ class SeaLumie extends ModuleBase {
                                 });
                             }
 
+                            if (!ChatTriggers.isScriptGenerationCurrent(generation)) return;
                             this.closestPickle = null;
                             this.message('Failed to find a pickle!');
                             this.startedScan = false;
@@ -169,7 +172,7 @@ class SeaLumie extends ModuleBase {
           if (block?.type?.getRegistryName()?.includes("pickle")) {
             // get if the block iss still there
             if (
-              MathUtils.calculateDistance(
+              calculateDistance(
                 [Player.getX(), Player.getY(), Player.getZ()],
                 [
                   this.closestPickle.x,
@@ -201,7 +204,7 @@ class SeaLumie extends ModuleBase {
             if (this.closestPickle) {
                 let waypointPos = new Vec3d(this.closestPickle.x, this.closestPickle.y, this.closestPickle.z);
 
-                RenderUtils.drawFilledBox(waypointPos, new RenderColor(255, 0, 0, 255));
+                Render3D.drawFilledBox(waypointPos, new RenderColor(255, 0, 0, 255));
             }
         });
     }

@@ -13,6 +13,7 @@ class MacroStateClass {
         this.sessionResumeWindowMs = 5 * 60 * 1000;
 
         this.modules = new Map();
+        this.enabledModulesRevision = 0;
         this.lastDisableMeta = new Map();
         this.lastActiveMacros = [];
 
@@ -22,7 +23,9 @@ class MacroStateClass {
         this.listeners = [];
         GameState.subscribe((event) => {
             if (event.state !== 'DISCONNECTED') return;
-            const running = this.getEnabledMacros().map((name) => this.getModule(name));
+            const running = this.getEnabledMacros()
+                .map((name) => this.getModule(name))
+                .filter(Boolean);
             running.sort((a, b) => Number(a.isParentManaged) - Number(b.isParentManaged));
             running.forEach((module) => module.toggle(false, module.isParentManaged, 'game-state'));
         });
@@ -36,6 +39,7 @@ class MacroStateClass {
     }
 
     notifyModuleChange(module, enabled, context) {
+        this.enabledModulesRevision++;
         const event = { module, enabled, context, meta: enabled ? null : this.getLastDisableMeta(module.name) };
         this.listeners.slice().forEach((listener) => {
             try {
@@ -55,9 +59,7 @@ class MacroStateClass {
     }
 
     registerModule(module) {
-        if (module.name) {
-            this.modules.set(module.name, module);
-        }
+        if (module.name) this.modules.set(module.name, module);
     }
 
     getModule(name) {
@@ -128,18 +130,14 @@ class MacroStateClass {
             this.macroStartTimes.set(moduleName, canResume ? now - lastMeta.durationMs : now);
         }
 
-        if (wasEmpty) {
-            this.startTime = this.getModuleStartTime(moduleName);
-        }
-
+        if (wasEmpty) this.startTime = this.getModuleStartTime(moduleName);
         this.running = true;
         this.activeMacro = moduleName;
         this.trackLastActiveMacro(moduleName);
     }
 
     onModuleDisabled(moduleName, context = 'user') {
-        if (!moduleName) return;
-        if (!this.enabledMacros.has(moduleName)) return;
+        if (!moduleName || !this.enabledMacros.has(moduleName)) return;
 
         this.lastDisableMeta.set(moduleName, this.captureDisableMeta(moduleName, context));
         this.enabledMacros.delete(moduleName);
@@ -201,9 +199,7 @@ class MacroStateClass {
         const savedKeycode = existingKeybinds[this.lastMacroToggleTitle] || Keyboard.KEY_NONE;
         this.lastMacroToggleKey = new KeyBind(this.lastMacroToggleTitle, savedKeycode, 'v5_core');
 
-        this.lastMacroToggleKey.registerKeyPress(() => {
-            this.toggleLastUsedMacroFromUser();
-        });
+        this.lastMacroToggleKey.registerKeyPress(() => this.toggleLastUsedMacroFromUser());
 
         register('gameUnload', () => {
             const keycode = this.lastMacroToggleKey?.getKeyCode();
@@ -234,3 +230,26 @@ class MacroStateClass {
 }
 
 export const MacroState = new MacroStateClass();
+
+// V5 5.2 named API. Keep the object facade above for Offline modules that still use it.
+export const modules = MacroState.modules;
+export const getEnabledModulesRevision = () => MacroState.enabledModulesRevision;
+export const markEnabledModulesChanged = () => MacroState.enabledModulesRevision++;
+export const getLastActiveMacros = () => MacroState.getLastActiveMacros();
+export const getModule = (name) => MacroState.getModule(name);
+export const isMacroRunning = () => MacroState.isMacroRunning();
+export const getActiveMacro = () => MacroState.getActiveMacro();
+export const getStartTime = () => MacroState.getStartTime();
+export const getEnabledMacros = () => MacroState.getEnabledMacros();
+export const getLastDisableMeta = (name) => MacroState.getLastDisableMeta(name);
+export const getModuleStartTime = (name) => MacroState.getModuleStartTime(name);
+export const registerModule = (module) => MacroState.registerModule(module);
+export const isFailsafeMacroRunning = () => MacroState.isFailsafeMacroRunning();
+export const notifyFailsafeIntensity = (delta) => MacroState.notifyFailsafeIntensity(delta);
+export const onModuleEnabled = (name) => MacroState.onModuleEnabled(name);
+export const onModuleDisabled = (name, context = 'user') => MacroState.onModuleDisabled(name, context);
+export const getModuleDuration = (name) => MacroState.getModuleDuration(name);
+export const getModuleElapsedMs = (name) => MacroState.getModuleElapsedMs(name);
+export const getModuleActiveHours = (name) => MacroState.getModuleElapsedMs(name) / 3600000;
+export const setupLastMacroToggleKey = () => MacroState.setupLastMacroToggleKey();
+export const subscribe = (callback) => MacroState.subscribe(callback);

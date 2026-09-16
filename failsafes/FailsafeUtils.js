@@ -7,7 +7,6 @@ const DEFAULT_FAILSAFE_SETTINGS = {
     playerProximityDistance: 3,
     pingOnCheck: 'None',
     playSoundOnCheck: true,
-    ignoreTeleportItems: false,
     notifyMacroIntensity: true,
 };
 
@@ -61,7 +60,6 @@ class FailsafeUtils {
             reactionInput: failsafesConfig['Failsafe Detection Delay (ms)'] ?? DEFAULT_FAILSAFE_SETTINGS.FailsafeReactionTime,
             playerProximityDistance: failsafesConfig['Player Proximity Distance'] ?? DEFAULT_FAILSAFE_SETTINGS.playerProximityDistance,
             playSoundOnCheck: failsafesConfig['Play sound on check'] ?? DEFAULT_FAILSAFE_SETTINGS.playSoundOnCheck,
-            ignoreTeleportItems: failsafesConfig['Ignore Held Teleport Items'] ?? DEFAULT_FAILSAFE_SETTINGS.ignoreTeleportItems,
             notifyMacroIntensity: failsafesConfig['Notify Macro Intensity'] ?? DEFAULT_FAILSAFE_SETTINGS.notifyMacroIntensity,
             pingOnCheck: 'None',
         };
@@ -101,7 +99,6 @@ class FailsafeUtils {
             playerProximityDistance: normalized.playerProximityDistance,
             pingOnCheck: normalized.pingOnCheck,
             playSoundOnCheck: normalized.playSoundOnCheck,
-            ignoreTeleportItems: normalized.ignoreTeleportItems,
             notifyMacroIntensity: normalized.notifyMacroIntensity,
         };
     }

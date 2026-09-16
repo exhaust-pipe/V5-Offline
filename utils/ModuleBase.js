@@ -3,7 +3,6 @@ import { OverlayManager } from '../gui/OverlayUtils';
 import { Categories } from '../gui/categories/CategorySystem';
 import { Chat } from './Chat';
 import { MacroState } from './MacroState';
-import { Mixin } from './MixinManager';
 import { ScheduleTask } from './ScheduleTask';
 import { manager } from './SkyblockEvents';
 import { Utils } from './Utils';
@@ -152,7 +151,7 @@ export class ModuleBase {
             this.isParentManaged = parentManaged;
 
             if (this.isMacro) {
-                Mixin.set('macroEnabled', true);
+                Client.setMacroEnabled(true);
                 MacroState.onModuleEnabled(this.name, toggleContext);
             }
 
@@ -165,13 +164,15 @@ export class ModuleBase {
             } catch (e) {
                 console.error(`Error in ${this.name}.onEnable():`);
                 console.error('V5 Caught error' + e + e.stack);
+                this.toggle(false, parentManaged, toggleContext);
+                return;
             }
             if (!this.enabled) return;
             this._registers.forEach((h) => h.register());
         } else {
             if (this.isMacro) {
                 MacroState.onModuleDisabled(this.name, toggleContext);
-                Mixin.set('macroEnabled', MacroState.isMacroRunning());
+                Client.setMacroEnabled(MacroState.isMacroRunning());
             }
 
             if (this.oid) {

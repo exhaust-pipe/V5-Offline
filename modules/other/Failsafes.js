@@ -24,21 +24,11 @@ class Failsafes extends ModuleBase {
         this.actionDelay = { low: 500, high: 2000 };
         this.pingOnCheck = 'None';
         this.playSoundOnCheck = true;
-        this.ignoreTeleportItems = false;
         this.notifyMacroIntensity = true;
         this.lastBanLogTime = 0;
 
         const sectionName = 'Failsafes';
 
-        this.addDirectToggle(
-            'Ignore Held Teleport Items',
-            (value) => {
-                this.ignoreTeleportItems = value;
-            },
-            'Skip teleport detection while holding Aspect of the Void or Aspect of the End.',
-            this.ignoreTeleportItems,
-            sectionName
-        );
         this.addDirectToggle(
             'Notify Macro Intensity',
             (value) => {

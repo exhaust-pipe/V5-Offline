@@ -1,8 +1,8 @@
-import { Utils } from '../Utils';
+import { playerIsCollided } from '../Utils';
 
 let lastActionTime = Date.now();
 
-function setKeysBasedOnYaw(yaw, shouldJump) {
+export function setKeysBasedOnYaw(yaw, shouldJump) {
     if (Client.isInGui() && !Client.isInChat()) {
         Client.stopMovement();
         return;
@@ -14,16 +14,14 @@ function setKeysBasedOnYaw(yaw, shouldJump) {
     Client.setKey('s', yaw > 135.5 || yaw < -135.5);
 
     const motionScale = Math.abs(Player.getMotionX()) + Math.abs(Player.getMotionZ());
-    const jump = shouldJump && motionScale < 0.04 && Date.now() - lastActionTime > 500 && Utils.playerIsCollided();
+    const jump = shouldJump && motionScale < 0.04 && Date.now() - lastActionTime > 500 && playerIsCollided();
     Client.setKey('space', jump);
     if (jump) lastActionTime = Date.now();
 }
 
-function setKeysForStraightLine(yaw, shouldJump, ignoreBottomSlab) {
-    if (Client.isInGui() && !Client.isInChat()) {
-        Client.stopMovement();
-        return;
-    }
+export function setKeysForStraightLine(yaw, shouldJump, ignoreBottomSlab) {
+    Client.stopMovement();
+    if (Client.isInGui() && !Client.isInChat()) return;
 
     const quadrants = [
         { min: -22.5, max: 22.5, keys: ['w'] },
@@ -37,13 +35,19 @@ function setKeysForStraightLine(yaw, shouldJump, ignoreBottomSlab) {
         { min: 112.5, max: 157.5, keys: ['s', 'd'] },
     ];
 
-    const keys = quadrants.find(({ min, max }) => yaw >= min && yaw <= max)?.keys ?? [];
-    ['w', 'a', 's', 'd'].forEach((key) => Client.setKey(key, keys.includes(key)));
+    for (const { min, max, keys } of quadrants) {
+        if (yaw >= min && yaw <= max) {
+            keys.forEach((key) => Client.setKey(key, true));
+            break;
+        }
+    }
 
-    Client.setKey('space', !!shouldJump && Utils.playerIsCollided(!!ignoreBottomSlab));
+    Client.setKey('space', !!shouldJump && playerIsCollided(!!ignoreBottomSlab));
 }
 
-function setKeysForStraightLineCoords(x, y, z, shouldJump, ignoreBottomSlab) {
+export function setKeysForStraightLineCoords(x, y, z, shouldJump, ignoreBottomSlab) {
+    if (Client.isInGui() && !Client.isInChat()) return;
+
     const dx = x - Player.getX();
     const dz = z - Player.getZ();
     let angle = -(Math.atan2(dx, dz) * (180 / Math.PI)) - Player.getYaw();
@@ -54,4 +58,8 @@ function setKeysForStraightLineCoords(x, y, z, shouldJump, ignoreBottomSlab) {
     setKeysForStraightLine(angle, shouldJump, ignoreBottomSlab);
 }
 
-export const Movement = { setKeysBasedOnYaw, setKeysForStraightLine, setKeysForStraightLineCoords };
+export const Movement = {
+    setKeysBasedOnYaw,
+    setKeysForStraightLine,
+    setKeysForStraightLineCoords,
+};
