@@ -8,22 +8,17 @@ import {
     drawSubcategoryButtons,
     getModuleNavRect,
 } from '../categories/CategoryRenderer';
-import { BORDER_WIDTH, PADDING, THEME, clamp, drawRect, drawRoundedRectangleWithBorder, easeOutBack, resetScissor, scissor } from '../Utils';
-import { ANIMATION_DURATION, GuiRectangles, GuiState } from './GuiState';
+import { BORDER_WIDTH, PADDING, THEME, drawRect, drawRoundedRectangleWithBorder, resetScissor, scissor } from '../Utils';
+import { GuiRectangles, GuiState } from './GuiState';
 import { GuiTooltip } from './GuiTooltip';
 import { macroToggleGui } from '../MacroToggleGui';
 
 export const drawGUI = (mouseX, mouseY) => {
-    const elapsed = Date.now() - GuiState.openStartTime;
-    const progress = clamp(elapsed / ANIMATION_DURATION, 0, 1);
-    const ease = easeOutBack(progress);
-    GuiState.isOpening = progress < 1;
+    // Keep the 5.2 interaction/layout logic, but avoid renderer-specific blur and
+    // opening transforms. The NanoVG backend only needs the stable GUI scale.
+    GuiState.isOpening = false;
 
     const targetBackground = GuiRectangles.Background;
-    const centerX = targetBackground.x + targetBackground.width / 2;
-    const centerY = targetBackground.y + targetBackground.height / 2;
-
-    Render2D.blurBackground();
 
     try {
         Render2D.save();
@@ -32,16 +27,10 @@ export const drawGUI = (mouseX, mouseY) => {
         Render2D.scale(guiScale, guiScale);
 
         drawRoundedRectangleWithBorder(targetBackground);
-
         GuiTooltip.reset();
 
         if (GuiState.macroToggleOpen) {
-            Render2D.save();
-            Render2D.translate(centerX, centerY);
-            Render2D.scale(ease, ease);
-            Render2D.translate(-centerX, -centerY);
             macroToggleGui.draw(mouseX, mouseY);
-            Render2D.restore();
         } else {
             drawRoundedRectangleWithBorder(GuiRectangles.LeftPanel);
             drawRect({
@@ -55,11 +44,6 @@ export const drawGUI = (mouseX, mouseY) => {
             drawLeftPanelIcons(mouseX, mouseY);
 
             SearchBar.draw(mouseX, mouseY, GuiRectangles.ModuleSearch, GuiRectangles.LeftPanel.y + PADDING, true);
-
-            Render2D.save();
-            Render2D.translate(centerX, centerY);
-            Render2D.scale(ease, ease);
-            Render2D.translate(-centerX, -centerY);
 
             const panel = GuiRectangles.RightPanel;
             const drawCategoryNav = (category, xOffset, drawBackground = true) => {
@@ -98,8 +82,6 @@ export const drawGUI = (mouseX, mouseY) => {
             categoryManager?.draw(mouseX, mouseY);
             resetScissor();
             categoryManager?.drawPopups?.(mouseX, mouseY);
-
-            Render2D.restore();
         }
 
         GuiTooltip.update();
