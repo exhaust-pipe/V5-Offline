@@ -1,11 +1,11 @@
-import { drawStatsHud, getInventoryHudBounds, getStatsHudBounds, getStatsHudLines } from '../../gui/OverlayRenderers';
-import { colorWithAlpha, THEME } from '../../gui/Utils';
+import { drawInventoryHudBackground, drawStatsHud, getInventoryHudBounds, getStatsHudBounds, getStatsHudLines } from '../../gui/OverlayRenderers';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { getConfigFile, writeConfigFile } from '../../utils/Utils';
 import { OverlayManager } from '../../gui/OverlayUtils';
 import { GuiState } from '../../gui/core/GuiState';
 
 const DrawContextHolder = com.chattriggers.ctjs.api.render.DrawContextHolder;
+const NanoVGPIP = com.chattriggers.ctjs.api.render.NanoVGPIP;
 
 class HUD extends ModuleBase {
     constructor() {
@@ -56,6 +56,7 @@ class HUD extends ModuleBase {
             'renderOverlay',
             () => this.renderOverlay()
         );
+        this.inventoryBackgroundCallback = () => drawInventoryHudBackground(this.inventory);
         this.statsCallback = () => this.renderStatsOverlay();
         this.statsRegistration = null;
 
@@ -179,57 +180,6 @@ class HUD extends ModuleBase {
         }
     }
 
-    fillRoundedRect(context, x, y, width, height, radius, color) {
-        const left = Math.round(x);
-        const top = Math.round(y);
-        const right = Math.round(x + width);
-        const bottom = Math.round(y + height);
-        const maxRadius = Math.max(0, Math.floor(Math.min((right - left) / 2, (bottom - top) / 2)));
-        const r = Math.min(maxRadius, Math.max(0, Math.round(radius)));
-
-        if (r <= 1) {
-            context.fill(left, top, right, bottom, color);
-            return;
-        }
-
-        context.fill(left, top + r, right, bottom - r, color);
-        context.fill(left + r, top, right - r, bottom, color);
-
-        for (let row = 0; row < r; row++) {
-            const dy = r - row - 0.5;
-            const inset = Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy)));
-            context.fill(left + inset, top + row, right - inset, top + row + 1, color);
-            context.fill(left + inset, bottom - row - 1, right - inset, bottom - row, color);
-        }
-    }
-
-    drawInventoryHudBackground(context) {
-        const { x, y, width, height, scale } = this.inventory;
-        const border = Math.max(1, Math.round(scale));
-        const radius = 6.6 * scale;
-        const borderColor = THEME.BORDER.getRGB();
-        const backgroundColor = THEME.BG_COMPONENT.getRGB();
-
-        this.fillRoundedRect(context, x - border, y - border, width + border * 2, height + border * 2, radius + border, borderColor);
-        this.fillRoundedRect(context, x, y, width, height, radius, backgroundColor);
-
-        const pad = 6 * scale;
-        const slot = 18 * scale;
-        const gap = 4 * scale;
-        const rowWidth = 9 * slot;
-        const separatorY = Math.round(y + pad + 3 * slot + gap / 2 - Math.max(1, scale) / 2);
-        const separatorHeight = Math.max(1, Math.round(scale));
-        const segments = 18;
-
-        for (let i = 0; i < segments; i++) {
-            const progress = (i + 0.5) / segments;
-            const alpha = 0.3 * (1 - Math.abs(progress * 2 - 1));
-            const x1 = Math.round(x + pad + (rowWidth * i) / segments);
-            const x2 = Math.round(x + pad + (rowWidth * (i + 1)) / segments);
-            context.fill(x1, separatorY, Math.max(x1 + 1, x2), separatorY + separatorHeight, colorWithAlpha(THEME.ACCENT, alpha));
-        }
-    }
-
     drawInventoryHudItems(context) {
         const inventory = Player.getPlayer()?.getInventory();
         if (!inventory || !context) return;
@@ -263,9 +213,9 @@ class HUD extends ModuleBase {
         if (!context) return;
 
         try {
-            // Submit background first, then item render states, matching the v1 ordering
-            // while keeping both in Minecraft's GUI extraction/render pipeline.
-            if (this.INVENTORY_HUD_BACKGROUND) this.drawInventoryHudBackground(context);
+            // Queue the same NanoVG background used by the overlay editor before the vanilla item states.
+            // The ordered PIP layer preserves the v1 background -> items ordering without Skija.
+            if (this.INVENTORY_HUD_BACKGROUND) NanoVGPIP.draw(context, this.inventoryBackgroundCallback);
             this.drawInventoryHudItems(context);
         } catch (e) {
             console.error(e);
