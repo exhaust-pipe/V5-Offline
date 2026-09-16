@@ -1,4 +1,4 @@
-import { drawStatsHud, getInventoryHudBounds, getStatsHudBounds, getStatsHudLines } from '../../gui/OverlayRenderers';
+import { drawInventoryHudBackground, drawStatsHud, getInventoryHudBounds, getStatsHudBounds, getStatsHudLines } from '../../gui/OverlayRenderers';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { getConfigFile, writeConfigFile } from '../../utils/Utils';
 import { OverlayManager } from '../../gui/OverlayUtils';
@@ -18,10 +18,23 @@ class HUD extends ModuleBase {
 
         this.STATS_HUD = true;
         this.INVENTORY_HUD = true;
+        this.INVENTORY_HUD_BACKGROUND = true;
         this.worldLoaded = World.isLoaded();
 
         this.addToggle('Stats Hud', (v) => (this.STATS_HUD = !!v), 'Shows FPS, TPS, Ping etc.', true);
-        this.addToggle('Inventory Hud', (v) => (this.INVENTORY_HUD = !!v), 'Turns on the inventory Hud', true);
+        this.addToggle('Inventory Hud', (v) => {
+            this.INVENTORY_HUD = !!v;
+            this.updateRenderRegistrations();
+        }, 'Turns on the inventory Hud', true);
+        this.addToggle(
+            '  Show Background',
+            (v) => {
+                this.INVENTORY_HUD_BACKGROUND = !!v;
+                this.updateRenderRegistrations();
+            },
+            'Show the Inventory Hud background during normal gameplay. The overlay editor always shows the background preview.',
+            true
+        );
 
         this.positionConfig = getConfigFile('OverlayPositions/hud_positions.json') || {};
         this.stats = this.loadOverlayState('stats', { x: 10, y: 10, scale: 1.0 });
@@ -41,7 +54,9 @@ class HUD extends ModuleBase {
             'postGuiRender',
             () => this.renderOverlay()
         );
+        this.inventoryBackgroundCallback = () => this.renderInventoryBackground();
         this.statsCallback = () => this.renderStatsOverlay();
+        this.inventoryBackgroundRegistration = null;
         this.statsRegistration = null;
 
         register('gameUnload', () => this.savePositions());
@@ -162,6 +177,15 @@ class HUD extends ModuleBase {
             Render2D.unregisterV5Render(this.statsRegistration);
             this.statsRegistration = null;
         }
+
+        const showInventoryBackground =
+            visible && this.INVENTORY_HUD && this.INVENTORY_HUD_BACKGROUND && this.inventory.enabled !== false;
+        if (showInventoryBackground && !this.inventoryBackgroundRegistration) {
+            this.inventoryBackgroundRegistration = Render2D.registerV5PreRender(this.inventoryBackgroundCallback);
+        } else if (!showInventoryBackground && this.inventoryBackgroundRegistration) {
+            Render2D.unregisterV5PreRender(this.inventoryBackgroundRegistration);
+            this.inventoryBackgroundRegistration = null;
+        }
     }
 
     drawInventoryHudItems() {
@@ -191,12 +215,26 @@ class HUD extends ModuleBase {
         }
     }
 
+    renderInventoryBackground() {
+        if (
+            !this.prepareOverlay(
+                this.INVENTORY_HUD && this.INVENTORY_HUD_BACKGROUND && this.inventory.enabled !== false,
+                this.recalcInventoryBounds
+            )
+        )
+            return;
+
+        try {
+            drawInventoryHudBackground(this.inventory);
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
     renderOverlay() {
         if (!this.prepareOverlay(this.INVENTORY_HUD && this.inventory.enabled !== false, this.recalcInventoryBounds)) return;
 
         try {
-            // The old SkijaPIP background layer was renderer-specific. Keep the functional
-            // inventory HUD and draw the item grid directly without that decorative layer.
             this.drawInventoryHudItems();
         } catch (e) {
             console.error(e);
