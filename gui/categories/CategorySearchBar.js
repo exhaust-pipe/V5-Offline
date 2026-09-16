@@ -133,8 +133,8 @@ export const SearchBar = {
         const visibleTextWidth = Math.max(0, currentWidth - (this.alignLeft ? this.collapsedWidth + 10 : 35));
 
         if (visibleTextWidth > 0) {
-            Render2D.save();
-            Render2D.scissor(this.textX, y, visibleTextWidth, this.height);
+            NVG.save();
+            NVG.scissor(this.textX, y, visibleTextWidth, this.height);
 
             if (this.query === '') {
                 drawText('Search...', this.textX, textY, fontSize, THEME.TEXT_MUTED);
@@ -155,7 +155,7 @@ export const SearchBar = {
                 });
             }
 
-            Render2D.restore();
+            NVG.restore();
         }
     },
 
@@ -255,7 +255,7 @@ export const SearchBar = {
                     }
                 }
             } catch (e) {
-                console.error(e);
+                console.error('V5 Caught error' + e + e.stack);
             }
             return true;
         }
@@ -279,10 +279,7 @@ export const SearchBar = {
 
     insertText(text) {
         if (!text) return false;
-        const maxTextWidth =
-            this.getTypingExpandedWidth({
-                width: this.lastPanelWidth || this.typingExpandedWidth,
-            }) - 35;
+        const maxTextWidth = this.getTypingExpandedWidth({ width: this.lastPanelWidth || this.typingExpandedWidth }) - 35;
         let accepted = '';
 
         for (const char of text) {
@@ -295,6 +292,13 @@ export const SearchBar = {
         this.query = this.query.slice(0, this.cursorIndex) + accepted + this.query.slice(this.cursorIndex);
         this.cursorIndex += accepted.length;
         return true;
+    },
+
+    updateHoverBlock(panel, y) {
+        if (!panel) return;
+        const currentWidth = this.animatedWidth;
+        const x = this.getX(panel, currentWidth);
+        this.hoverBlockRect = { x, y, width: currentWidth, height: this.height };
     },
 
     isHoverBlocked(mouseX, mouseY) {
@@ -321,5 +325,9 @@ export const SearchBar = {
         this.animatedWidth = this.collapsedWidth;
         this.cursorIndex = 0;
         this.query = '';
+    },
+
+    getSearchQuery() {
+        return this.query.toLowerCase().trim();
     },
 };

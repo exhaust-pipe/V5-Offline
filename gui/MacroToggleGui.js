@@ -144,8 +144,8 @@ export const macroToggleGui = {
         });
         drawText(query || 'Filter macros...', layout.search.x + 8, layout.search.y + 12, FontSizes.SMALL, query ? THEME.TEXT : THEME.TEXT_MUTED);
 
-        Render2D.save();
-        Render2D.scissor(layout.list.x, layout.list.y, layout.list.width, layout.list.height);
+        NVG.save();
+        NVG.scissor(layout.list.x, layout.list.y, layout.list.width, layout.list.height);
         let rowY = listY - scrollY;
         rows.forEach((entry) => {
             if (entry.subcategory) {
@@ -175,7 +175,7 @@ export const macroToggleGui = {
             drawText(module.name, row.x + 32, row.y + row.height / 2, FontSizes.REGULAR, moduleColor || (module.enabled ? THEME.TEXT : THEME.TEXT_MUTED));
             drawText(keyName, row.x + row.width - 8 - getTextWidth(keyName, FontSizes.SMALL), row.y + row.height / 2, FontSizes.SMALL, THEME.TEXT_MUTED);
         });
-        Render2D.restore();
+        NVG.restore();
 
         if (rows.length === 0) drawText('No macros found', x + 8, listY + 12, FontSizes.REGULAR, THEME.TEXT_MUTED);
     },

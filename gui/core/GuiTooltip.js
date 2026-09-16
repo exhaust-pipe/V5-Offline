@@ -6,7 +6,6 @@ export const GuiTooltip = {
     tooltipHoverTime: 0,
     currentTooltipText: null,
     isHoveringTooltipSource: false,
-    layout: null,
 
     reset() {
         this.isHoveringTooltipSource = false;
@@ -22,20 +21,22 @@ export const GuiTooltip = {
     draw(mouseX, mouseY) {
         if (!this.tooltipToDraw) return;
 
+        const lines = this.tooltipToDraw.split('\n');
         const PADDING = 8;
         const MOUSE_OFFSET_X = 12;
         const MOUSE_OFFSET_Y = 12;
         const fontSize = FontSizes.SMALL;
-        if (!this.layout || this.layout.text !== this.tooltipToDraw) {
-            const lines = this.tooltipToDraw.split('\n');
-            this.layout = {
-                text: this.tooltipToDraw,
-                lines,
-                width: Math.max(...lines.map((line) => getTextWidth(line, fontSize))) + PADDING * 2,
-                height: lines.length * (fontSize + 2) + PADDING * 2,
-            };
-        }
-        const { lines, width: tooltipWidth, height: tooltipHeight } = this.layout;
+        let tooltipWidth = 0;
+
+        lines.forEach((line) => {
+            const lineWidth = getTextWidth(line, fontSize);
+            if (lineWidth > tooltipWidth) {
+                tooltipWidth = lineWidth;
+            }
+        });
+
+        tooltipWidth += PADDING * 2;
+        const tooltipHeight = lines.length * (fontSize + 2) + PADDING * 2;
 
         let tooltipX = mouseX + MOUSE_OFFSET_X;
         let tooltipY = mouseY + MOUSE_OFFSET_Y;

@@ -1,7 +1,7 @@
-import { chat } from '../utils/Chat';
+import { Chat } from '../utils/Chat';
 import { Color } from '../utils/Constants';
-import { getModule } from '../utils/MacroState';
-import { getConfigFile, writeConfigFile } from '../utils/Utils';
+import { MacroState } from '../utils/MacroState';
+import { Utils } from '../utils/Utils';
 import { Categories } from './categories/CategorySystem';
 import { Button } from './components/Button';
 import { ColorPicker } from './components/ColorPicker';
@@ -16,15 +16,13 @@ export const SettingsMap = new Map();
 const getCategoryItems = (category) => category.items.reduce((acc, group) => acc.concat(group.type === 'separator' ? group.items : [group]), []);
 const getDirectComponentParentName = (category, component) =>
     category.name === 'Theme' ? 'Theme V2' : category.name === 'Settings' && component.sectionName ? component.sectionName : category.name;
-const forEachSettingComponent = (components, callback) =>
-    components.forEach((component) => (component instanceof Popup ? forEachSettingComponent(component.components, callback) : callback(component)));
 
 function buildSettingsMapFromComponents() {
     SettingsMap.clear();
 
     Categories.categories.forEach((category) => {
         getCategoryItems(category).forEach((item) => {
-            forEachSettingComponent(item.components, (component) => {
+            item.components.forEach((component) => {
                 const key = `${item.title}.${component.title}`;
                 storeComponentValue(key, component);
             });
@@ -46,7 +44,7 @@ function buildSettingsMapFromComponents() {
 }
 
 function storeModuleEnabledValue(moduleName) {
-    const module = getModule(moduleName);
+    const module = MacroState.getModule(moduleName);
     if (!module || module.showEnabledToggle === false) return;
     SettingsMap.set(`${moduleName}.Enabled`, !!module.enabled);
 }
@@ -78,7 +76,7 @@ export const saveSettings = () => {
         settings[itemTitle][componentTitle] = value;
     }
 
-    writeConfigFile('config.json', settings);
+    Utils.writeConfigFile('config.json', settings);
 };
 
 export const applySettings = () => {
@@ -89,7 +87,7 @@ export const applySettings = () => {
                 applyModuleEnabled(item.title, enabled);
             }
 
-            forEachSettingComponent(item.components, (component) => {
+            item.components.forEach((component) => {
                 triggerComponentCallback(item.title, component);
             });
         });
@@ -106,7 +104,7 @@ export const applySettings = () => {
 function applyModuleEnabled(moduleName, savedValue) {
     if (savedValue === undefined) return;
 
-    const module = getModule(moduleName);
+    const module = MacroState.getModule(moduleName);
     if (!module || module.showEnabledToggle === false) return;
 
     module.toggle(!!savedValue);
@@ -126,7 +124,7 @@ function triggerComponentCallback(parentName, component) {
 }
 
 export const loadSettings = () => {
-    const settings = getConfigFile('config.json');
+    const settings = Utils.getConfigFile('config.json');
 
     if (!settings || Object.keys(settings).length === 0) {
         buildSettingsMapFromComponents();
@@ -138,7 +136,7 @@ export const loadSettings = () => {
             getCategoryItems(category).forEach((item) => {
                 const savedItemSettings = settings[item.title];
                 if (savedItemSettings) {
-                    forEachSettingComponent(item.components, (component) => {
+                    item.components.forEach((component) => {
                         loadComponentValue(component, savedItemSettings[component.title]);
                     });
                 }
@@ -159,7 +157,7 @@ export const loadSettings = () => {
         mergeSavedModuleEnabledStates(settings);
         applySettings();
     } catch (e) {
-        chat(`Error loading settings: ${e}`);
+        Chat.message(`Error loading settings: ${e}`);
         console.error('V5 Caught error' + e + e.stack);
         buildSettingsMapFromComponents();
     }

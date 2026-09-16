@@ -26,7 +26,6 @@ export class Button {
         this.showContainer = options.showContainer !== false;
 
         this.optionPanelWidth = 0;
-        this.optionPanelHeight = 0;
         this.containerHeight = 24;
         this.description = null;
         this.highlight = createHighlight();
@@ -34,12 +33,10 @@ export class Button {
 
         this.pressProgress = 0;
         this.pressLastUpdate = 0;
-        this.buttonTextWidth = null;
     }
 
     setButtonText(text) {
         this.buttonText = text;
-        this.buttonTextWidth = null;
     }
 
     startHighlight() {
@@ -76,7 +73,7 @@ export class Button {
         const panelWidth = this.optionPanelWidth - PADDING * 2;
         const buttonPadding = 10;
         const buttonHeight = 18;
-        const buttonTextWidth = this.buttonTextWidth ?? (this.buttonTextWidth = getTextWidth(this.buttonText, FontSizes.REGULAR));
+        const buttonTextWidth = getTextWidth(this.buttonText, FontSizes.REGULAR);
         const buttonWidth = Math.max(64, buttonTextWidth + buttonPadding * 2);
 
         if (this.showContainer) {
@@ -129,8 +126,9 @@ export class Button {
         }
 
         const pressOffset = this.pressProgress > 0 ? 1 : 0;
+        const textX = buttonX + buttonWidth / 2 - buttonTextWidth / 2;
         const textY = buttonY + buttonHeight / 2 + pressOffset;
-        drawText(this.buttonText, buttonX + buttonWidth / 2, textY, FontSizes.REGULAR, THEME.TEXT, 18);
+        drawText(this.buttonText, textX, textY, FontSizes.REGULAR, THEME.TEXT);
 
         const tooltipRect = this.showContainer
             ? {
