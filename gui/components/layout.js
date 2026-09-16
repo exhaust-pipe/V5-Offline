@@ -60,6 +60,21 @@ export const getVisibleRowRange = (rows, top, bottom) => {
     return [first, last];
 };
 
+const rebaseDirectLayout = (cache, startY) => {
+    const previousBaseY = cache.baseY || 0;
+    const delta = startY - previousBaseY;
+    if (delta !== 0) {
+        cache.rows.forEach((row) => {
+            row.y += delta;
+        });
+        cache.sections.forEach((section) => {
+            section.y += delta;
+        });
+    }
+    cache.baseY = startY;
+    return cache;
+};
+
 export const layoutDirectComponents = (components, startY = 0, useExpandedHeightWhenStatic = false) => {
     let cache = components._directLayoutCache;
     if (!cache) {
@@ -82,15 +97,17 @@ export const layoutDirectComponents = (components, startY = 0, useExpandedHeight
         cache.sectionByName.clear();
         cache.revision++;
         cache.expanded = useExpandedHeightWhenStatic;
+        cache.ready = false;
+        cache.baseY = 0;
     }
     const rows = cache.rows;
     const sections = cache.sections;
     const hasDynamicHeight = rows.some(({ component }) => component.animationProgress !== undefined);
     if (!hasDynamicHeight && cache.ready) {
-        cache.baseY = startY;
-        return cache;
+        return rebaseDirectLayout(cache, startY);
     }
     sections.length = 0;
+    cache.baseY = 0;
     let y = 0;
     let currentSection = null;
     let section = null;
@@ -122,8 +139,7 @@ export const layoutDirectComponents = (components, startY = 0, useExpandedHeight
     });
 
     closeSection();
-    cache.baseY = startY;
     cache.height = y;
     cache.ready = true;
-    return cache;
+    return rebaseDirectLayout(cache, startY);
 };
