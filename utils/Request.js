@@ -1,4 +1,5 @@
 import { fetchURL } from './NetworkUtils';
+import { Promise } from './Promise';
 
 const HYPIXEL_PREFIX = 'https://api.hypixel.net/';
 
