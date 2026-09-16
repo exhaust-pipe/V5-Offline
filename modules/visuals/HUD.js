@@ -1,4 +1,5 @@
-import { drawInventoryHudBackground, drawStatsHud, getInventoryHudBounds, getStatsHudBounds, getStatsHudLines } from '../../gui/OverlayRenderers';
+import { drawStatsHud, getInventoryHudBounds, getStatsHudBounds, getStatsHudLines } from '../../gui/OverlayRenderers';
+import { colorWithAlpha, THEME } from '../../gui/Utils';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { getConfigFile, writeConfigFile } from '../../utils/Utils';
 import { OverlayManager } from '../../gui/OverlayUtils';
@@ -22,19 +23,23 @@ class HUD extends ModuleBase {
         this.worldLoaded = World.isLoaded();
 
         this.addToggle('Stats Hud', (v) => (this.STATS_HUD = !!v), 'Shows FPS, TPS, Ping etc.', true);
-        this.addToggle('Inventory Hud', (v) => {
-            this.INVENTORY_HUD = !!v;
-            this.updateRenderRegistrations();
-        }, 'Turns on the inventory Hud', true);
-        this.addToggle(
-            '  Show Background',
+        this.inventoryHudToggle = this.addToggle(
+            'Inventory Hud',
             (v) => {
-                this.INVENTORY_HUD_BACKGROUND = !!v;
+                this.INVENTORY_HUD = !!v;
+                if (this.inventoryBackgroundToggle) this.inventoryBackgroundToggle.visible = this.INVENTORY_HUD;
                 this.updateRenderRegistrations();
             },
+            'Turns on the inventory Hud',
+            true
+        );
+        this.inventoryBackgroundToggle = this.addToggle(
+            'Show Background',
+            (v) => (this.INVENTORY_HUD_BACKGROUND = !!v),
             'Show the Inventory Hud background during normal gameplay. The overlay editor always shows the background preview.',
             true
         );
+        this.inventoryBackgroundToggle.visible = this.INVENTORY_HUD;
 
         this.positionConfig = getConfigFile('OverlayPositions/hud_positions.json') || {};
         this.stats = this.loadOverlayState('stats', { x: 10, y: 10, scale: 1.0 });
@@ -44,19 +49,14 @@ class HUD extends ModuleBase {
             scale: 1.0,
         });
 
+        // Match the v1 HUD lifecycle: inventory contents are submitted with the HUD,
+        // before Minecraft screens are extracted. Do not submit them again post-GUI.
         this.when(
             () => this.INVENTORY_HUD,
             'renderOverlay',
             () => this.renderOverlay()
         );
-        this.when(
-            () => this.INVENTORY_HUD,
-            'postGuiRender',
-            () => this.renderOverlay()
-        );
-        this.inventoryBackgroundCallback = () => this.renderInventoryBackground();
         this.statsCallback = () => this.renderStatsOverlay();
-        this.inventoryBackgroundRegistration = null;
         this.statsRegistration = null;
 
         register('gameUnload', () => this.savePositions());
@@ -160,7 +160,7 @@ class HUD extends ModuleBase {
     }
 
     prepareOverlay(enabled, recalc) {
-        if (GuiState.myGui.isOpen() || OverlayManager.drawingGUI || !enabled || !this.worldLoaded) return false;
+        if (Client.isInGui() || GuiState.myGui.isOpen() || OverlayManager.drawingGUI || !enabled || !this.worldLoaded) return false;
 
         if (Render2D.screen.getWidth() <= 0 || Render2D.screen.getHeight() <= 0) return false;
 
@@ -170,27 +170,68 @@ class HUD extends ModuleBase {
 
     updateRenderRegistrations() {
         this.syncFromOverlayEditor();
-        const visible = this.worldLoaded && !GuiState.myGui.isOpen() && !OverlayManager.drawingGUI;
+        const visible = this.worldLoaded && !Client.isInGui() && !GuiState.myGui.isOpen() && !OverlayManager.drawingGUI;
         if (visible && this.STATS_HUD && this.stats.enabled !== false && !this.statsRegistration) {
             this.statsRegistration = Render2D.registerV5Render(this.statsCallback);
         } else if ((!visible || !this.STATS_HUD || this.stats.enabled === false) && this.statsRegistration) {
             Render2D.unregisterV5Render(this.statsRegistration);
             this.statsRegistration = null;
         }
+    }
 
-        const showInventoryBackground =
-            visible && this.INVENTORY_HUD && this.INVENTORY_HUD_BACKGROUND && this.inventory.enabled !== false;
-        if (showInventoryBackground && !this.inventoryBackgroundRegistration) {
-            this.inventoryBackgroundRegistration = Render2D.registerV5PreRender(this.inventoryBackgroundCallback);
-        } else if (!showInventoryBackground && this.inventoryBackgroundRegistration) {
-            Render2D.unregisterV5PreRender(this.inventoryBackgroundRegistration);
-            this.inventoryBackgroundRegistration = null;
+    fillRoundedRect(context, x, y, width, height, radius, color) {
+        const left = Math.round(x);
+        const top = Math.round(y);
+        const right = Math.round(x + width);
+        const bottom = Math.round(y + height);
+        const maxRadius = Math.max(0, Math.floor(Math.min((right - left) / 2, (bottom - top) / 2)));
+        const r = Math.min(maxRadius, Math.max(0, Math.round(radius)));
+
+        if (r <= 1) {
+            context.fill(left, top, right, bottom, color);
+            return;
+        }
+
+        context.fill(left, top + r, right, bottom - r, color);
+        context.fill(left + r, top, right - r, bottom, color);
+
+        for (let row = 0; row < r; row++) {
+            const dy = r - row - 0.5;
+            const inset = Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy)));
+            context.fill(left + inset, top + row, right - inset, top + row + 1, color);
+            context.fill(left + inset, bottom - row - 1, right - inset, bottom - row, color);
         }
     }
 
-    drawInventoryHudItems() {
+    drawInventoryHudBackground(context) {
+        const { x, y, width, height, scale } = this.inventory;
+        const border = Math.max(1, Math.round(scale));
+        const radius = 6.6 * scale;
+        const borderColor = THEME.BORDER.getRGB();
+        const backgroundColor = THEME.BG_COMPONENT.getRGB();
+
+        this.fillRoundedRect(context, x - border, y - border, width + border * 2, height + border * 2, radius + border, borderColor);
+        this.fillRoundedRect(context, x, y, width, height, radius, backgroundColor);
+
+        const pad = 6 * scale;
+        const slot = 18 * scale;
+        const gap = 4 * scale;
+        const rowWidth = 9 * slot;
+        const separatorY = Math.round(y + pad + 3 * slot + gap / 2 - Math.max(1, scale) / 2);
+        const separatorHeight = Math.max(1, Math.round(scale));
+        const segments = 18;
+
+        for (let i = 0; i < segments; i++) {
+            const progress = (i + 0.5) / segments;
+            const alpha = 0.3 * (1 - Math.abs(progress * 2 - 1));
+            const x1 = Math.round(x + pad + (rowWidth * i) / segments);
+            const x2 = Math.round(x + pad + (rowWidth * (i + 1)) / segments);
+            context.fill(x1, separatorY, Math.max(x1 + 1, x2), separatorY + separatorHeight, colorWithAlpha(THEME.ACCENT, alpha));
+        }
+    }
+
+    drawInventoryHudItems(context) {
         const inventory = Player.getPlayer()?.getInventory();
-        const context = DrawContextHolder.currentContext;
         if (!inventory || !context) return;
 
         const { x, y, scale } = this.inventory;
@@ -215,27 +256,17 @@ class HUD extends ModuleBase {
         }
     }
 
-    renderInventoryBackground() {
-        if (
-            !this.prepareOverlay(
-                this.INVENTORY_HUD && this.INVENTORY_HUD_BACKGROUND && this.inventory.enabled !== false,
-                this.recalcInventoryBounds
-            )
-        )
-            return;
-
-        try {
-            drawInventoryHudBackground(this.inventory);
-        } catch (e) {
-            console.error(e);
-        }
-    }
-
     renderOverlay() {
         if (!this.prepareOverlay(this.INVENTORY_HUD && this.inventory.enabled !== false, this.recalcInventoryBounds)) return;
 
+        const context = DrawContextHolder.currentContext;
+        if (!context) return;
+
         try {
-            this.drawInventoryHudItems();
+            // Submit background first, then item render states, matching the v1 ordering
+            // while keeping both in Minecraft's GUI extraction/render pipeline.
+            if (this.INVENTORY_HUD_BACKGROUND) this.drawInventoryHudBackground(context);
+            this.drawInventoryHudItems(context);
         } catch (e) {
             console.error(e);
         }
