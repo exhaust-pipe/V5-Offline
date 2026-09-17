@@ -152,7 +152,7 @@ class SkydiaoAutoAfk extends ModuleBase {
 
     canResumeMacros() {
         const mc = Client.getMinecraft();
-        return this.ownsAfk() && World.isLoaded() && !!Player.getPlayer() && mc.screen == null && mc.isWindowActive();
+        return this.ownsAfk() && World.isLoaded() && !!Player.getPlayer() && mc.screen == null;
     }
 
     resumeMacros() {
