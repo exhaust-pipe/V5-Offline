@@ -1,4 +1,5 @@
 /* MINING */
+import { MiningBot } from './mining/MiningBot';
 import './mining/CommissionMacro';
 import './mining/ExcavatorMacro';
 import './mining/GlaciteCommissionMacro';
@@ -76,3 +77,10 @@ import './other/PeltQOL';
 
 /* INTEGRATIONS */
 import './integrations/SkydiaoAutoAfk';
+
+const handleRandomMovement = MiningBot.handleRandomMovement.bind(MiningBot);
+MiningBot.handleRandomMovement = () => {
+    const moving = handleRandomMovement();
+    if (moving && MiningBot.sneakWhileMining) MiningBot.setSneak(true, true);
+    return moving;
+};
