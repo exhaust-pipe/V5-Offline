@@ -50,7 +50,6 @@ class AutoExperiments extends ModuleBase {
         this.reopeningStarted = false;
         this.buyXpTargetLevel = 0;
         this.boughtXP = false;
-        this.awaitingXpApplication = false;
         this.state = STATES.WAITING;
         this.superpairsRewardsClaimed = false;
         this.superpairsCards = new Map();
@@ -58,7 +57,6 @@ class AutoExperiments extends ModuleBase {
         this.superpairsCurrentKey = null;
 
         this.on('tick', () => this.onTick());
-        this.on('chat', () => (this.awaitingXpApplication = false)).setCriteria('You applied ${*} experience!');
 
         this.addSlider(
             'Action Delay (ms)',
@@ -186,11 +184,7 @@ class AutoExperiments extends ModuleBase {
         if (!this.isCompleted(items[21])) return this._clickSlot(SLOTS.CHRONOMATRON);
         if (!this.isCompleted(items[23])) return this._clickSlot(SLOTS.ULTRASEQUENCER);
 
-        if (!this.automaticSuperpairs) {
-            closeInventory();
-            this.reset();
-            return this.message('Experiments complete');
-        }
+        if (!this.automaticSuperpairs) return;
 
         this._clickSlot(SLOTS.SUPERPAIRS);
         this.message('Superpairs ready');
@@ -352,9 +346,9 @@ class AutoExperiments extends ModuleBase {
         }
 
         const slot = this.buyXpTargetLevel <= 100 ? SLOTS.GRAND_BOTTLE : SLOTS.TITANIC_BOTTLE;
-        if (!this.awaitingXpApplication && items[slot] && this.canClick() && this._clickSlot(slot)) {
+        if (items[slot] && this.canClick() && this._clickSlot(slot)) {
             this.boughtXP = true;
-            this.awaitingXpApplication = true;
+            this.lastClickTime = Date.now() + 1000;
         }
     }
 
@@ -530,7 +524,6 @@ class AutoExperiments extends ModuleBase {
         this.lastClickTime = Date.now();
         this.buyXpTargetLevel = 0;
         this.boughtXP = false;
-        this.awaitingXpApplication = false;
         this.state = STATES.WAITING;
         this.maxEnchanting = false;
         this.superpairsRewardsClaimed = false;
@@ -575,10 +568,9 @@ class AutoExperiments extends ModuleBase {
     }
 
     onCooldown(item) {
-        if (!item) return true;
+        if (!item) return false;
         const lore = item.getLore();
-        if (!lore) return true;
-        return lore.join(' ').includes('Experiments on cooldown!');
+        return lore ? lore.join(' ').includes('Experiments on cooldown!') : false;
     }
 }
 
