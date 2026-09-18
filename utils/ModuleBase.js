@@ -69,13 +69,19 @@ export class ModuleBase {
                 if (!this.enabled) return;
                 this.toggle(false);
                 Chat.message('&cYou were spawned in limbo! Attempting to recover...');
-                ChatLib.command('leave');
-                ScheduleTask(20, () => {
-                    ChatLib.command('play skyblock');
-                });
-                ScheduleTask(60, () => {
-                    this.toggle(true);
-                    Chat.message('&aRecovered from limbo?');
+
+                const limboToLobbyDelay = 100 + Math.floor(Math.random() * 101);
+                const lobbyToSkyblockDelay = 1000 + Math.floor(Math.random() * 201);
+
+                ScheduleTask(limboToLobbyDelay, () => {
+                    ChatLib.command('leave');
+                    ScheduleTask(lobbyToSkyblockDelay, () => {
+                        ChatLib.command('play skyblock');
+                        ScheduleTask(200, () => {
+                            this.toggle(true);
+                            Chat.message('&aRecovered from limbo?');
+                        });
+                    });
                 });
             });
         }

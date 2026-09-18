@@ -76,3 +76,4 @@ import './other/PeltQOL';
 
 /* INTEGRATIONS */
 import './integrations/SkydiaoAutoAfk';
+

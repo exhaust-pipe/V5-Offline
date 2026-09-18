@@ -1,5 +1,7 @@
 import { ModuleBase } from '../../utils/ModuleBase';
 
+const NameReplacement = Java.type('com.chattriggers.ctjs.internal.utils.NameReplacement');
+
 class ProfileHider extends ModuleBase {
     constructor() {
         super({
@@ -10,6 +12,8 @@ class ProfileHider extends ModuleBase {
 
         this.HIDE_USERNAME = true;
         this.USERNAME = null;
+        this.GRADIENT = true;
+        this.BOLD = true;
 
         this.addToggle(
             'Custom Username',
@@ -29,6 +33,24 @@ class ProfileHider extends ModuleBase {
             },
             'The username you want to use'
         );
+        this.addToggle(
+            'Gradient',
+            (v) => {
+                this.GRADIENT = v;
+                this.updateName();
+            },
+            'Use the animated gradient effect for plain replacement names.',
+            true
+        );
+        this.addToggle(
+            'Bold',
+            (v) => {
+                this.BOLD = v;
+                this.updateName();
+            },
+            'Use bold text for plain replacement names.',
+            true
+        );
 
         Client.setNameProcessor(null);
         register('gameUnload', () => Client.setNameReplacement(null, null));
@@ -37,7 +59,7 @@ class ProfileHider extends ModuleBase {
     updateName() {
         if (!this.enabled) return;
         const username = this.HIDE_USERNAME ? Player.getName() : null;
-        Client.setNameReplacement(username, this.USERNAME?.trim() || 'Hidden');
+        NameReplacement.configure(username, this.USERNAME?.trim() || 'Hidden', this.GRADIENT, this.BOLD);
     }
 
     onEnable() {

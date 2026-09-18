@@ -405,8 +405,7 @@ class Bot extends ModuleBase {
                 if (!value) {
                     Client.stopMovement();
                     Client.setKey('space', false);
-                    Client.setKey('shift', false);
-                    this.lastSneakCommand = false;
+                    this.setSneak(this.sneakWhileMining, true);
                 }
             },
             'Moves toward visible ore only while it is outside normal mining reach.',
@@ -429,7 +428,7 @@ class Bot extends ModuleBase {
                     this.lastSneakCommand = false;
                 }
             },
-            'Sneak while actively mining a block.',
+            'Keeps sneaking while Mining Bot is active, including movement and pickaxe ability use.',
             true
         );
         this.addSlider(
@@ -760,8 +759,8 @@ class Bot extends ModuleBase {
         if (stopMovement) {
             Client.stopMovement();
             Client.setKey('space', false);
-            this.setSneak(false);
         }
+        this.setSneak(this.sneakWhileMining);
         Client.setKey('leftclick', false);
     }
 
@@ -908,7 +907,7 @@ class Bot extends ModuleBase {
         const lowestCostBlock = this.currentTarget || this.foundLocations[this.lowestCostBlockIndex];
         if (!lowestCostBlock) {
             this.stopMiningControls(this.MOVEMENT);
-            this.setSneak(false);
+            this.setSneak(this.sneakWhileMining);
             OreRotations.stop();
             return;
         }
@@ -925,7 +924,7 @@ class Bot extends ModuleBase {
             this.foundLocations = [];
             this.lowestCostBlockIndex = 0;
             this.stopMiningControls(false);
-            this.setSneak(false);
+            this.setSneak(this.sneakWhileMining);
             OreRotations.stop();
             return;
         }
@@ -1589,7 +1588,7 @@ class Bot extends ModuleBase {
     }
 
     setSneak(shouldSneak, force = false) {
-        if (force || this.lastSneakCommand !== shouldSneak || Player.isSneaking() !== shouldSneak) {
+        if (force || this.lastSneakCommand !== shouldSneak || Client.isKeyDown('shift') !== shouldSneak || Player.isSneaking() !== shouldSneak) {
             Client.setKey('shift', shouldSneak);
             this.lastSneakCommand = shouldSneak;
         }
@@ -1651,7 +1650,7 @@ class Bot extends ModuleBase {
             this.stopRandomMovement();
             Client.stopMovement();
             Client.setKey('space', false);
-            this.setSneak(false);
+            this.setSneak(this.sneakWhileMining);
             return;
         }
 
