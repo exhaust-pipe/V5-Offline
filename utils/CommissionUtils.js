@@ -4,6 +4,10 @@ import Pathfinder from './pathfinder/PathFinder';
 import { clickSlot, findItemInHotbar, getGuiName, setItemSlot } from './player/Inventory';
 import { Rotations } from './player/Rotations';
 
+const NPC_INTERACTION_RETRY_DELAYS_MS = [3000, 5000, 10000];
+const NPC_INTERACTION_FINAL_TIMEOUT_MS = 10000;
+const NPC_INTERACTION_DISTANCE = 3;
+
 export class CommissionClaimer {
     constructor({
         getLocations,
@@ -13,7 +17,7 @@ export class CommissionClaimer {
         onClaimsExhausted,
         onPathStart = null,
         onPathFailed = null,
-        canInteract = null,
+        onInteractionFailed = null,
         getTravelMode = null,
     }) {
         this.getLocations = getLocations;
@@ -23,16 +27,19 @@ export class CommissionClaimer {
         this.onClaimsExhausted = onClaimsExhausted;
         this.onPathStart = onPathStart || (() => {});
         this.onPathFailed = onPathFailed || (() => {});
-        this.canInteract = canInteract || (() => true);
+        this.onInteractionFailed = onInteractionFailed || (() => {});
         this.getTravelMode = getTravelMode || (() => 'Walk');
         this.npcRotationPending = false;
         this.npcRotationToken = 0;
+        this.npcClickAttempts = 0;
+        this.npcRetryReadyAt = 0;
     }
 
     handle() {
         if (!Player.getPlayer()) return;
 
         if (getGuiName() === 'Commissions') {
+            this.resetNpcInteraction();
             const container = Player.getContainer();
             if (!container) return;
 
@@ -59,6 +66,17 @@ export class CommissionClaimer {
         const locations = this.getLocations();
         if (!locations.length) return;
 
+        const now = Date.now();
+        if (this.npcClickAttempts > 0) {
+            if (now < this.npcRetryReadyAt) return;
+            if (this.npcClickAttempts >= 4) {
+                const attempts = this.npcClickAttempts;
+                this.resetNpcInteraction();
+                this.onInteractionFailed(attempts);
+                return;
+            }
+        }
+
         const closest = this.getClosestLocation(locations);
         const closestDist = fastDistance(Player.getX(), Player.getY(), Player.getZ(), ...closest);
         const target = [closest[0] + 0.5, closest[1] + 1.8, closest[2] + 0.5];
@@ -68,27 +86,43 @@ export class CommissionClaimer {
             return;
         }
 
-        if (distanceToPlayerPoint(target) <= 3 && !this.isPathing()) {
-            if (!this.ensureToolEquipped()) return;
-            if (Math.abs(Player.getMotionX()) + Math.abs(Player.getMotionZ()) >= 0.04) return;
-
-            if (!Rotations.active) {
-                this.npcRotationPending = true;
-                const token = ++this.npcRotationToken;
-                Rotations.lookAtVector(target);
-                Rotations.onComplete(() => {
-                    if (!this.npcRotationPending || this.npcRotationToken !== token) return;
-                    this.npcRotationPending = false;
-                    if (!this.isClaiming() || this.isPathing()) return;
-                    if (!this.canInteract()) return;
-                    Client.leftClick();
-                    this.delay(10);
-                });
-            }
+        if (distanceToPlayerPoint(target) > NPC_INTERACTION_DISTANCE || this.isPathing()) {
+            if (!this.isPathing()) this.pathToNpc(locations);
             return;
         }
 
-        this.pathToNpc(locations);
+        if (!this.ensureToolEquipped()) return;
+        if (Math.abs(Player.getMotionX()) + Math.abs(Player.getMotionZ()) >= 0.04) return;
+
+        if (!Rotations.active) {
+            this.npcRotationPending = true;
+            const token = ++this.npcRotationToken;
+            Rotations.lookAtVector(target);
+            Rotations.onComplete(() => {
+                if (!this.npcRotationPending || this.npcRotationToken !== token) return;
+                this.npcRotationPending = false;
+                if (!this.isClaiming() || this.isPathing()) return;
+
+                if (distanceToPlayerPoint(target) > NPC_INTERACTION_DISTANCE) {
+                    this.pathToNpc(this.getLocations());
+                    return;
+                }
+
+                Client.leftClick();
+                this.registerNpcClickAttempt();
+            });
+        }
+    }
+
+    registerNpcClickAttempt() {
+        this.npcClickAttempts++;
+        if (this.npcClickAttempts >= 4) {
+            this.npcRetryReadyAt = Date.now() + NPC_INTERACTION_FINAL_TIMEOUT_MS;
+            return;
+        }
+
+        const retryDelay = NPC_INTERACTION_RETRY_DELAYS_MS[this.npcClickAttempts - 1];
+        this.npcRetryReadyAt = Date.now() + retryDelay;
     }
 
     pathToNpc(locations) {
@@ -144,6 +178,16 @@ export class CommissionClaimer {
         this.npcRotationPending = false;
         this.npcRotationToken++;
         if (Rotations.active) Rotations.stop();
+    }
+
+    resetNpcInteraction() {
+        this.npcClickAttempts = 0;
+        this.npcRetryReadyAt = 0;
+    }
+
+    reset() {
+        this.cancelNpcRotation();
+        this.resetNpcInteraction();
     }
 }
 

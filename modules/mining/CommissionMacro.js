@@ -49,7 +49,6 @@ class CommissionMacro extends ModuleBase {
         this.travelMode = TRAVEL_MODES[0];
         this.avoidanceRadius = 10;
         this.goblinWeaponSlot = 1;
-        this.emissariesUnlocked = true;
         this.pauseTicks = 0;
         this.pathingAvoidanceBreachAt = null;
         this.lastAvoidanceRepathAt = 0;
@@ -102,7 +101,13 @@ class CommissionMacro extends ModuleBase {
                 this.travelPurpose = 'EMISSARY';
             },
             onPathFailed: () => this.setState(STATES.CHOOSING),
-            canInteract: () => !this.emissariesUnlocked || this.checkEmissaryUnlocked(),
+            onInteractionFailed: (attempts) => {
+                const reason = `Failed to open Commissions after ${attempts} NPC interaction attempts.`;
+                const hint = 'Make sure you have unlocked an Emissary before using Commission Macro.';
+                this.message(`&c${reason} ${hint} Stopping macro.`);
+                notificationManager.add('Commission claim failed', `${reason} ${hint}`, 'ERROR', '7000');
+                this.toggle(false);
+            },
             getTravelMode: () => this.travelMode,
         });
 
@@ -314,7 +319,6 @@ class CommissionMacro extends ModuleBase {
         this.nextIntensityDecayAt = Date.now() + INTENSITY_DECAY_INTERVAL_MS;
         this.intensityIncreasedThisWindow = false;
         this.message('&aEnabled');
-        this.emissariesUnlocked = true;
 
         const drills = MiningUtils.getDrills();
         this.drill = drills.drill;
@@ -382,7 +386,7 @@ class CommissionMacro extends ModuleBase {
         this.lastCommissionSyncSource = null;
         this.lastCompletedCommissionName = null;
         this.lastCommissionName = null;
-        this.commissionClaimer.cancelNpcRotation();
+        this.commissionClaimer.reset();
         this.areaCheckTime = null;
         this.pathingAvoidanceBreachAt = null;
         this.lastAvoidanceRepathAt = 0;
@@ -864,16 +868,7 @@ class CommissionMacro extends ModuleBase {
     }
 
     getAvailableEmissaryLocations() {
-        return this.emissariesUnlocked ? EMISSARY_LOCATIONS : [EMISSARY_LOCATIONS[0]];
-    }
-
-    checkEmissaryUnlocked() {
-        if (!World.getAllEntities().find((e) => e.getName().includes('Emissary'))) {
-            this.emissariesUnlocked = false;
-            this.message('Emissary not found! Reverting to king.');
-            return false;
-        }
-        return true;
+        return EMISSARY_LOCATIONS.slice(1);
     }
 
     updateCommissionsFromGui(container) {
