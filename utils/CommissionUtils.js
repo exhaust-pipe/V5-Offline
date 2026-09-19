@@ -7,6 +7,9 @@ import { Rotations } from './player/Rotations';
 const NPC_INTERACTION_RETRY_DELAYS_MS = [3000, 5000, 10000];
 const NPC_INTERACTION_FINAL_TIMEOUT_MS = 10000;
 const NPC_INTERACTION_DISTANCE = 3;
+const GUI_LOAD_TIMEOUT_MS = 10000;
+const COMMISSION_CLAIM_RETRY_DELAYS_MS = [3000, 5000, 10000];
+const COMMISSION_CLAIM_FINAL_TIMEOUT_MS = 10000;
 
 export class CommissionClaimer {
     constructor({
@@ -18,6 +21,7 @@ export class CommissionClaimer {
         onPathStart = null,
         onPathFailed = null,
         onInteractionFailed = null,
+        onClaimFailed = null,
         getTravelMode = null,
     }) {
         this.getLocations = getLocations;
@@ -28,11 +32,16 @@ export class CommissionClaimer {
         this.onPathStart = onPathStart || (() => {});
         this.onPathFailed = onPathFailed || (() => {});
         this.onInteractionFailed = onInteractionFailed || (() => {});
+        this.onClaimFailed = onClaimFailed || (() => {});
         this.getTravelMode = getTravelMode || (() => 'Walk');
         this.npcRotationPending = false;
         this.npcRotationToken = 0;
         this.npcClickAttempts = 0;
         this.npcRetryReadyAt = 0;
+        this.guiLoadStartedAt = 0;
+        this.commissionClaimSlot = -1;
+        this.commissionClaimAttempts = 0;
+        this.commissionClaimRetryReadyAt = 0;
     }
 
     handle() {
@@ -40,14 +49,7 @@ export class CommissionClaimer {
 
         if (getGuiName() === 'Commissions') {
             this.resetNpcInteraction();
-            const container = Player.getContainer();
-            if (!container) return;
-
-            if (claimCompletedCommission(container)) {
-                this.delay(10);
-            } else {
-                this.onClaimsExhausted(container);
-            }
+            this.handleCommissionsGui();
             return;
         }
 
@@ -114,6 +116,48 @@ export class CommissionClaimer {
         }
     }
 
+    handleCommissionsGui() {
+        const container = Player.getContainer();
+        if (!container) return;
+
+        const now = Date.now();
+        if (!isCommissionGuiLoaded(container)) {
+            if (this.guiLoadStartedAt === 0) this.guiLoadStartedAt = now;
+            if (now - this.guiLoadStartedAt >= GUI_LOAD_TIMEOUT_MS) {
+                this.resetCommissionClaim();
+                this.onClaimFailed('Commissions GUI did not finish loading within 10 seconds.');
+            }
+            return;
+        }
+        this.guiLoadStartedAt = 0;
+
+        if (this.commissionClaimAttempts > 0) {
+            if (!isCompletedCommissionSlot(container, this.commissionClaimSlot)) {
+                this.resetCommissionClaim();
+            } else {
+                if (now < this.commissionClaimRetryReadyAt) return;
+                if (this.commissionClaimAttempts >= 4) {
+                    const attempts = this.commissionClaimAttempts;
+                    this.resetCommissionClaim();
+                    this.onClaimFailed(`Failed to claim a completed commission after ${attempts} GUI click attempts.`);
+                    return;
+                }
+
+                if (clickSlot(this.commissionClaimSlot, false)) this.registerCommissionClaimAttempt(this.commissionClaimSlot);
+                return;
+            }
+        }
+
+        const completedSlot = findCompletedCommissionSlot(container);
+        if (completedSlot !== -1) {
+            if (clickSlot(completedSlot, false)) this.registerCommissionClaimAttempt(completedSlot);
+            return;
+        }
+
+        this.resetCommissionClaim();
+        this.onClaimsExhausted(container);
+    }
+
     registerNpcClickAttempt() {
         this.npcClickAttempts++;
         if (this.npcClickAttempts >= 4) {
@@ -123,6 +167,18 @@ export class CommissionClaimer {
 
         const retryDelay = NPC_INTERACTION_RETRY_DELAYS_MS[this.npcClickAttempts - 1];
         this.npcRetryReadyAt = Date.now() + retryDelay;
+    }
+
+    registerCommissionClaimAttempt(slot) {
+        this.commissionClaimSlot = slot;
+        this.commissionClaimAttempts++;
+        if (this.commissionClaimAttempts >= 4) {
+            this.commissionClaimRetryReadyAt = Date.now() + COMMISSION_CLAIM_FINAL_TIMEOUT_MS;
+            return;
+        }
+
+        const retryDelay = COMMISSION_CLAIM_RETRY_DELAYS_MS[this.commissionClaimAttempts - 1];
+        this.commissionClaimRetryReadyAt = Date.now() + retryDelay;
     }
 
     pathToNpc(locations) {
@@ -185,20 +241,42 @@ export class CommissionClaimer {
         this.npcRetryReadyAt = 0;
     }
 
+    resetCommissionClaim() {
+        this.guiLoadStartedAt = 0;
+        this.commissionClaimSlot = -1;
+        this.commissionClaimAttempts = 0;
+        this.commissionClaimRetryReadyAt = 0;
+    }
+
     reset() {
         this.cancelNpcRotation();
         this.resetNpcInteraction();
+        this.resetCommissionClaim();
     }
 }
 
-function claimCompletedCommission(container) {
+function isCommissionGuiLoaded(container) {
     for (let i = 9; i < 17; i++) {
         const stack = container.getStackInSlot(i);
         if (!stack) continue;
-        if (!(stack.getLore() || []).some((line) => String(line).includes('COMPLETED'))) continue;
-
-        clickSlot(i, false);
-        return true;
+        const name = ChatLib.removeFormatting(String(stack.getName()));
+        if (name.startsWith('Commission #')) return true;
     }
     return false;
+}
+
+function isCompletedCommissionSlot(container, slot) {
+    if (!container || slot < 9 || slot >= 17) return false;
+    const stack = container.getStackInSlot(slot);
+    if (!stack) return false;
+    const name = ChatLib.removeFormatting(String(stack.getName()));
+    if (!name.startsWith('Commission #')) return false;
+    return (stack.getLore() || []).some((line) => String(line).includes('COMPLETED'));
+}
+
+function findCompletedCommissionSlot(container) {
+    for (let i = 9; i < 17; i++) {
+        if (isCompletedCommissionSlot(container, i)) return i;
+    }
+    return -1;
 }
