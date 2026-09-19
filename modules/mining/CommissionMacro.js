@@ -108,6 +108,11 @@ class CommissionMacro extends ModuleBase {
                 notificationManager.add('Commission claim failed', `${reason} ${hint}`, 'ERROR', '7000');
                 this.toggle(false);
             },
+            onClaimFailed: (reason) => {
+                this.message(`&c${reason} Stopping macro.`);
+                notificationManager.add('Commission reward claim failed', reason, 'ERROR', '7000');
+                this.toggle(false);
+            },
             getTravelMode: () => this.travelMode,
         });
 
