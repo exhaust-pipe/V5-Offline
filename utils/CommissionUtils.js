@@ -8,6 +8,7 @@ const NPC_INTERACTION_RETRY_DELAYS_MS = [3000, 5000, 10000];
 const NPC_INTERACTION_FINAL_TIMEOUT_MS = 10000;
 const NPC_INTERACTION_DISTANCE = 3;
 const GUI_LOAD_TIMEOUT_MS = 10000;
+const GUI_SETTLE_MS = 5000;
 const COMMISSION_CLAIM_RETRY_DELAYS_MS = [3000, 5000, 10000];
 const COMMISSION_CLAIM_FINAL_TIMEOUT_MS = 10000;
 
@@ -39,9 +40,11 @@ export class CommissionClaimer {
         this.npcClickAttempts = 0;
         this.npcRetryReadyAt = 0;
         this.guiLoadStartedAt = 0;
+        this.guiReadyAt = 0;
         this.commissionClaimSlot = -1;
         this.commissionClaimAttempts = 0;
         this.commissionClaimRetryReadyAt = 0;
+        this.commissionClaimLastClickAt = 0;
     }
 
     handle() {
@@ -52,6 +55,8 @@ export class CommissionClaimer {
             this.handleCommissionsGui();
             return;
         }
+
+        this.resetGuiLoadState();
 
         const pigeonSlot = findItemInHotbar('Royal Pigeon');
         if (pigeonSlot !== -1) {
@@ -129,23 +134,43 @@ export class CommissionClaimer {
             }
             return;
         }
+
         this.guiLoadStartedAt = 0;
+        if (this.guiReadyAt === 0) this.guiReadyAt = now;
 
         if (this.commissionClaimAttempts > 0) {
-            if (!isCompletedCommissionSlot(container, this.commissionClaimSlot)) {
-                this.resetCommissionClaim();
-            } else {
-                if (now < this.commissionClaimRetryReadyAt) return;
-                if (this.commissionClaimAttempts >= 4) {
-                    const attempts = this.commissionClaimAttempts;
-                    this.resetCommissionClaim();
-                    this.onClaimFailed(`Failed to claim a completed commission after ${attempts} GUI click attempts.`);
+            const slotState = getCommissionSlotState(container, this.commissionClaimSlot);
+            if (slotState === 'ACTIVE') {
+                this.resetCommissionClaimAttempt();
+
+                const nextCompletedSlot = findCompletedCommissionSlot(container);
+                if (nextCompletedSlot !== -1) {
+                    if (clickSlot(nextCompletedSlot, false)) this.registerCommissionClaimAttempt(nextCompletedSlot);
                     return;
                 }
 
-                if (clickSlot(this.commissionClaimSlot, false)) this.registerCommissionClaimAttempt(this.commissionClaimSlot);
+                this.onClaimsExhausted(container);
                 return;
             }
+
+            if (slotState === 'LOADING') {
+                if (this.commissionClaimLastClickAt > 0 && now - this.commissionClaimLastClickAt >= GUI_LOAD_TIMEOUT_MS) {
+                    this.resetCommissionClaim();
+                    this.onClaimFailed('Commission slot did not finish updating within 10 seconds after the claim click.');
+                }
+                return;
+            }
+
+            if (now < this.commissionClaimRetryReadyAt) return;
+            if (this.commissionClaimAttempts >= 4) {
+                const attempts = this.commissionClaimAttempts;
+                this.resetCommissionClaim();
+                this.onClaimFailed(`Failed to claim a completed commission after ${attempts} GUI click attempts.`);
+                return;
+            }
+
+            if (clickSlot(this.commissionClaimSlot, false)) this.registerCommissionClaimAttempt(this.commissionClaimSlot);
+            return;
         }
 
         const completedSlot = findCompletedCommissionSlot(container);
@@ -153,6 +178,8 @@ export class CommissionClaimer {
             if (clickSlot(completedSlot, false)) this.registerCommissionClaimAttempt(completedSlot);
             return;
         }
+
+        if (now - this.guiReadyAt < GUI_SETTLE_MS) return;
 
         this.resetCommissionClaim();
         this.onClaimsExhausted(container);
@@ -170,15 +197,17 @@ export class CommissionClaimer {
     }
 
     registerCommissionClaimAttempt(slot) {
+        const now = Date.now();
         this.commissionClaimSlot = slot;
         this.commissionClaimAttempts++;
+        this.commissionClaimLastClickAt = now;
         if (this.commissionClaimAttempts >= 4) {
-            this.commissionClaimRetryReadyAt = Date.now() + COMMISSION_CLAIM_FINAL_TIMEOUT_MS;
+            this.commissionClaimRetryReadyAt = now + COMMISSION_CLAIM_FINAL_TIMEOUT_MS;
             return;
         }
 
         const retryDelay = COMMISSION_CLAIM_RETRY_DELAYS_MS[this.commissionClaimAttempts - 1];
-        this.commissionClaimRetryReadyAt = Date.now() + retryDelay;
+        this.commissionClaimRetryReadyAt = now + retryDelay;
     }
 
     pathToNpc(locations) {
@@ -241,11 +270,21 @@ export class CommissionClaimer {
         this.npcRetryReadyAt = 0;
     }
 
-    resetCommissionClaim() {
+    resetGuiLoadState() {
         this.guiLoadStartedAt = 0;
+        this.guiReadyAt = 0;
+    }
+
+    resetCommissionClaimAttempt() {
         this.commissionClaimSlot = -1;
         this.commissionClaimAttempts = 0;
         this.commissionClaimRetryReadyAt = 0;
+        this.commissionClaimLastClickAt = 0;
+    }
+
+    resetCommissionClaim() {
+        this.resetGuiLoadState();
+        this.resetCommissionClaimAttempt();
     }
 
     reset() {
@@ -265,18 +304,20 @@ function isCommissionGuiLoaded(container) {
     return false;
 }
 
-function isCompletedCommissionSlot(container, slot) {
-    if (!container || slot < 9 || slot >= 17) return false;
+function getCommissionSlotState(container, slot) {
+    if (!container || slot < 9 || slot >= 17) return 'LOADING';
     const stack = container.getStackInSlot(slot);
-    if (!stack) return false;
+    if (!stack) return 'LOADING';
+
     const name = ChatLib.removeFormatting(String(stack.getName()));
-    if (!name.startsWith('Commission #')) return false;
-    return (stack.getLore() || []).some((line) => String(line).includes('COMPLETED'));
+    if (!name.startsWith('Commission #')) return 'LOADING';
+
+    return (stack.getLore() || []).some((line) => String(line).includes('COMPLETED')) ? 'COMPLETED' : 'ACTIVE';
 }
 
 function findCompletedCommissionSlot(container) {
     for (let i = 9; i < 17; i++) {
-        if (isCompletedCommissionSlot(container, i)) return i;
+        if (getCommissionSlotState(container, i) === 'COMPLETED') return i;
     }
     return -1;
 }
