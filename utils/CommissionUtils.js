@@ -1,7 +1,7 @@
 import { FastEtherwarp } from './FastEtherwarp';
 import { distanceToPlayerPoint, fastDistance } from './Math';
 import Pathfinder from './pathfinder/PathFinder';
-import { clickSlot, findItemInHotbar, getGuiName, setItemSlot } from './player/Inventory';
+import { clickSlot, closeInventory, findFirstItem, findItemInHotbar, getGuiName, setItemSlot } from './player/Inventory';
 import { Rotations } from './player/Rotations';
 
 const NPC_INTERACTION_RETRY_DELAYS_MS = [3000, 5000, 10000];
@@ -11,6 +11,13 @@ const GUI_LOAD_TIMEOUT_MS = 10000;
 const GUI_SETTLE_MS = 10000;
 const COMMISSION_CLAIM_RETRY_DELAYS_MS = [3000, 5000, 10000];
 const COMMISSION_CLAIM_FINAL_TIMEOUT_MS = 10000;
+const ABIPHONE_UI_RETRY_DELAYS_MS = [3000, 5000, 10000];
+const ABIPHONE_UI_FINAL_TIMEOUT_MS = 10000;
+const CLAIM_METHODS = {
+    PIGEON: 'Royal Pigeon',
+    ABIPHONE: 'Abiphone (Mismyla)',
+    EMISSARY: 'Emissary',
+};
 
 export class CommissionClaimer {
     constructor({
@@ -35,6 +42,26 @@ export class CommissionClaimer {
         this.onInteractionFailed = onInteractionFailed || (() => {});
         this.onClaimFailed = onClaimFailed || (() => {});
         this.getTravelMode = getTravelMode || (() => 'Walk');
+
+        this.claimMethod = null;
+        this.pigeonSlot = -1;
+        this.abiphoneSlot = -1;
+
+        this.setupState = 'IDLE';
+        this.setupCallback = null;
+        this.setupProtectedHotbarSlots = [];
+        this.setupWaitTicks = 0;
+        this.setupOriginalAbiphoneSlot = -1;
+        this.setupTargetHotbarSlot = -1;
+        this.setupPendingMethod = null;
+        this.setupAbiphoneOpenAttempts = 0;
+        this.setupAbiphoneOpenRetryReadyAt = 0;
+
+        this.abiphoneOpenAttempts = 0;
+        this.abiphoneOpenRetryReadyAt = 0;
+        this.abiphoneContactAttempts = 0;
+        this.abiphoneContactRetryReadyAt = 0;
+
         this.npcRotationPending = false;
         this.npcRotationToken = 0;
         this.npcClickAttempts = 0;
@@ -47,29 +74,389 @@ export class CommissionClaimer {
         this.commissionClaimLastClickAt = 0;
     }
 
+    beginClaimMethodSetup(callback, protectedHotbarSlots = []) {
+        this.claimMethod = null;
+        this.pigeonSlot = -1;
+        this.abiphoneSlot = -1;
+        this.setupCallback = callback;
+        this.setupProtectedHotbarSlots = (protectedHotbarSlots || []).filter((slot) => slot >= 0 && slot <= 8);
+        this.setupWaitTicks = 0;
+        this.setupOriginalAbiphoneSlot = -1;
+        this.setupTargetHotbarSlot = -1;
+        this.setupPendingMethod = null;
+        this.setupAbiphoneOpenAttempts = 0;
+        this.setupAbiphoneOpenRetryReadyAt = 0;
+        this.setupState = 'FIND_METHOD';
+    }
+
+    handleClaimMethodSetup() {
+        if (!Player.getPlayer() || this.setupState === 'IDLE' || this.setupState === 'DONE') return;
+        if (this.setupWaitTicks > 0) {
+            this.setupWaitTicks--;
+            return;
+        }
+
+        switch (this.setupState) {
+            case 'FIND_METHOD': {
+                const pigeonSlot = findItemInHotbar('Royal Pigeon');
+                if (pigeonSlot !== -1) {
+                    this.pigeonSlot = pigeonSlot;
+                    this.completeClaimMethodSetup(CLAIM_METHODS.PIGEON);
+                    return;
+                }
+
+                const inventory = Player.getInventory();
+                if (!inventory) return;
+
+                const hotbarAbiphone = this.findInventoryItemInRange(inventory, 'Abiphone', 0, 9);
+                if (hotbarAbiphone !== -1) {
+                    this.abiphoneSlot = hotbarAbiphone;
+                    setItemSlot(hotbarAbiphone);
+                    this.setupState = 'OPEN_ABIPHONE';
+                    this.setupWaitTicks = 5;
+                    return;
+                }
+
+                const inventoryAbiphone = this.findInventoryItemInRange(inventory, 'Abiphone', 9, 36);
+                if (inventoryAbiphone === -1) {
+                    this.completeClaimMethodSetup(CLAIM_METHODS.EMISSARY);
+                    return;
+                }
+
+                const targetSlot = this.findSetupHotbarSlot(inventory);
+                if (targetSlot === -1) {
+                    this.completeClaimMethodSetup(CLAIM_METHODS.EMISSARY);
+                    return;
+                }
+
+                this.setupOriginalAbiphoneSlot = inventoryAbiphone;
+                this.setupTargetHotbarSlot = targetSlot;
+                this.abiphoneSlot = targetSlot;
+                this.setupState = 'OPEN_PLAYER_INV_SWAP';
+                return;
+            }
+
+            case 'OPEN_PLAYER_INV_SWAP':
+                Client.getMinecraft().setScreen(new net.minecraft.client.gui.screens.inventory.InventoryScreen(Client.getMinecraft().player));
+                this.setupState = 'WAIT_PLAYER_INV_SWAP';
+                this.setupWaitTicks = 5;
+                return;
+
+            case 'WAIT_PLAYER_INV_SWAP':
+                if (Client.isInGui()) {
+                    this.setupState = 'SWAP_ABIPHONE_1';
+                    this.setupWaitTicks = 5;
+                } else {
+                    this.setupState = 'OPEN_PLAYER_INV_SWAP';
+                    this.setupWaitTicks = 5;
+                }
+                return;
+
+            case 'SWAP_ABIPHONE_1':
+                clickSlot(this.setupOriginalAbiphoneSlot);
+                this.setupState = 'SWAP_ABIPHONE_2';
+                this.setupWaitTicks = 5;
+                return;
+
+            case 'SWAP_ABIPHONE_2':
+                clickSlot(36 + this.setupTargetHotbarSlot);
+                this.setupState = 'SWAP_ABIPHONE_3';
+                this.setupWaitTicks = 5;
+                return;
+
+            case 'SWAP_ABIPHONE_3':
+                clickSlot(this.setupOriginalAbiphoneSlot);
+                this.setupState = 'CLOSE_PLAYER_INV_SWAP';
+                this.setupWaitTicks = 5;
+                return;
+
+            case 'CLOSE_PLAYER_INV_SWAP':
+                closeInventory();
+                setItemSlot(this.setupTargetHotbarSlot);
+                this.setupState = 'OPEN_ABIPHONE';
+                this.setupWaitTicks = 10;
+                return;
+
+            case 'OPEN_ABIPHONE':
+                if (Player.getHeldItemIndex() !== this.abiphoneSlot) {
+                    setItemSlot(this.abiphoneSlot);
+                    this.setupWaitTicks = 3;
+                    return;
+                }
+                Client.rightClick();
+                this.registerSetupAbiphoneOpenAttempt();
+                this.setupState = 'SELECT_CONTACT';
+                return;
+
+            case 'SELECT_CONTACT': {
+                const now = Date.now();
+                if (!getGuiName()?.includes('Abiphone')) {
+                    if (now < this.setupAbiphoneOpenRetryReadyAt) return;
+                    if (this.setupAbiphoneOpenAttempts >= 4) {
+                        this.fallbackSetupToEmissary();
+                        return;
+                    }
+
+                    if (Client.isInGui()) closeInventory();
+                    this.setupState = 'OPEN_ABIPHONE';
+                    this.setupWaitTicks = 5;
+                    return;
+                }
+
+                const contactSlot = findFirstItem(Player.getContainer(), 'Mismyla');
+                if (contactSlot === -1 || !Player.getContainer()?.getStackInSlot(contactSlot)) {
+                    if (now < this.setupAbiphoneOpenRetryReadyAt) return;
+                    this.fallbackSetupToEmissary();
+                    return;
+                }
+
+                this.resetSetupAbiphoneOpenRetry();
+                closeInventory();
+                this.completeClaimMethodSetup(CLAIM_METHODS.ABIPHONE);
+                return;
+            }
+
+            case 'OPEN_PLAYER_INV_RESTORE':
+                Client.getMinecraft().setScreen(new net.minecraft.client.gui.screens.inventory.InventoryScreen(Client.getMinecraft().player));
+                this.setupState = 'WAIT_PLAYER_INV_RESTORE';
+                this.setupWaitTicks = 5;
+                return;
+
+            case 'WAIT_PLAYER_INV_RESTORE':
+                if (Client.isInGui()) {
+                    this.setupState = 'RESTORE_ABIPHONE_1';
+                    this.setupWaitTicks = 5;
+                } else {
+                    this.setupState = 'OPEN_PLAYER_INV_RESTORE';
+                    this.setupWaitTicks = 5;
+                }
+                return;
+
+            case 'RESTORE_ABIPHONE_1':
+                clickSlot(this.setupOriginalAbiphoneSlot);
+                this.setupState = 'RESTORE_ABIPHONE_2';
+                this.setupWaitTicks = 5;
+                return;
+
+            case 'RESTORE_ABIPHONE_2':
+                clickSlot(36 + this.setupTargetHotbarSlot);
+                this.setupState = 'RESTORE_ABIPHONE_3';
+                this.setupWaitTicks = 5;
+                return;
+
+            case 'RESTORE_ABIPHONE_3':
+                clickSlot(this.setupOriginalAbiphoneSlot);
+                this.setupState = 'CLOSE_PLAYER_INV_RESTORE';
+                this.setupWaitTicks = 5;
+                return;
+
+            case 'CLOSE_PLAYER_INV_RESTORE': {
+                closeInventory();
+                const pendingMethod = this.setupPendingMethod || CLAIM_METHODS.EMISSARY;
+                this.setupOriginalAbiphoneSlot = -1;
+                this.setupTargetHotbarSlot = -1;
+                this.abiphoneSlot = -1;
+                this.completeClaimMethodSetup(pendingMethod);
+                return;
+            }
+        }
+    }
+
+    findInventoryItemInRange(inventory, name, start, end) {
+        const upper = Math.min(end, inventory?.getSize?.() || 0);
+        for (let slot = Math.max(0, start); slot < upper; slot++) {
+            const item = inventory.getStackInSlot(slot);
+            const itemName = item ? ChatLib.removeFormatting(String(item.getName())) : '';
+            if (itemName.toLowerCase().includes(name.toLowerCase())) return slot;
+        }
+        return -1;
+    }
+
+    findSetupHotbarSlot(inventory) {
+        for (let slot = 0; slot < 9; slot++) {
+            if (this.setupProtectedHotbarSlots.includes(slot)) continue;
+            if (!inventory.getStackInSlot(slot)) return slot;
+        }
+
+        for (let slot = 0; slot < 9; slot++) {
+            if (!this.setupProtectedHotbarSlots.includes(slot)) return slot;
+        }
+
+        return -1;
+    }
+
+    registerSetupAbiphoneOpenAttempt() {
+        const now = Date.now();
+        this.setupAbiphoneOpenAttempts++;
+        this.setupAbiphoneOpenRetryReadyAt =
+            now +
+            (this.setupAbiphoneOpenAttempts >= 4
+                ? ABIPHONE_UI_FINAL_TIMEOUT_MS
+                : ABIPHONE_UI_RETRY_DELAYS_MS[this.setupAbiphoneOpenAttempts - 1]);
+    }
+
+    resetSetupAbiphoneOpenRetry() {
+        this.setupAbiphoneOpenAttempts = 0;
+        this.setupAbiphoneOpenRetryReadyAt = 0;
+    }
+
+    fallbackSetupToEmissary() {
+        this.resetSetupAbiphoneOpenRetry();
+        if (Client.isInGui()) closeInventory();
+
+        if (this.setupOriginalAbiphoneSlot !== -1) {
+            this.setupPendingMethod = CLAIM_METHODS.EMISSARY;
+            this.setupState = 'OPEN_PLAYER_INV_RESTORE';
+            this.setupWaitTicks = 5;
+            return;
+        }
+
+        this.abiphoneSlot = -1;
+        this.completeClaimMethodSetup(CLAIM_METHODS.EMISSARY);
+    }
+
+    completeClaimMethodSetup(method) {
+        this.claimMethod = method;
+        this.setupState = 'DONE';
+        this.setupWaitTicks = 0;
+        this.setupPendingMethod = null;
+        const callback = this.setupCallback;
+        this.setupCallback = null;
+        if (callback) callback(method);
+    }
+
+    clearClaimMethod() {
+        this.claimMethod = null;
+        this.pigeonSlot = -1;
+        this.abiphoneSlot = -1;
+        this.setupState = 'IDLE';
+        this.setupCallback = null;
+        this.setupPendingMethod = null;
+        this.resetSetupAbiphoneOpenRetry();
+        this.resetAbiphoneInteraction();
+    }
+
     handle() {
         if (!Player.getPlayer()) return;
 
         if (getGuiName() === 'Commissions') {
             this.resetNpcInteraction();
+            this.resetAbiphoneInteraction();
             this.handleCommissionsGui();
             return;
         }
 
         this.resetGuiLoadState();
 
-        const pigeonSlot = findItemInHotbar('Royal Pigeon');
-        if (pigeonSlot !== -1) {
-            if (Player.getHeldItemIndex() !== pigeonSlot) {
-                setItemSlot(pigeonSlot);
-                this.delay(3);
-            } else {
-                Client.rightClick();
-                this.delay(10);
-            }
+        if (this.claimMethod === CLAIM_METHODS.PIGEON) {
+            this.handlePigeon(this.pigeonSlot);
             return;
         }
 
+        if (this.claimMethod === CLAIM_METHODS.ABIPHONE) {
+            this.handleAbiphone();
+            return;
+        }
+
+        if (this.claimMethod === CLAIM_METHODS.EMISSARY) {
+            this.handleEmissary();
+            return;
+        }
+
+        // Compatibility fallback for callers that do not preselect a claim method.
+        const pigeonSlot = findItemInHotbar('Royal Pigeon');
+        if (pigeonSlot !== -1) {
+            this.handlePigeon(pigeonSlot);
+            return;
+        }
+
+        this.handleEmissary();
+    }
+
+    handlePigeon(slot) {
+        const item = Player.getInventory()?.getStackInSlot(slot);
+        const itemName = item ? ChatLib.removeFormatting(String(item.getName())) : '';
+        if (slot < 0 || !itemName.includes('Royal Pigeon')) {
+            this.onClaimFailed('The Royal Pigeon selected when the macro started is no longer available.');
+            return;
+        }
+
+        if (Player.getHeldItemIndex() !== slot) {
+            setItemSlot(slot);
+            this.delay(3);
+            return;
+        }
+
+        Client.rightClick();
+        this.delay(10);
+    }
+
+    handleAbiphone() {
+        const item = Player.getInventory()?.getStackInSlot(this.abiphoneSlot);
+        const itemName = item ? ChatLib.removeFormatting(String(item.getName())) : '';
+        if (this.abiphoneSlot < 0 || !itemName.includes('Abiphone')) {
+            this.onClaimFailed('The Abiphone selected when the macro started is no longer available.');
+            return;
+        }
+
+        const now = Date.now();
+        const guiName = getGuiName();
+
+        if (guiName?.includes('Abiphone')) {
+            const contactSlot = findFirstItem(Player.getContainer(), 'Mismyla');
+            if (contactSlot === -1 || !Player.getContainer()?.getStackInSlot(contactSlot)) {
+                if (now < this.abiphoneOpenRetryReadyAt) return;
+                this.onClaimFailed('Mismyla is no longer available in the configured Abiphone.');
+                return;
+            }
+
+            this.resetAbiphoneOpenRetry();
+
+            if (this.abiphoneContactAttempts > 0 && now < this.abiphoneContactRetryReadyAt) return;
+            if (this.abiphoneContactAttempts >= 4) {
+                const attempts = this.abiphoneContactAttempts;
+                this.resetAbiphoneInteraction();
+                this.onClaimFailed(`Failed to open Commissions through Mismyla after ${attempts} contact click attempts.`);
+                return;
+            }
+
+            if (clickSlot(contactSlot, false, 'LEFT')) this.registerAbiphoneContactAttempt();
+            return;
+        }
+
+        if (this.abiphoneContactAttempts > 0) {
+            if (now < this.abiphoneContactRetryReadyAt) return;
+            if (this.abiphoneContactAttempts >= 4) {
+                const attempts = this.abiphoneContactAttempts;
+                this.resetAbiphoneInteraction();
+                this.onClaimFailed(`Failed to open Commissions through Mismyla after ${attempts} contact click attempts.`);
+                return;
+            }
+        }
+
+        if (this.abiphoneOpenAttempts > 0) {
+            if (now < this.abiphoneOpenRetryReadyAt) return;
+            if (this.abiphoneOpenAttempts >= 4) {
+                const attempts = this.abiphoneOpenAttempts;
+                this.resetAbiphoneInteraction();
+                this.onClaimFailed(`Abiphone never opened after ${attempts} attempts.`);
+                return;
+            }
+        }
+
+        if (Client.isInGui()) closeInventory();
+
+        if (Player.getHeldItemIndex() !== this.abiphoneSlot) {
+            setItemSlot(this.abiphoneSlot);
+            this.delay(3);
+            return;
+        }
+
+        Client.rightClick();
+        this.registerAbiphoneOpenAttempt();
+    }
+
+    handleEmissary() {
         const locations = this.getLocations();
         if (!locations.length) return;
 
@@ -119,6 +506,37 @@ export class CommissionClaimer {
                 this.registerNpcClickAttempt();
             });
         }
+    }
+
+    registerAbiphoneOpenAttempt() {
+        const now = Date.now();
+        this.abiphoneOpenAttempts++;
+        this.abiphoneOpenRetryReadyAt =
+            now +
+            (this.abiphoneOpenAttempts >= 4
+                ? ABIPHONE_UI_FINAL_TIMEOUT_MS
+                : ABIPHONE_UI_RETRY_DELAYS_MS[this.abiphoneOpenAttempts - 1]);
+    }
+
+    resetAbiphoneOpenRetry() {
+        this.abiphoneOpenAttempts = 0;
+        this.abiphoneOpenRetryReadyAt = 0;
+    }
+
+    registerAbiphoneContactAttempt() {
+        const now = Date.now();
+        this.abiphoneContactAttempts++;
+        this.abiphoneContactRetryReadyAt =
+            now +
+            (this.abiphoneContactAttempts >= 4
+                ? ABIPHONE_UI_FINAL_TIMEOUT_MS
+                : ABIPHONE_UI_RETRY_DELAYS_MS[this.abiphoneContactAttempts - 1]);
+    }
+
+    resetAbiphoneInteraction() {
+        this.resetAbiphoneOpenRetry();
+        this.abiphoneContactAttempts = 0;
+        this.abiphoneContactRetryReadyAt = 0;
     }
 
     handleCommissionsGui() {
@@ -290,6 +708,7 @@ export class CommissionClaimer {
     reset() {
         this.cancelNpcRotation();
         this.resetNpcInteraction();
+        this.resetAbiphoneInteraction();
         this.resetCommissionClaim();
     }
 }
