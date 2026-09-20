@@ -447,6 +447,16 @@ export class CommissionClaimer {
             }
 
             if (!guiName?.includes('Abiphone')) {
+                if (this.abiphoneOpenAttempts > 0) {
+                    if (now < this.abiphoneOpenRetryReadyAt) return;
+                    if (this.abiphoneOpenAttempts >= 4) {
+                        const attempts = this.abiphoneOpenAttempts;
+                        this.resetAbiphoneInteraction();
+                        this.onClaimFailed(`Abiphone never reopened after Mismyla click after ${attempts} attempts.`);
+                        return;
+                    }
+                }
+
                 if (Client.isInGui()) closeInventory();
                 if (Player.getHeldItemIndex() !== this.abiphoneSlot) {
                     setItemSlot(this.abiphoneSlot);
