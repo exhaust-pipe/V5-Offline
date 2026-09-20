@@ -13,6 +13,8 @@ const COMMISSION_CLAIM_RETRY_DELAYS_MS = [3000, 5000, 10000];
 const COMMISSION_CLAIM_FINAL_TIMEOUT_MS = 10000;
 const ABIPHONE_UI_RETRY_DELAYS_MS = [3000, 5000, 10000];
 const ABIPHONE_UI_FINAL_TIMEOUT_MS = 10000;
+const PIGEON_UI_RETRY_DELAYS_MS = [3000, 5000, 10000];
+const PIGEON_UI_FINAL_TIMEOUT_MS = 10000;
 const CLAIM_METHODS = {
     PIGEON: 'Royal Pigeon',
     ABIPHONE: 'Abiphone (Mismyla)',
@@ -56,6 +58,9 @@ export class CommissionClaimer {
         this.setupPendingMethod = null;
         this.setupAbiphoneOpenAttempts = 0;
         this.setupAbiphoneOpenRetryReadyAt = 0;
+
+        this.pigeonOpenAttempts = 0;
+        this.pigeonOpenRetryReadyAt = 0;
 
         this.abiphoneOpenAttempts = 0;
         this.abiphoneOpenRetryReadyAt = 0;
@@ -341,6 +346,7 @@ export class CommissionClaimer {
 
         if (getGuiName() === 'Commissions') {
             this.resetNpcInteraction();
+            this.resetPigeonInteraction();
             this.resetAbiphoneInteraction();
             this.handleCommissionsGui();
             return;
@@ -381,6 +387,17 @@ export class CommissionClaimer {
             return;
         }
 
+        const now = Date.now();
+        if (this.pigeonOpenAttempts > 0) {
+            if (now < this.pigeonOpenRetryReadyAt) return;
+            if (this.pigeonOpenAttempts >= 4) {
+                const attempts = this.pigeonOpenAttempts;
+                this.resetPigeonInteraction();
+                this.onClaimFailed(`Royal Pigeon never opened Commissions after ${attempts} attempts.`);
+                return;
+            }
+        }
+
         if (Player.getHeldItemIndex() !== slot) {
             setItemSlot(slot);
             this.delay(3);
@@ -388,7 +405,22 @@ export class CommissionClaimer {
         }
 
         Client.rightClick();
-        this.delay(10);
+        this.registerPigeonOpenAttempt();
+    }
+
+    registerPigeonOpenAttempt() {
+        const now = Date.now();
+        this.pigeonOpenAttempts++;
+        this.pigeonOpenRetryReadyAt =
+            now +
+            (this.pigeonOpenAttempts >= 4
+                ? PIGEON_UI_FINAL_TIMEOUT_MS
+                : PIGEON_UI_RETRY_DELAYS_MS[this.pigeonOpenAttempts - 1]);
+    }
+
+    resetPigeonInteraction() {
+        this.pigeonOpenAttempts = 0;
+        this.pigeonOpenRetryReadyAt = 0;
     }
 
     handleAbiphone() {
@@ -708,6 +740,7 @@ export class CommissionClaimer {
     reset() {
         this.cancelNpcRotation();
         this.resetNpcInteraction();
+        this.resetPigeonInteraction();
         this.resetAbiphoneInteraction();
         this.resetCommissionClaim();
     }
