@@ -41,7 +41,7 @@ const getMacros = () =>
     Array.from(MacroState.modules.values())
         .filter(
             (module) =>
-                module?.isMacro &&
+                (module?.isMacro || module?._wrappedKey) &&
                 (!macroCategoryState.selectedSubcategory || module.subcategory === macroCategoryState.selectedSubcategory) &&
                 (!favoritesOnly || favorites.has(module.name)) &&
                 module.name.toLowerCase().includes(query.toLowerCase())

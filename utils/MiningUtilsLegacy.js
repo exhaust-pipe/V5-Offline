@@ -446,6 +446,9 @@ class MineTimeCalculations {
 }
 
 const DRILL_MECHANIC_LOCATION = [-7, 144, -19];
+const REFUEL_UI_RETRY_DELAYS_MS = [3000, 5000, 10000];
+const REFUEL_UI_FINAL_TIMEOUT_MS = 10000;
+
 class RefuelService {
     constructor() {
         this.STATES = {
@@ -499,6 +502,11 @@ class RefuelService {
         this.npcRotationToken = 0;
         this.npcRotationPending = false;
         this.isPathing = false;
+        this.abiphoneOpenAttempts = 0;
+        this.abiphoneOpenRetryReadyAt = 0;
+        this.anvilOpenAttempts = 0;
+        this.anvilOpenRetryReadyAt = 0;
+        this.anvilOpenSource = null;
 
         this.originalAbiphoneSlot = -1;
         this.targetHotbarSlot = -1;
@@ -643,35 +651,86 @@ class RefuelService {
 
             case this.STATES.OPEN_ABIPHONE:
                 Client.rightClick();
-                this.setState(this.STATES.SELECT_CONTACT, 0, 50);
+                this.registerUiOpenAttempt('abiphone');
+                this.setState(this.STATES.SELECT_CONTACT);
                 break;
 
             case this.STATES.SELECT_CONTACT:
                 if (!Guis.guiName()?.includes('Abiphone')) {
-                    this.handleTimeout('Abiphone never opened!');
+                    if (Date.now() < this.abiphoneOpenRetryReadyAt) break;
+
+                    if (this.abiphoneOpenAttempts >= 4) {
+                        this.fail(`Abiphone never opened after ${this.abiphoneOpenAttempts} attempts!`);
+                        return;
+                    }
+
+                    if (Client.isInGui()) Guis.closeInv();
+                    this.setState(this.STATES.OPEN_ABIPHONE, 5);
                     break;
                 }
 
                 this.contactSlot = Guis.findFirst(Player.getContainer(), 'Jotraeline Greatforge');
                 if (this.contactSlot === -1 || !Player.getContainer()?.getStackInSlot(this.contactSlot)) {
-                    this.handleTimeout('No jotraeline contact detected!');
+                    if (Date.now() < this.abiphoneOpenRetryReadyAt) break;
+                    if (!this.allowNpc) {
+                        this.fail('Jotraeline Greatforge contact not found; NPC refueling is disabled.');
+                        return;
+                    }
+
+                    this.resetUiOpenRetry('abiphone');
+                    Guis.closeInv();
+                    Chat.message('Jotraeline Greatforge contact not found. Walking to Drill Mechanic...');
+                    this.setState(this.STATES.WALK_TO_MECHANIC, 5);
                     break;
                 }
 
+                this.resetUiOpenRetry('abiphone');
                 this.setState(this.STATES.CLICK_CONTACT, 5);
                 break;
 
             case this.STATES.CLICK_CONTACT:
+                if (!Guis.guiName()?.includes('Abiphone')) {
+                    this.setState(this.STATES.OPEN_ABIPHONE, 5);
+                    break;
+                }
+
+                this.contactSlot = Guis.findFirst(Player.getContainer(), 'Jotraeline Greatforge');
+                if (this.contactSlot === -1 || !Player.getContainer()?.getStackInSlot(this.contactSlot)) {
+                    this.setState(this.STATES.SELECT_CONTACT);
+                    break;
+                }
+
                 Guis.clickSlot(this.contactSlot, false, 'LEFT');
-                this.setState(this.STATES.WAIT_FOR_ANVIL, 0, 200);
+                this.anvilOpenSource = 'abiphone';
+                this.registerUiOpenAttempt('anvil');
+                this.setState(this.STATES.WAIT_FOR_ANVIL);
                 break;
 
             case this.STATES.WAIT_FOR_ANVIL:
                 if (Guis.guiName() === 'Drill Anvil') {
+                    this.resetUiOpenRetry('anvil');
                     this.setState(this.STATES.WAIT_ANVIL_READY, 20);
                     break;
                 }
-                if (this.handleTimeout('Anvil never opened?!')) return;
+
+                if (Date.now() < this.anvilOpenRetryReadyAt) break;
+                if (this.anvilOpenAttempts >= 4) {
+                    this.fail(`Drill Anvil never opened after ${this.anvilOpenAttempts} attempts!`);
+                    return;
+                }
+
+                if (this.anvilOpenSource === 'abiphone') {
+                    if (!Guis.guiName()?.includes('Abiphone')) {
+                        if (Client.isInGui()) Guis.closeInv();
+                        this.setState(this.STATES.OPEN_ABIPHONE, 5);
+                    } else {
+                        this.setState(this.STATES.CLICK_CONTACT, 5);
+                    }
+                    break;
+                }
+
+                if (Client.isInGui()) Guis.closeInv();
+                this.setState(this.STATES.WALK_TO_MECHANIC, 5);
                 break;
 
             case this.STATES.WAIT_ANVIL_READY:
@@ -736,6 +795,14 @@ class RefuelService {
                 break;
 
             case this.STATES.ROTATE_TO_MECHANIC:
+                const mechanicDx = Player.getX() - DRILL_MECHANIC_LOCATION[0];
+                const mechanicDy = Player.getY() - DRILL_MECHANIC_LOCATION[1];
+                const mechanicDz = Player.getZ() - DRILL_MECHANIC_LOCATION[2];
+                if (mechanicDx * mechanicDx + mechanicDy * mechanicDy + mechanicDz * mechanicDz >= 12.25) {
+                    this.setState(this.STATES.WALK_TO_MECHANIC);
+                    break;
+                }
+
                 const mechanicHead = [DRILL_MECHANIC_LOCATION[0] + 0.5, DRILL_MECHANIC_LOCATION[1] + 2.2, DRILL_MECHANIC_LOCATION[2] + 0.5];
 
                 if (!this.npcRotationPending && !Rotations.active) {
@@ -746,7 +813,9 @@ class RefuelService {
                         if (!this.npcRotationPending || this.npcRotationToken !== token) return;
                         this.npcRotationPending = false;
                         Client.rightClick();
-                        this.setState(this.STATES.WAIT_FOR_ANVIL, 10, 200);
+                        this.anvilOpenSource = 'npc';
+                        this.registerUiOpenAttempt('anvil');
+                        this.setState(this.STATES.WAIT_FOR_ANVIL, 10);
                     });
                 }
                 break;
@@ -786,13 +855,33 @@ class RefuelService {
         }
     }
 
-    handleTimeout(message) {
-        this.timeoutTicks--;
-        if (this.timeoutTicks <= 0) {
-            this.fail(message);
-            return true;
+    registerUiOpenAttempt(type) {
+        const now = Date.now();
+        if (type === 'abiphone') {
+            this.abiphoneOpenAttempts++;
+            this.abiphoneOpenRetryReadyAt =
+                now +
+                (this.abiphoneOpenAttempts >= 4
+                    ? REFUEL_UI_FINAL_TIMEOUT_MS
+                    : REFUEL_UI_RETRY_DELAYS_MS[this.abiphoneOpenAttempts - 1]);
+            return;
         }
-        return false;
+
+        this.anvilOpenAttempts++;
+        this.anvilOpenRetryReadyAt =
+            now + (this.anvilOpenAttempts >= 4 ? REFUEL_UI_FINAL_TIMEOUT_MS : REFUEL_UI_RETRY_DELAYS_MS[this.anvilOpenAttempts - 1]);
+    }
+
+    resetUiOpenRetry(type) {
+        if (type === 'abiphone') {
+            this.abiphoneOpenAttempts = 0;
+            this.abiphoneOpenRetryReadyAt = 0;
+            return;
+        }
+
+        this.anvilOpenAttempts = 0;
+        this.anvilOpenRetryReadyAt = 0;
+        this.anvilOpenSource = null;
     }
 
     fail(message) {
