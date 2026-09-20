@@ -434,6 +434,32 @@ export class CommissionClaimer {
         const now = Date.now();
         const guiName = getGuiName();
 
+        // Mismyla has a server-side response delay. After clicking the contact,
+        // wait for the configured response window before inspecting the Abiphone
+        // GUI again or deciding whether another contact click is needed.
+        if (this.abiphoneContactAttempts > 0) {
+            if (now < this.abiphoneContactRetryReadyAt) return;
+            if (this.abiphoneContactAttempts >= 4) {
+                const attempts = this.abiphoneContactAttempts;
+                this.resetAbiphoneInteraction();
+                this.onClaimFailed(`Failed to open Commissions through Mismyla after ${attempts} contact click attempts.`);
+                return;
+            }
+
+            if (!guiName?.includes('Abiphone')) {
+                if (Client.isInGui()) closeInventory();
+                if (Player.getHeldItemIndex() !== this.abiphoneSlot) {
+                    setItemSlot(this.abiphoneSlot);
+                    this.delay(3);
+                    return;
+                }
+
+                Client.rightClick();
+                this.registerAbiphoneOpenAttempt();
+                return;
+            }
+        }
+
         if (guiName?.includes('Abiphone')) {
             const contactSlot = findFirstItem(Player.getContainer(), 'Mismyla');
             if (contactSlot === -1 || !Player.getContainer()?.getStackInSlot(contactSlot)) {
@@ -444,26 +470,8 @@ export class CommissionClaimer {
 
             this.resetAbiphoneOpenRetry();
 
-            if (this.abiphoneContactAttempts > 0 && now < this.abiphoneContactRetryReadyAt) return;
-            if (this.abiphoneContactAttempts >= 4) {
-                const attempts = this.abiphoneContactAttempts;
-                this.resetAbiphoneInteraction();
-                this.onClaimFailed(`Failed to open Commissions through Mismyla after ${attempts} contact click attempts.`);
-                return;
-            }
-
             if (clickSlot(contactSlot, false, 'LEFT')) this.registerAbiphoneContactAttempt();
             return;
-        }
-
-        if (this.abiphoneContactAttempts > 0) {
-            if (now < this.abiphoneContactRetryReadyAt) return;
-            if (this.abiphoneContactAttempts >= 4) {
-                const attempts = this.abiphoneContactAttempts;
-                this.resetAbiphoneInteraction();
-                this.onClaimFailed(`Failed to open Commissions through Mismyla after ${attempts} contact click attempts.`);
-                return;
-            }
         }
 
         if (this.abiphoneOpenAttempts > 0) {
