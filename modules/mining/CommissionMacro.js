@@ -87,6 +87,8 @@ class CommissionMacro extends ModuleBase {
         this.miningSpeed = 0;
         this.lastCompletedCommissionName = null;
         this.lastCommissionName = null;
+        this.claimMethodReady = false;
+        this.claimMethod = null;
         this.commissionClaimer = new CommissionClaimer({
             getLocations: () => this.getAvailableEmissaryLocations(),
             ensureToolEquipped: () => this.ensureDrillEquippedForEmissaryClaim(),
@@ -357,6 +359,20 @@ class CommissionMacro extends ModuleBase {
 
         Mouse.ungrab();
         this.resetState();
+        this.beginClaimMethodSetup();
+    }
+
+    beginClaimMethodSetup() {
+        this.claimMethodReady = false;
+        this.claimMethod = null;
+
+        const protectedSlots = [this.drill?.slot, this.weapon?.slot].filter((slot) => slot != null && slot >= 0 && slot <= 8);
+        this.commissionClaimer.beginClaimMethodSetup((method) => {
+            if (!this.enabled) return;
+            this.claimMethod = method;
+            this.claimMethodReady = true;
+            this.message(`&aCommission claim method: &b${method}`);
+        }, protectedSlots);
     }
 
     onDisable() {
@@ -365,6 +381,9 @@ class CommissionMacro extends ModuleBase {
         this.intensityIncreasedThisWindow = false;
         this.message('&cDisabled');
         this.resetState();
+        this.claimMethodReady = false;
+        this.claimMethod = null;
+        this.commissionClaimer.clearClaimMethod();
 
         Mouse.regrab();
     }
@@ -458,6 +477,12 @@ class CommissionMacro extends ModuleBase {
         if (!this.enabled) return;
         this.updateIntensityDecay();
         if (!World.isLoaded() || !Player.getPlayer()) return;
+
+        if (!this.claimMethodReady) {
+            this.commissionClaimer.handleClaimMethodSetup();
+            return;
+        }
+
         MiningBot.setCost(MiningBot.mithrilCosts);
 
         if (
