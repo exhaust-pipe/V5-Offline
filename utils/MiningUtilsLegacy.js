@@ -484,13 +484,13 @@ class RefuelService {
         };
 
         this.reset();
-        register('tick', () => {
+        this.tickRegister = register('tick', () => {
             try {
                 this.tick();
             } catch (error) {
                 this.abort('Refueling error: ' + error);
             }
-        });
+        }).unregister();
     }
 
     reset() {
@@ -513,12 +513,14 @@ class RefuelService {
         this.swapState = 0;
         this.finalSuccess = false;
         this.allowNpc = true;
+        if (this.tickRegister) this.tickRegister.unregister();
     }
 
     setState(nextState, waitTicks = 0, timeoutTicks = null) {
         this.state = nextState;
         this.waitTicks = waitTicks;
         this.timeoutTicks = timeoutTicks;
+        this.tickRegister.register();
     }
 
     refuel(callback, { allowNpc = true } = {}) {
@@ -860,16 +862,12 @@ class RefuelService {
         if (type === 'abiphone') {
             this.abiphoneOpenAttempts++;
             this.abiphoneOpenRetryReadyAt =
-                now +
-                (this.abiphoneOpenAttempts >= 4
-                    ? REFUEL_UI_FINAL_TIMEOUT_MS
-                    : REFUEL_UI_RETRY_DELAYS_MS[this.abiphoneOpenAttempts - 1]);
+                now + (this.abiphoneOpenAttempts >= 4 ? REFUEL_UI_FINAL_TIMEOUT_MS : REFUEL_UI_RETRY_DELAYS_MS[this.abiphoneOpenAttempts - 1]);
             return;
         }
 
         this.anvilOpenAttempts++;
-        this.anvilOpenRetryReadyAt =
-            now + (this.anvilOpenAttempts >= 4 ? REFUEL_UI_FINAL_TIMEOUT_MS : REFUEL_UI_RETRY_DELAYS_MS[this.anvilOpenAttempts - 1]);
+        this.anvilOpenRetryReadyAt = now + (this.anvilOpenAttempts >= 4 ? REFUEL_UI_FINAL_TIMEOUT_MS : REFUEL_UI_RETRY_DELAYS_MS[this.anvilOpenAttempts - 1]);
     }
 
     resetUiOpenRetry(type) {

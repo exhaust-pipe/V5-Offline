@@ -2,6 +2,9 @@ import { ShulkerEntity, Vec3d } from '../../utils/Constants';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { area } from '../../utils/Utils';
 
+const DyeColor = net.minecraft.world.item.DyeColor;
+const isInGalatea = () => ['Galatea', 'Moonglade Marsh'].includes(area());
+
 class HideonLeafESP extends ModuleBase {
     constructor() {
         super({
@@ -18,9 +21,10 @@ class HideonLeafESP extends ModuleBase {
         this.on('step', () => this.scanTargets()).setFps(5);
 
         this.when(
-            () => this.enabled && World.isLoaded() && area() === 'Galatea' && this.targets.length > 0,
+            () => this.enabled && World.isLoaded() && isInGalatea() && this.targets.length > 0,
             'postRenderWorld',
-            () => this.renderTargets()
+            () => this.renderTargets(),
+            true
         );
 
         this.on('worldUnload', () => {
@@ -29,12 +33,12 @@ class HideonLeafESP extends ModuleBase {
     }
 
     scanTargets() {
-        if (!this.enabled || !World.isLoaded() || area() !== 'Galatea') {
+        if (!this.enabled || !World.isLoaded() || !isInGalatea()) {
             this.targets = [];
             return;
         }
 
-        this.targets = World.getAllEntitiesOfType(ShulkerEntity).filter((entity) => entity && !entity.isDead());
+        this.targets = World.getAllEntitiesOfType(ShulkerEntity).filter((entity) => entity && !entity.isDead() && entity.toMC().getColor() === DyeColor.GREEN);
     }
 
     renderTargets() {

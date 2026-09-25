@@ -38,6 +38,45 @@ let routeNames = [];
 let routeScroll = 0;
 let mineableEditMode = false;
 let mineableEditStatus = '';
+const mineableRegisters = [
+    register('clicked', (_mouseX, _mouseY, button, isPressed) => {
+        if (!mineableEditMode || !oreMiner || Client.isInGui() || !isPressed) return;
+        if (button === 0) cycleMineable();
+        else if (button === 1) undoMineable();
+        else return;
+        Client.setKey('leftclick', false);
+        Client.setKey('rightclick', false);
+    }).unregister(),
+    register('packetSent', (packet, event) => {
+        if (!mineableEditMode) return;
+        if (packet instanceof ServerboundPlayerActionPacket && !String(packet.getAction?.() || '').includes('DESTROY_BLOCK')) return;
+        cancel(event);
+    })
+        .setFilteredClasses([
+            ServerboundPlayerActionPacket,
+            ServerboundUseItemOnPacket,
+            ServerboundUseItemPacket,
+            ServerboundSwingPacket,
+            ServerboundInteractPacket,
+        ])
+        .unregister(),
+    register('renderOverlay', () => {
+        if (!mineableEditMode || !oreMiner || Client.isInGui()) return;
+        const waypointIndex = nearestMovementWaypoint();
+        const lines = [
+            `Mineable Edit Mode — nearest waypoint [${waypointIndex}]`,
+            'Left click: Mine → 1 Tap → R Tap',
+            'Right click: undo/remove',
+            'Open the Ore Route Editor and click Save to finish',
+            mineableEditStatus,
+        ];
+        const x = Render2D.screen.getWidth() / 2 + 36;
+        const y = Render2D.screen.getHeight() / 2 - 26;
+        lines.forEach((line, index) => {
+            Render2D.drawStringWithShadow(line, x, y + index * 11, index === 0 ? 0xff00b4d8 : Render2D.WHITE);
+        });
+    }).unregister(),
+];
 let fields = { x: '', y: '', z: '', warp: '' };
 let layout = { buttons: [], inputs: {}, rows: [], list: null, routeButton: null, routeMenu: null };
 
@@ -151,8 +190,15 @@ const beginMineableEdit = () => {
         return;
     }
     mineableEditMode = true;
+    mineableRegisters.forEach((handle) => handle.register());
     mineableEditStatus = 'Left-click a block to add it.';
     Client.currentGui.close();
+};
+
+const exitMineableEdit = () => {
+    mineableEditMode = false;
+    mineableEditStatus = '';
+    mineableRegisters.forEach((handle) => handle.unregister());
 };
 
 const cycleMineable = () => {
@@ -544,8 +590,7 @@ const drawEditor = (mouseX, mouseY) => {
             status = 'Could not save route.';
             return;
         }
-        mineableEditMode = false;
-        mineableEditStatus = '';
+        exitMineableEdit();
         routeName = routeNameFromPath(oreMiner.loadedPath);
         status = `Saved ${routeName}.json`;
     });
@@ -641,57 +686,8 @@ routeEditorGui.registerClosed(() => {
     }
 });
 
-register('clicked', (_mouseX, _mouseY, button, isPressed) => {
-    if (!mineableEditMode || !oreMiner || Client.isInGui() || !isPressed) return;
-    if (button === 0) cycleMineable();
-    else if (button === 1) undoMineable();
-    else return;
-    Client.setKey('leftclick', false);
-    Client.setKey('rightclick', false);
-});
-
-register('packetSent', (packet, event) => {
-    if (!mineableEditMode) return;
-    const action = String(packet.getAction?.() || '');
-    if (action.includes('DESTROY_BLOCK')) cancel(event);
-}).setFilteredClass(ServerboundPlayerActionPacket);
-
-register('packetSent', (_packet, event) => {
-    if (mineableEditMode) cancel(event);
-}).setFilteredClass(ServerboundUseItemOnPacket);
-
-register('packetSent', (_packet, event) => {
-    if (mineableEditMode) cancel(event);
-}).setFilteredClass(ServerboundUseItemPacket);
-
-register('packetSent', (_packet, event) => {
-    if (mineableEditMode) cancel(event);
-}).setFilteredClass(ServerboundSwingPacket);
-
-register('packetSent', (_packet, event) => {
-    if (mineableEditMode) cancel(event);
-}).setFilteredClass(ServerboundInteractPacket);
-
-register('renderOverlay', () => {
-    if (!mineableEditMode || !oreMiner || Client.isInGui()) return;
-    const waypointIndex = nearestMovementWaypoint();
-    const lines = [
-        `Mineable Edit Mode — nearest waypoint [${waypointIndex}]`,
-        'Left click: Mine → 1 Tap → R Tap',
-        'Right click: undo/remove',
-        'Open the Ore Route Editor and click Save to finish',
-        mineableEditStatus,
-    ];
-    const x = Render2D.screen.getWidth() / 2 + 36;
-    const y = Render2D.screen.getHeight() / 2 - 26;
-    lines.forEach((line, index) => {
-        Render2D.drawStringWithShadow(line, x, y + index * 11, index === 0 ? 0xff00b4d8 : Render2D.WHITE);
-    });
-});
-
 register('worldUnload', () => {
-    mineableEditMode = false;
-    mineableEditStatus = '';
+    exitMineableEdit();
     if (oreMiner) oreMiner.editing = false;
     oreMiner = null;
 });

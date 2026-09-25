@@ -248,7 +248,7 @@ class ForagingBot extends ModuleBase {
                 return false;
             }
             const worldBlock = World.getBlockAt(block.x, block.y, block.z);
-            return worldBlock?.type?.getID() === 80;
+            return worldBlock?.type?.getRegistryName() === 'minecraft:snow_block';
         });
     }
 

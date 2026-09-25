@@ -20,8 +20,11 @@ class AuctionHelper extends ModuleBase {
             if (!this.auto2Day) this.selectingDuration = false;
         });
         this.addToggle('Quick Create', (value) => (this.quickCreate = !!value));
-
-        register('tick', () => this.onTick());
+        this.when(
+            () => this.auto2Day || this.quickCreate,
+            'tick',
+            () => this.onTick()
+        );
     }
 
     onTick() {

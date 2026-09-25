@@ -20,6 +20,7 @@ class FarmingDelays extends ModuleBase {
             mousematAction: { name: 'Mousemat Action Delay', low: 100, high: 200 },
             bazaarAction: { name: 'Bazaar Action Delay', low: 250, high: 750 },
             rewarp: { name: 'Rewarp Delay', low: 500, high: 750 },
+            postSwap: { name: 'Post Swap Delay', low: 150, high: 300 },
         };
 
         Object.keys(this.ranges).forEach((key) => this.addDelayRange(key));

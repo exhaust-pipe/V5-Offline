@@ -58,18 +58,30 @@ const readAngles = (angleArr) => {
 
 class EtherwarpPathHandler {
     constructor() {
+        this.tickRegister = register('tick', () => this.evaluateHopArrival(this.executionToken)).unregister();
+        this.renderRegister = register('renderWorld', () => this.render()).unregister();
+        this.actionBarRegister = register('actionBar', (text) => {
+            if (!this.executionActive || !ChatLib.removeFormatting(text).includes('NOT ENOUGH MANA')) return;
+            this.finishFailure('Not enough mana to continue etherwarping.', !this.currentRun || this.currentRun.restoreSlot !== false);
+        })
+            .setCriteria('${text}')
+            .unregister();
         this.resetState();
         setEtherwarpPathHandler(this);
 
         v5Command('etherwarp', (x, y, z) => this.test(x, y, z), ['greedyString']);
 
-        register('tick', () => this.evaluateHopArrival(this.executionToken));
-        register('renderWorld', () => this.render());
-        register('actionBar', (text) => {
-            if (!this.executionActive || !ChatLib.removeFormatting(text).includes('NOT ENOUGH MANA')) return;
-            this.finishFailure('Not enough mana to continue etherwarping.', !this.currentRun || this.currentRun.restoreSlot !== false);
-        }).setCriteria('${text}');
         register('worldUnload', () => this.handleWorldUnload());
+    }
+
+    syncRegisters() {
+        const toggle = (handle, active) => {
+            if (active && !handle.isRegistered()) handle.register();
+            else if (!active && handle.isRegistered()) handle.unregister();
+        };
+        toggle(this.tickRegister, this.executionActive);
+        toggle(this.actionBarRegister, this.executionActive);
+        toggle(this.renderRegister, this.renderGeometry.length > 0);
     }
 
     resetState() {
@@ -264,6 +276,7 @@ class EtherwarpPathHandler {
                 color: index === 0 ? PATH_COLORS.start : index === path.length - 1 ? PATH_COLORS.end : PATH_COLORS.pending,
             };
         });
+        if (this.renderRegister) this.syncRegisters();
     }
 
     startSearch(goal, isRetry = false) {
@@ -402,6 +415,7 @@ class EtherwarpPathHandler {
         }
 
         this.executionActive = true;
+        this.syncRegisters();
         this.executionToken++;
         this.resetExecutionRuntime();
 
@@ -500,6 +514,7 @@ class EtherwarpPathHandler {
 
         this.executionToken++;
         this.executionActive = false;
+        this.syncRegisters();
         this.hopAwaiting = false;
         this.resetExecutionRuntime();
         this.originalSlot = preserveOriginalSlot ? currentOriginalSlot : -1;

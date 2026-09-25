@@ -43,7 +43,7 @@ class PathRotations {
 
         this.resetRotations();
 
-        register('renderWorld', () => {
+        this.renderRegister = register('renderWorld', () => {
             if (!this.rotationActive || !this.boxPositions || this.boxPositions.length < 2) return;
             if (!Player.getPlayer()) {
                 this.resetRotations();
@@ -55,7 +55,7 @@ class PathRotations {
             this.updateLookPoint(timeScale);
             this.applyHumanizedPhysics(timeScale);
             PathRotationsUtility.applyRotationWithGCD(this.currentYaw, this.currentPitch);
-        });
+        }).unregister();
 
         PathExecutor.onTick(() => {
             if (this.postTeleportResyncTicks > 0) {
@@ -103,6 +103,12 @@ class PathRotations {
         this.pitchDriftStartedAt = 0;
         this.pitchDriftDuration = 0;
         PathRotationsUtility.stopRotation();
+        this.syncRender();
+    }
+
+    syncRender() {
+        if (this.rotationActive && !this.renderRegister?.isRegistered()) this.renderRegister.register();
+        else if (!this.rotationActive && this.renderRegister?.isRegistered()) this.renderRegister.unregister();
     }
 
     onTeleportTriggered(targetPathPosition = null) {
@@ -301,6 +307,7 @@ class PathRotations {
         const pathAnchor = this.getInterpolatedPoint(this.currentPathPosition);
         if (!pathAnchor) {
             this.rotationActive = false;
+            this.syncRender();
             return;
         }
         const isJumpingHigh = motionY > 0.1 || player.getY() - pathAnchor.y > 2.0;
@@ -452,6 +459,7 @@ class PathRotations {
             this.currentPathPosition = lastIndex;
             this.complete = true;
             this.rotationActive = false;
+            this.syncRender();
         }
     }
 
@@ -656,6 +664,7 @@ class PathRotations {
             if (!lookPoints || lookPoints.length < 2) {
                 this.boxPositions = null;
                 this.rotationActive = false;
+                this.syncRender();
                 return;
             }
             this.boxPositions = lookPoints;
@@ -671,6 +680,7 @@ class PathRotations {
             this.currentPathPosition = 0;
             this.isInitialized = true;
             this.rotationActive = true;
+            this.syncRender();
             this.initialTurnBoostTicks = 10;
         }
     }

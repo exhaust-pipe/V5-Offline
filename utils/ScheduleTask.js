@@ -2,8 +2,14 @@ import { finiteNumber } from './Math';
 
 let currentTick = 0;
 let queuedTasks = [];
+let taskTick;
 
-register('tick', () => {
+const syncTaskTick = () => {
+    if (queuedTasks.length && !taskTick.isRegistered()) taskTick.register();
+    else if (!queuedTasks.length && taskTick.isRegistered()) taskTick.unregister();
+};
+
+taskTick = register('tick', () => {
     currentTick++;
     if (!queuedTasks.length) return;
 
@@ -25,7 +31,8 @@ register('tick', () => {
             console.error(e);
         }
     }
-});
+    syncTaskTick();
+}).unregister();
 
 export function ScheduleTask(delayOrTask, maybeTask) {
     const hasExplicitDelay = typeof delayOrTask !== 'function';
@@ -39,4 +46,5 @@ export function ScheduleTask(delayOrTask, maybeTask) {
         runAtTick: currentTick + delayTicks,
         task,
     });
+    syncTaskTick();
 }

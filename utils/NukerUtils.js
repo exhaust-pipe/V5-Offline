@@ -9,6 +9,13 @@ export const nukeQueue = [];
 let lastNukeTime = Date.now();
 let tickCounter = 0;
 let delay = 0;
+let nukeTick;
+
+const syncNukeTick = () => {
+    const active = nukeQueue.length > 0 || tickCounter > 0;
+    if (active && !nukeTick.isRegistered()) nukeTick.register();
+    else if (!active && nukeTick.isRegistered()) nukeTick.unregister();
+};
 
 export const createBlockPosition = (coords) => new BP(Math.floor(coords[0]), Math.floor(coords[1]), Math.floor(coords[2]));
 
@@ -46,7 +53,11 @@ export function sendBreakPackets(blockPos, facing) {
     Client.sendPacket(new ServerboundSwingPacket(MCHand.MAIN_HAND));
 }
 
-export const queueNuke = (blockPos, ticks) => nukeQueue.push([blockPos, ticks]);
+export const queueNuke = (blockPos, ticks) => {
+    const count = nukeQueue.push([blockPos, ticks]);
+    syncNukeTick();
+    return count;
+};
 
 const updateDelay = (ticks) => {
     if (Date.now() - lastNukeTime <= MIN_NUKE_INTERVAL + ticks * 50 && ticks !== 1 && delay < MIN_NUKE_INTERVAL) return;
@@ -58,6 +69,7 @@ export function nuke(blockPos, ticks = 1) {
     updateDelay(ticks);
     lastNukeTime = Date.now();
     tickCounter = ticks;
+    syncNukeTick();
     setTimeout(() => {
         const position = createBlockPosition(blockPos);
         Client.sendSequencedPacket(
@@ -68,19 +80,21 @@ export function nuke(blockPos, ticks = 1) {
     delay += SWING_DELAY;
 }
 
-register('tick', () => {
+nukeTick = register('tick', () => {
     if (nukeQueue.length) {
         const action = nukeQueue.pop();
         nukeQueue.length = 0;
-        if (!Array.isArray(action) || action.length < 2 || !isBlockInRange(action[0])) return;
-        const position = createBlockPosition(action[0]);
-        sendBreakPackets(position, closestDirection(position));
-        tickCounter = action[1];
+        if (Array.isArray(action) && action.length >= 2 && isBlockInRange(action[0])) {
+            const position = createBlockPosition(action[0]);
+            sendBreakPackets(position, closestDirection(position));
+            tickCounter = action[1];
+        }
     } else if (tickCounter > 0) {
         tickCounter--;
         Client.sendPacket(new ServerboundSwingPacket(MCHand.MAIN_HAND));
     }
-});
+    syncNukeTick();
+}).unregister();
 
 export const NukerUtils = {
     nukeQueue,

@@ -160,6 +160,11 @@ class OreMiner extends ModuleBase {
         this.undoStack = [];
         this.selectedWaypoint = -1;
         this.editing = false;
+        this.when(
+            () => this.showOverlay && this.loadedWaypoints && (this.loadedWaypoints.length || this.currentRenderTarget || this.nextRenderTarget),
+            'postRenderWorld',
+            () => this.render()
+        );
 
         this.addSlider('Drill Slot', 1, 8, 1, (value) => (this.drillSlot = Math.round(value) - 1), 'Mining tool hotbar slot.');
         this.addSlider(
@@ -287,7 +292,6 @@ class OreMiner extends ModuleBase {
         this.editorKey.registerKeyPress(() => oreRouteEditor.open(this));
         register('gameUnload', () => this._saveKey(editorKeyName, this.editorKey.getKeyCode()));
         this.on('tick', () => this.tick());
-        register('postRenderWorld', () => this.render());
 
         registerSkyblockEvent('abilityready', () => {
             if (!this.routeActive) return;

@@ -49,7 +49,8 @@ class TreeESP extends ModuleBase {
         this.when(
             () => this.enabled && this.trees.length > 0,
             'postRenderWorld',
-            () => this.render()
+            () => this.render(),
+            true
         );
         this.on('worldUnload', () => (this.trees = []));
     }

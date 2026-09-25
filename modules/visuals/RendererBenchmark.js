@@ -37,6 +37,8 @@ let frames = 0;
 let positions = [];
 let boxes = [];
 let renderRegistration = null;
+let overlayRegister;
+let worldRegister;
 
 const currentPhase = () => phases[phaseIndex];
 
@@ -49,6 +51,12 @@ const updateRenderRegistration = () => {
         Render2D.unregisterV5Render(renderRegistration);
         renderRegistration = null;
     }
+    const overlayActive = phase?.renderer === '2D' && ['String', 'Image', 'Player'].includes(phase.type);
+    const worldActive = phase?.renderer === '3D';
+    if (overlayActive && !overlayRegister.isRegistered()) overlayRegister.register();
+    else if (!overlayActive && overlayRegister.isRegistered()) overlayRegister.unregister();
+    if (worldActive && !worldRegister.isRegistered()) worldRegister.register();
+    else if (!worldActive && worldRegister.isRegistered()) worldRegister.unregister();
 };
 
 const stop = () => {
@@ -181,7 +189,7 @@ const renderBenchmark = () => {
     finishFrame(phase);
 };
 
-register('renderOverlay', () => {
+overlayRegister = register('renderOverlay', () => {
     const phase = currentPhase();
     if (!phase || phase.renderer !== '2D' || !['String', 'Image', 'Player'].includes(phase.type)) return;
 
@@ -195,9 +203,9 @@ register('renderOverlay', () => {
         else Render2D.drawPlayer({ x, y, size: 12 });
     }
     finishFrame(phase);
-});
+}).unregister();
 
-register('postRenderWorld', () => {
+worldRegister = register('postRenderWorld', () => {
     const phase = currentPhase();
     if (!phase || phase.renderer !== '3D' || !World.isLoaded()) return;
     if ((!positions.length || !boxes.length) && !setPositions()) return;
@@ -249,7 +257,7 @@ register('postRenderWorld', () => {
             );
     }
     finishFrame(phase);
-});
+}).unregister();
 
 v5Command('benchmark', () => start('all'));
 v5Command('benchmark 2d', () => start('2d'));

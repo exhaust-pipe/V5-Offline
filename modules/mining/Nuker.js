@@ -261,7 +261,8 @@ class NukerClass extends ModuleBase {
                     this.chestClickCooldowns.set(posStr, now);
                     this.chestClickedThisTick = true;
                 }
-            }
+            },
+            true
         );
 
         this.addToggle('Auto Chest', (v) => (this.autoChest = v), 'Auto-opens chests');

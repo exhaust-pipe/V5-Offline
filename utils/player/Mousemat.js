@@ -10,7 +10,7 @@ class MousematController {
         this.rotation = null;
         this.callbacks = [];
         this.lastClickAt = 0;
-        register('tick', () => this.tick());
+        this.tickRegister = register('tick', () => this.tick()).unregister();
     }
 
     get active() {
@@ -40,6 +40,7 @@ class MousematController {
         this.stop();
         if (this.isAtRotation(Number(targetYaw), Number(targetPitch))) {
             const rotation = (this.rotation = { originalSlot: Player.getHeldItemIndex() });
+            this.tickRegister.register();
             ScheduleTask(() => this.complete(rotation));
             return true;
         }
@@ -54,6 +55,7 @@ class MousematController {
             waitingForSign: false,
             waitingForClose: false,
         });
+        this.tickRegister.register();
 
         setItemSlot(slot);
         const selectedRotation = this.getSelectedRotation(slot);
@@ -79,6 +81,7 @@ class MousematController {
         const selectedRotation = this.getSelectedRotation(slot);
         if (!selectedRotation) return false;
         const rotation = (this.rotation = { originalSlot: Player.getHeldItemIndex(), ...selectedRotation });
+        this.tickRegister.register();
         setItemSlot(slot);
         this.snap(rotation, this.getActionDelay());
         return true;
@@ -97,6 +100,7 @@ class MousematController {
 
         const callbacks = this.callbacks;
         this.rotation = null;
+        this.tickRegister.unregister();
         this.callbacks = [];
         setItemSlot(rotation.originalSlot);
         callbacks.forEach((callback) => ScheduleTask(callback));
@@ -105,6 +109,7 @@ class MousematController {
     stop() {
         if (this.rotation) setItemSlot(this.rotation.originalSlot);
         this.rotation = null;
+        this.tickRegister.unregister();
         this.callbacks = [];
     }
 

@@ -166,7 +166,7 @@ class GemstoneMacro extends ModuleBase {
                         let currentPoint = this.route[this.closestPointIndex];
                         let block = World.getBlockAt(currentPoint.x, currentPoint.y, currentPoint.z);
 
-                        if (block?.type?.getID() === 0 || block?.type?.getID() === 200) {
+                        if (['minecraft:air', 'minecraft:chest'].includes(block?.type?.getRegistryName?.())) {
                             this.message(`&cPoint is unreachable!`);
                             this.toggle(false);
                             return;
@@ -327,7 +327,7 @@ class GemstoneMacro extends ModuleBase {
         if (!block) return false;
         const above1 = World.getBlockAt(block.x, block.y + 1, block.z);
         const above2 = World.getBlockAt(block.x, block.y + 2, block.z);
-        return above1.getType().getID() === 0 && above2.getType().getID() === 0;
+        return above1.getType().getRegistryName() === 'minecraft:air' && above2.getType().getRegistryName() === 'minecraft:air';
     }
 
     recalculateEtherWarp(intensity) {

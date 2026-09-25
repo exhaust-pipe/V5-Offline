@@ -140,11 +140,12 @@ export class FarmingMacro extends ModuleBase {
         if (farmingSettings.killNearbyPests && !rewarpSettings.pestKiller && this.handlePest(player)) return;
 
         const looping = rewarpSettings.looping;
+        const hybrid = rewarpSettings.hybrid;
         if (rewarpSettings.pestKiller && getGardenPestStatus().gardenPests >= rewarpSettings.pestThreshold) {
             const pestColumnClear = this.isPestColumnClear(player);
-            if (looping || pestColumnClear) {
+            if (looping || hybrid || pestColumnClear) {
                 const returnPoint = { x: player.getX(), y: player.getY(), z: player.getZ() };
-                if (looping) ChatLib.command('sethome');
+                if (looping || hybrid) ChatLib.command('sethome');
                 return this.beginRewarp(returnPoint, true);
             }
         }

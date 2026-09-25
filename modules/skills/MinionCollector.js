@@ -28,7 +28,8 @@ class MinionCollector extends ModuleBase {
                 this.scanAndQueue();
 
                 if (!Client.isInGui()) this.processQueue();
-            }
+            },
+            true
         );
 
         register('worldUnload', () => {

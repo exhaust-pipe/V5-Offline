@@ -5,8 +5,8 @@ import { Vector3 } from './dependencies/BloomCore/Vector3';
 
 const SAMPLE_POINTS_PER_FACE = 9;
 const MAX_DDA_ITERATIONS = 300;
-const AIR_BLOCK_ID = 0;
-const PASSABLE_BLOCKS = new Set([0, 513]);
+const AIR_BLOCKS = new Set(['minecraft:air', 'minecraft:cave_air', 'minecraft:void_air']);
+const PASSABLE_BLOCKS = new Set([...AIR_BLOCKS, 'minecraft:chorus_flower']);
 
 const RaycastContext = ClipContext;
 const faceOffsets = [];
@@ -75,7 +75,7 @@ export function testPointVisibility(targetX, targetY, targetZ, point, eye) {
             [eye.x, eye.y, eye.z],
             new Vector3(dx / distance, dy / distance, dz / distance),
             distance + 0.2,
-            (block) => !!block?.type && block.type.getID() !== AIR_BLOCK_ID,
+            (block) => !!block?.type && !AIR_BLOCKS.has(block.type.getRegistryName()),
             true
         );
         return hit && hit[0] === targetX && hit[1] === targetY && hit[2] === targetZ;
@@ -134,7 +134,7 @@ export function isLineClear(startX, startY, startZ, endX, endY, endZ, ignoreX, i
 
         if (x !== ignoreX || y !== ignoreY || z !== ignoreZ) {
             const block = World.getBlockAt(x, y, z);
-            if (!block?.type || !PASSABLE_BLOCKS.has(block.type.getID())) return false;
+            if (!block?.type || !PASSABLE_BLOCKS.has(block.type.getRegistryName())) return false;
         }
         if (x === goalX && y === goalY && z === goalZ) return true;
     }
@@ -146,7 +146,7 @@ export function getLookingAt(distance = 5) {
         const position = Player.getPlayer()?.pick(distance, 0, false)?.getBlockPos();
         if (!position) return null;
         const block = World.getBlockAt(position.getX(), position.getY(), position.getZ());
-        return block?.type && block.type.getID() !== AIR_BLOCK_ID ? block : null;
+        return block?.type && !AIR_BLOCKS.has(block.type.getRegistryName()) ? block : null;
     } catch (error) {
         console.error(error);
         return null;

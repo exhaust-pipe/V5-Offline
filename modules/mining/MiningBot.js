@@ -183,6 +183,7 @@ class Bot extends ModuleBase {
             'minecraft:gold_block': 4,
             'minecraft:diamond_block': 4,
             'minecraft:emerald_block': 4,
+            'minecraft:lapis_block': 4,
         };
 
         this.tunnelCosts = {

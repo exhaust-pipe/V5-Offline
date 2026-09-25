@@ -18,7 +18,7 @@ class OreRoutePathWalker {
         this.splinePath = null;
         this.walkTarget = null;
 
-        register('postRenderWorld', () => this.render());
+        this.renderRegister = register('postRenderWorld', () => this.render()).unregister();
     }
 
     start(goal) {
@@ -39,6 +39,7 @@ class OreRoutePathWalker {
             0,
             PathConfig.PATHFINDER_MAX_COMPUTE
         );
+        if (this.active && !this.renderRegister.isRegistered()) this.renderRegister.register();
         return this.active;
     }
 
@@ -60,14 +61,15 @@ class OreRoutePathWalker {
 
         if (!this.path) {
             const result = Swift.getResult();
-            if (!result?.path_between_key_nodes?.length) {
+            const path = result?.path_between_key_nodes;
+            if (!Array.isArray(path) || !path.length) {
                 this.stop();
                 return 'FAILED';
             }
-            this.path = result.path_between_key_nodes;
-            this.pathFlags = result.path_flags;
-            this.pathFlagBits = result.path_flag_bits;
-            this.keyNodes = result.keynodes;
+            this.path = path;
+            this.pathFlags = Array.isArray(result.path_flags) ? result.path_flags : [];
+            this.pathFlagBits = Array.isArray(result.path_flag_bits) ? result.path_flag_bits : [];
+            this.keyNodes = Array.isArray(result.keynodes) ? result.keynodes : [];
             this.splinePath = generateSpline(this.path, 1);
             createLookPoints(this.splinePath);
         }
@@ -164,6 +166,7 @@ class OreRoutePathWalker {
             Swift.clear();
         }
         this.active = false;
+        if (this.renderRegister.isRegistered()) this.renderRegister.unregister();
         this.goal = null;
         this.goalKey = '';
         this.path = null;

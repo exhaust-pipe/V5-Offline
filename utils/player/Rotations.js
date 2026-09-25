@@ -68,7 +68,7 @@ class RotationController {
 
         v5Command('rotations stop', () => this.stop());
 
-        register('renderWorld', () => this.update());
+        this.renderRegister = register('renderWorld', () => this.update()).unregister();
     }
 
     get active() {
@@ -216,6 +216,7 @@ class RotationController {
         }
 
         this.request = nextRequest;
+        if (!this.renderRegister.isRegistered()) this.renderRegister.register();
         this.request.speedMultiplier = speedMultiplier;
         this.request.rotationSpeed = rotationSpeed;
         this.request.precision = precision;
@@ -348,6 +349,7 @@ class RotationController {
         this.lastTime = 0;
         this.startTime = 0;
         this.initialDistance = 0;
+        if (this.renderRegister.isRegistered()) this.renderRegister.unregister();
     }
 
     resetTiming(now = 0, distance = 0) {

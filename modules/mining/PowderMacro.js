@@ -5,7 +5,7 @@ import { Rotations } from '../../utils/player/Rotations';
 import { angleDifference, applyToPlayer } from '../../utils/player/RotationGCD';
 import { registerSkyblockEvent } from '../../utils/SkyblockEvents';
 
-const CHEST_BLOCK_IDS = new Set([54, 146]);
+const CHEST_BLOCKS = new Set(['minecraft:chest', 'minecraft:trapped_chest']);
 const CHEST_SEARCH_RADIUS = 3;
 const RETURN_THRESHOLD = 2.0;
 const RETURN_SPEED = 0.15;
@@ -263,7 +263,7 @@ class PowderMacro extends ModuleBase {
 
         const blockType = block.getType();
         if (!blockType) return false;
-        if (CHEST_BLOCK_IDS.has(blockType.getID())) return true;
+        if (CHEST_BLOCKS.has(blockType.getRegistryName())) return true;
 
         const blockName = typeof blockType.getName === 'function' ? blockType.getName() : '';
         return blockName.toLowerCase().includes('chest');

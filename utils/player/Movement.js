@@ -35,7 +35,9 @@ export function setKeysForStraightLine(yaw, shouldJump, ignoreBottomSlab) {
         { min: 112.5, max: 157.5, keys: ['s', 'd'] },
     ];
 
-    for (const { min, max, keys } of quadrants) {
+    for (let i = 0; i < quadrants.length; i++) {
+        const quadrant = quadrants[i];
+        const { min, max, keys } = quadrant;
         if (yaw >= min && yaw <= max) {
             keys.forEach((key) => Client.setKey(key, true));
             break;
