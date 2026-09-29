@@ -6,6 +6,7 @@ import { Utils } from './Utils';
 import { v5Command } from './V5Commands';
 import Pathfinder from './pathfinder/PathFinder';
 import { Guis } from './player/Inventory';
+import { GuiStability } from './player/GuiStability';
 import { Rotations } from './player/Rotations';
 import { TabListUtils } from './TabListUtils';
 
@@ -451,6 +452,7 @@ const REFUEL_UI_FINAL_TIMEOUT_MS = 10000;
 
 class RefuelService {
     constructor() {
+        this.guiStability = new GuiStability();
         this.STATES = {
             IDLE: 0,
             FIND_ABIPHONE: 1,
@@ -494,6 +496,7 @@ class RefuelService {
     }
 
     reset() {
+        this.guiStability.reset();
         this.state = this.STATES.IDLE;
         this.waitTicks = 0;
         this.timeoutTicks = null;
@@ -502,6 +505,7 @@ class RefuelService {
         this.npcRotationToken = 0;
         this.npcRotationPending = false;
         this.isPathing = false;
+        this.abiphoneSlot = -1;
         this.abiphoneOpenAttempts = 0;
         this.abiphoneOpenRetryReadyAt = 0;
         this.anvilOpenAttempts = 0;
@@ -537,8 +541,23 @@ class RefuelService {
 
     tick() {
         if (this.state === this.STATES.IDLE) return;
+        if (!Player.getPlayer()) return;
+        const guiReady = this.guiStability.update();
         if (this.waitTicks > 0) {
             this.waitTicks--;
+            return;
+        }
+        if (!guiReady) return;
+
+        if (
+            [this.STATES.WAIT_ANVIL_READY, this.STATES.ADD_FUEL, this.STATES.CONFIRM_FUEL, this.STATES.TAKE_TOOL].includes(this.state) &&
+            Guis.guiName() !== 'Drill Anvil'
+        ) {
+            if (this.state === this.STATES.WAIT_ANVIL_READY) {
+                this.setState(this.STATES.WAIT_FOR_ANVIL);
+            } else {
+                this.fail('Drill Anvil was closed or replaced while refueling.');
+            }
             return;
         }
 
@@ -556,6 +575,7 @@ class RefuelService {
                 }
 
                 if (hotbarSlot !== -1) {
+                    this.abiphoneSlot = hotbarSlot;
                     Guis.setItemSlot(hotbarSlot);
                     this.setState(this.STATES.OPEN_ABIPHONE, 5);
                     return;
@@ -608,6 +628,7 @@ class RefuelService {
                     }
 
                     this.targetHotbarSlot = targetSlot;
+                    this.abiphoneSlot = targetSlot;
                     this.setState(this.STATES.OPEN_PLAYER_INV_SWAP, 0);
                 } else {
                     if (!this.allowNpc) return this.fail('Abiphone not found; NPC refueling is disabled.');
@@ -652,6 +673,21 @@ class RefuelService {
                 break;
 
             case this.STATES.OPEN_ABIPHONE:
+                if (Client.isInGui()) {
+                    Guis.closeInv();
+                    this.waitTicks = 5;
+                    break;
+                }
+                const abiphone = this.abiphoneSlot >= 0 ? Player.getInventory()?.getStackInSlot(this.abiphoneSlot) : null;
+                if (this.abiphoneSlot < 0 || !abiphone?.getName()?.includes('Abiphone')) {
+                    this.fail('The selected Abiphone is no longer available in the hotbar.');
+                    return;
+                }
+                if (Player.getHeldItemIndex() !== this.abiphoneSlot) {
+                    Guis.setItemSlot(this.abiphoneSlot);
+                    this.waitTicks = 3;
+                    break;
+                }
                 Client.rightClick();
                 this.registerUiOpenAttempt('abiphone');
                 this.setState(this.STATES.SELECT_CONTACT);
@@ -666,7 +702,6 @@ class RefuelService {
                         return;
                     }
 
-                    if (Client.isInGui()) Guis.closeInv();
                     this.setState(this.STATES.OPEN_ABIPHONE, 5);
                     break;
                 }
@@ -686,13 +721,12 @@ class RefuelService {
                     break;
                 }
 
-                this.resetUiOpenRetry('abiphone');
                 this.setState(this.STATES.CLICK_CONTACT, 5);
                 break;
 
             case this.STATES.CLICK_CONTACT:
                 if (!Guis.guiName()?.includes('Abiphone')) {
-                    this.setState(this.STATES.OPEN_ABIPHONE, 5);
+                    this.setState(this.STATES.SELECT_CONTACT);
                     break;
                 }
 
@@ -702,7 +736,8 @@ class RefuelService {
                     break;
                 }
 
-                Guis.clickSlot(this.contactSlot, false, 'LEFT');
+                if (!Guis.clickSlot(this.contactSlot, false, 'LEFT')) break;
+                this.resetUiOpenRetry('abiphone');
                 this.anvilOpenSource = 'abiphone';
                 this.registerUiOpenAttempt('anvil');
                 this.setState(this.STATES.WAIT_FOR_ANVIL);
@@ -710,7 +745,6 @@ class RefuelService {
 
             case this.STATES.WAIT_FOR_ANVIL:
                 if (Guis.guiName() === 'Drill Anvil') {
-                    this.resetUiOpenRetry('anvil');
                     this.setState(this.STATES.WAIT_ANVIL_READY, 20);
                     break;
                 }
@@ -723,7 +757,6 @@ class RefuelService {
 
                 if (this.anvilOpenSource === 'abiphone') {
                     if (!Guis.guiName()?.includes('Abiphone')) {
-                        if (Client.isInGui()) Guis.closeInv();
                         this.setState(this.STATES.OPEN_ABIPHONE, 5);
                     } else {
                         this.setState(this.STATES.CLICK_CONTACT, 5);
@@ -731,7 +764,6 @@ class RefuelService {
                     break;
                 }
 
-                if (Client.isInGui()) Guis.closeInv();
                 this.setState(this.STATES.WALK_TO_MECHANIC, 5);
                 break;
 
@@ -740,6 +772,8 @@ class RefuelService {
                 if (!tool) return this.fail('No drill found!');
 
                 Guis.clickSlot(tool.slot + 81, true);
+                this.resetUiOpenRetry('anvil');
+                this.guiStability.reset();
                 this.setState(this.STATES.ADD_FUEL, 10);
                 break;
 
@@ -749,16 +783,19 @@ class RefuelService {
                     this.setState(this.STATES.FAIL_CLEANUP, 10);
                     return;
                 }
+                this.guiStability.reset();
                 this.setState(this.STATES.CONFIRM_FUEL, 10);
                 break;
 
             case this.STATES.CONFIRM_FUEL:
                 Guis.clickSlot(22, false);
+                this.guiStability.reset();
                 this.setState(this.STATES.TAKE_TOOL, 10);
                 break;
 
             case this.STATES.TAKE_TOOL:
                 Guis.clickSlot(13, true);
+                this.guiStability.reset();
                 this.setState(this.STATES.CLOSE, 10);
                 break;
 
@@ -773,6 +810,11 @@ class RefuelService {
                 break;
 
             case this.STATES.WALK_TO_MECHANIC:
+                if (Client.isInGui()) {
+                    Guis.closeInv();
+                    this.waitTicks = 5;
+                    break;
+                }
                 const dx = Player.getX() - DRILL_MECHANIC_LOCATION[0];
                 const dy = Player.getY() - DRILL_MECHANIC_LOCATION[1];
                 const dz = Player.getZ() - DRILL_MECHANIC_LOCATION[2];
@@ -797,6 +839,11 @@ class RefuelService {
                 break;
 
             case this.STATES.ROTATE_TO_MECHANIC:
+                if (Client.isInGui()) {
+                    Guis.closeInv();
+                    this.waitTicks = 5;
+                    break;
+                }
                 const mechanicDx = Player.getX() - DRILL_MECHANIC_LOCATION[0];
                 const mechanicDy = Player.getY() - DRILL_MECHANIC_LOCATION[1];
                 const mechanicDz = Player.getZ() - DRILL_MECHANIC_LOCATION[2];
@@ -814,6 +861,7 @@ class RefuelService {
                     Rotations.onComplete(() => {
                         if (!this.npcRotationPending || this.npcRotationToken !== token) return;
                         this.npcRotationPending = false;
+                        if (this.state !== this.STATES.ROTATE_TO_MECHANIC || !this.guiStability.update() || Client.isInGui()) return;
                         Client.rightClick();
                         this.anvilOpenSource = 'npc';
                         this.registerUiOpenAttempt('anvil');
@@ -858,6 +906,7 @@ class RefuelService {
     }
 
     registerUiOpenAttempt(type) {
+        this.guiStability.reset();
         const now = Date.now();
         if (type === 'abiphone') {
             this.abiphoneOpenAttempts++;

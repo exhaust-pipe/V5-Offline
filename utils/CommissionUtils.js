@@ -2,6 +2,7 @@ import { FastEtherwarp } from './FastEtherwarp';
 import { distanceToPlayerPoint, fastDistance } from './Math';
 import Pathfinder from './pathfinder/PathFinder';
 import { clickSlot, closeInventory, findFirstItem, findItemInHotbar, getGuiName, setItemSlot } from './player/Inventory';
+import { GuiStability } from './player/GuiStability';
 import { Rotations } from './player/Rotations';
 
 const NPC_INTERACTION_RETRY_DELAYS_MS = [3000, 5000, 10000];
@@ -44,6 +45,7 @@ export class CommissionClaimer {
         this.onInteractionFailed = onInteractionFailed || (() => {});
         this.onClaimFailed = onClaimFailed || (() => {});
         this.getTravelMode = getTravelMode || (() => 'Walk');
+        this.guiStability = new GuiStability();
 
         this.claimMethod = null;
         this.pigeonSlot = -1;
@@ -80,6 +82,7 @@ export class CommissionClaimer {
     }
 
     beginClaimMethodSetup(callback, protectedHotbarSlots = []) {
+        this.guiStability.reset();
         this.claimMethod = null;
         this.pigeonSlot = -1;
         this.abiphoneSlot = -1;
@@ -96,10 +99,12 @@ export class CommissionClaimer {
 
     handleClaimMethodSetup() {
         if (!Player.getPlayer() || this.setupState === 'IDLE' || this.setupState === 'DONE') return;
+        const guiReady = this.guiStability.update();
         if (this.setupWaitTicks > 0) {
             this.setupWaitTicks--;
             return;
         }
+        if (!guiReady) return;
 
         switch (this.setupState) {
             case 'FIND_METHOD': {
@@ -183,6 +188,11 @@ export class CommissionClaimer {
                 return;
 
             case 'OPEN_ABIPHONE':
+                if (Client.isInGui()) {
+                    closeInventory();
+                    this.setupWaitTicks = 5;
+                    return;
+                }
                 if (Player.getHeldItemIndex() !== this.abiphoneSlot) {
                     setItemSlot(this.abiphoneSlot);
                     this.setupWaitTicks = 3;
@@ -202,7 +212,6 @@ export class CommissionClaimer {
                         return;
                     }
 
-                    if (Client.isInGui()) closeInventory();
                     this.setupState = 'OPEN_ABIPHONE';
                     this.setupWaitTicks = 5;
                     return;
@@ -291,13 +300,11 @@ export class CommissionClaimer {
     }
 
     registerSetupAbiphoneOpenAttempt() {
+        this.guiStability.reset();
         const now = Date.now();
         this.setupAbiphoneOpenAttempts++;
         this.setupAbiphoneOpenRetryReadyAt =
-            now +
-            (this.setupAbiphoneOpenAttempts >= 4
-                ? ABIPHONE_UI_FINAL_TIMEOUT_MS
-                : ABIPHONE_UI_RETRY_DELAYS_MS[this.setupAbiphoneOpenAttempts - 1]);
+            now + (this.setupAbiphoneOpenAttempts >= 4 ? ABIPHONE_UI_FINAL_TIMEOUT_MS : ABIPHONE_UI_RETRY_DELAYS_MS[this.setupAbiphoneOpenAttempts - 1]);
     }
 
     resetSetupAbiphoneOpenRetry() {
@@ -331,6 +338,7 @@ export class CommissionClaimer {
     }
 
     clearClaimMethod() {
+        this.guiStability.reset();
         this.claimMethod = null;
         this.pigeonSlot = -1;
         this.abiphoneSlot = -1;
@@ -343,6 +351,7 @@ export class CommissionClaimer {
 
     handle() {
         if (!Player.getPlayer()) return;
+        if (!this.guiStability.update()) return;
 
         if (getGuiName() === 'Commissions') {
             this.resetNpcInteraction();
@@ -398,6 +407,12 @@ export class CommissionClaimer {
             }
         }
 
+        if (Client.isInGui()) {
+            closeInventory();
+            this.delay(3);
+            return;
+        }
+
         if (Player.getHeldItemIndex() !== slot) {
             setItemSlot(slot);
             this.delay(3);
@@ -409,13 +424,11 @@ export class CommissionClaimer {
     }
 
     registerPigeonOpenAttempt() {
+        this.guiStability.reset();
         const now = Date.now();
         this.pigeonOpenAttempts++;
         this.pigeonOpenRetryReadyAt =
-            now +
-            (this.pigeonOpenAttempts >= 4
-                ? PIGEON_UI_FINAL_TIMEOUT_MS
-                : PIGEON_UI_RETRY_DELAYS_MS[this.pigeonOpenAttempts - 1]);
+            now + (this.pigeonOpenAttempts >= 4 ? PIGEON_UI_FINAL_TIMEOUT_MS : PIGEON_UI_RETRY_DELAYS_MS[this.pigeonOpenAttempts - 1]);
     }
 
     resetPigeonInteraction() {
@@ -457,7 +470,11 @@ export class CommissionClaimer {
                     }
                 }
 
-                if (Client.isInGui()) closeInventory();
+                if (Client.isInGui()) {
+                    closeInventory();
+                    this.delay(3);
+                    return;
+                }
                 if (Player.getHeldItemIndex() !== this.abiphoneSlot) {
                     setItemSlot(this.abiphoneSlot);
                     this.delay(3);
@@ -494,7 +511,11 @@ export class CommissionClaimer {
             }
         }
 
-        if (Client.isInGui()) closeInventory();
+        if (Client.isInGui()) {
+            closeInventory();
+            this.delay(3);
+            return;
+        }
 
         if (Player.getHeldItemIndex() !== this.abiphoneSlot) {
             setItemSlot(this.abiphoneSlot);
@@ -519,6 +540,12 @@ export class CommissionClaimer {
                 this.onInteractionFailed(attempts);
                 return;
             }
+        }
+
+        if (Client.isInGui()) {
+            closeInventory();
+            this.delay(3);
+            return;
         }
 
         const closest = this.getClosestLocation(locations);
@@ -546,6 +573,7 @@ export class CommissionClaimer {
                 if (!this.npcRotationPending || this.npcRotationToken !== token) return;
                 this.npcRotationPending = false;
                 if (!this.isClaiming() || this.isPathing()) return;
+                if (!this.guiStability.update() || Client.isInGui()) return;
 
                 if (distanceToPlayerPoint(target) > NPC_INTERACTION_DISTANCE) {
                     this.pathToNpc(this.getLocations());
@@ -559,13 +587,11 @@ export class CommissionClaimer {
     }
 
     registerAbiphoneOpenAttempt() {
+        this.guiStability.reset();
         const now = Date.now();
         this.abiphoneOpenAttempts++;
         this.abiphoneOpenRetryReadyAt =
-            now +
-            (this.abiphoneOpenAttempts >= 4
-                ? ABIPHONE_UI_FINAL_TIMEOUT_MS
-                : ABIPHONE_UI_RETRY_DELAYS_MS[this.abiphoneOpenAttempts - 1]);
+            now + (this.abiphoneOpenAttempts >= 4 ? ABIPHONE_UI_FINAL_TIMEOUT_MS : ABIPHONE_UI_RETRY_DELAYS_MS[this.abiphoneOpenAttempts - 1]);
     }
 
     resetAbiphoneOpenRetry() {
@@ -574,13 +600,11 @@ export class CommissionClaimer {
     }
 
     registerAbiphoneContactAttempt() {
+        this.guiStability.reset();
         const now = Date.now();
         this.abiphoneContactAttempts++;
         this.abiphoneContactRetryReadyAt =
-            now +
-            (this.abiphoneContactAttempts >= 4
-                ? ABIPHONE_UI_FINAL_TIMEOUT_MS
-                : ABIPHONE_UI_RETRY_DELAYS_MS[this.abiphoneContactAttempts - 1]);
+            now + (this.abiphoneContactAttempts >= 4 ? ABIPHONE_UI_FINAL_TIMEOUT_MS : ABIPHONE_UI_RETRY_DELAYS_MS[this.abiphoneContactAttempts - 1]);
     }
 
     resetAbiphoneInteraction() {
@@ -654,6 +678,7 @@ export class CommissionClaimer {
     }
 
     registerNpcClickAttempt() {
+        this.guiStability.reset();
         this.npcClickAttempts++;
         if (this.npcClickAttempts >= 4) {
             this.npcRetryReadyAt = Date.now() + NPC_INTERACTION_FINAL_TIMEOUT_MS;
@@ -665,6 +690,7 @@ export class CommissionClaimer {
     }
 
     registerCommissionClaimAttempt(slot) {
+        this.guiStability.reset();
         const now = Date.now();
         this.commissionClaimSlot = slot;
         this.commissionClaimAttempts++;
@@ -756,6 +782,7 @@ export class CommissionClaimer {
     }
 
     reset() {
+        this.guiStability.reset();
         this.cancelNpcRotation();
         this.resetNpcInteraction();
         this.resetPigeonInteraction();
