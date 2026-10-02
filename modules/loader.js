@@ -50,6 +50,8 @@ import './skills/RouteWalker';
 import './skills/WynnProfessionMacro';
 
 /* RIFT */
+import './rift/ScribeNuker';
+import './rift/AgaricusCapTriggerbot';
 import './rift/KloonHackingMacro';
 import './rift/SunGeckoMacro';
 import './rift/MirrorverseMacro';

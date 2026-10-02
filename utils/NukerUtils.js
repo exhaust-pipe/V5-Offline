@@ -1,5 +1,6 @@
 import { BP, Direction, MCHand, Vec3d } from './Constants';
-import { ServerboundPlayerActionPacket, ServerboundPlayerActionPacket$Action, ServerboundSwingPacket } from './Packets';
+import { setGhostBlock } from './MiningUtils';
+import { ServerboundSwingPacket, ServerboundPlayerActionPacket, ServerboundPlayerActionPacket$Action } from './Packets';
 
 const MAX_REACH_DISTANCE = 6;
 const MIN_NUKE_INTERVAL = 50;
@@ -10,9 +11,11 @@ let lastNukeTime = Date.now();
 let tickCounter = 0;
 let delay = 0;
 let nukeTick;
+let vanillaBreak = null;
+let worldGeneration = 0;
 
 const syncNukeTick = () => {
-    const active = nukeQueue.length > 0 || tickCounter > 0;
+    const active = nukeQueue.length > 0 || tickCounter > 0 || vanillaBreak;
     if (active && !nukeTick.isRegistered()) nukeTick.register();
     else if (!active && nukeTick.isRegistered()) nukeTick.unregister();
 };
@@ -37,13 +40,13 @@ export function closestDirection(blockPos) {
     return closest;
 }
 
-export function isBlockInRange(blockPos) {
+export function isBlockInRange(blockPos, maxDistance = MAX_REACH_DISTANCE) {
     const eye = Player.getPlayer()?.getEyePosition();
     if (!eye) return false;
     const x = Math.max(blockPos[0], Math.min(eye.x(), blockPos[0] + 1));
     const y = Math.max(blockPos[1], Math.min(eye.y(), blockPos[1] + 1));
     const z = Math.max(blockPos[2], Math.min(eye.z(), blockPos[2] + 1));
-    return Math.hypot(eye.x() - x, eye.y() - y, eye.z() - z) <= MAX_REACH_DISTANCE;
+    return Math.hypot(eye.x() - x, eye.y() - y, eye.z() - z) <= maxDistance;
 }
 
 export function sendBreakPackets(blockPos, facing) {
@@ -59,6 +62,48 @@ export const queueNuke = (blockPos, ticks) => {
     return count;
 };
 
+export const queueVanillaNuke = (blockPos, reach = MAX_REACH_DISTANCE) => {
+    if (!World.isLoaded() || !Player.getPlayer() || Client.isInGui() || isVanillaNukeActive()) return nukeQueue.length;
+    const count = nukeQueue.push({ blockPos, reach, vanilla: true });
+    syncNukeTick();
+    return count;
+};
+
+export const isVanillaNukeActive = () => vanillaBreak !== null || nukeQueue.some((action) => action?.vanilla);
+
+export function cancelVanillaNuke(sendAbort = true) {
+    for (let i = nukeQueue.length - 1; i >= 0; i--) {
+        if (nukeQueue[i]?.vanilla) nukeQueue.splice(i, 1);
+    }
+    const current = vanillaBreak;
+    vanillaBreak = null;
+    syncNukeTick();
+    if (current && sendAbort && World.isLoaded() && Player.getPlayer()) {
+        Client.sendSequencedPacket(
+            (sequence) =>
+                new ServerboundPlayerActionPacket(
+                    ServerboundPlayerActionPacket$Action.ABORT_DESTROY_BLOCK,
+                    current.position,
+                    closestDirection(current.position),
+                    sequence
+                )
+        );
+    }
+}
+
+const stopVanillaBreak = ({ position }) => {
+    Client.sendSequencedPacket(
+        (sequence) => new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket$Action.STOP_DESTROY_BLOCK, position, closestDirection(position), sequence)
+    );
+    setGhostBlock(position);
+};
+
+const getVanillaBreakProgress = (position) => {
+    const world = World.getWorld();
+    const player = Player.getPlayer();
+    return world && player ? world.getBlockState(position)?.getDestroyProgress(player, world, position) || 0 : 0;
+};
+
 const updateDelay = (ticks) => {
     if (Date.now() - lastNukeTime <= MIN_NUKE_INTERVAL + ticks * 50 && ticks !== 1 && delay < MIN_NUKE_INTERVAL) return;
     delay = 0;
@@ -70,7 +115,9 @@ export function nuke(blockPos, ticks = 1) {
     lastNukeTime = Date.now();
     tickCounter = ticks;
     syncNukeTick();
+    const generation = worldGeneration;
     setTimeout(() => {
+        if (generation !== worldGeneration || !World.isLoaded() || !Player.getPlayer()) return;
         const position = createBlockPosition(blockPos);
         Client.sendSequencedPacket(
             (sequence) =>
@@ -81,13 +128,40 @@ export function nuke(blockPos, ticks = 1) {
 }
 
 nukeTick = register('tick', () => {
-    if (nukeQueue.length) {
+    if (!World.isLoaded() || !Player.getPlayer()) {
+        nukeQueue.length = 0;
+        tickCounter = 0;
+        cancelVanillaNuke(false);
+        return;
+    }
+    if (Client.isInGui() || Client.getMinecraft().options.keyAttack?.isDown()) cancelVanillaNuke();
+    if (vanillaBreak) {
+        const state = World.getWorld().getBlockState(vanillaBreak.position);
+        const progress = getVanillaBreakProgress(vanillaBreak.position);
+        if (!isBlockInRange(vanillaBreak.blockPos, vanillaBreak.reach) || !state.equals(vanillaBreak.state) || progress <= 0) {
+            cancelVanillaNuke();
+        } else {
+            vanillaBreak.progress += progress;
+            if (vanillaBreak.progress >= 1) {
+                stopVanillaBreak(vanillaBreak);
+                vanillaBreak = null;
+            }
+            Client.sendPacket(new ServerboundSwingPacket(MCHand.MAIN_HAND));
+        }
+    } else if (nukeQueue.length) {
         const action = nukeQueue.pop();
         nukeQueue.length = 0;
-        if (Array.isArray(action) && action.length >= 2 && isBlockInRange(action[0])) {
-            const position = createBlockPosition(action[0]);
-            sendBreakPackets(position, closestDirection(position));
-            tickCounter = action[1];
+        const blockPos = action?.vanilla ? action.blockPos : action?.[0];
+        const reach = action?.vanilla ? action.reach : MAX_REACH_DISTANCE;
+        if (blockPos && isBlockInRange(blockPos, reach)) {
+            const position = createBlockPosition(blockPos);
+            const facing = closestDirection(position);
+            const breakProgress = action.vanilla ? getVanillaBreakProgress(position) : 0;
+            if (!action.vanilla || breakProgress > 0) {
+                sendBreakPackets(position, facing);
+                if (action.vanilla) vanillaBreak = { position, blockPos, reach, state: World.getWorld().getBlockState(position), progress: 0 };
+                else tickCounter = action[1];
+            }
         }
     } else if (tickCounter > 0) {
         tickCounter--;
@@ -96,7 +170,20 @@ nukeTick = register('tick', () => {
     syncNukeTick();
 }).unregister();
 
+for (const event of ['worldUnload', 'gameUnload']) {
+    register(event, () => {
+        worldGeneration++;
+        nukeQueue.length = 0;
+        tickCounter = 0;
+        delay = 0;
+        cancelVanillaNuke(false);
+    });
+}
+
 export const NukerUtils = {
+    queueVanillaNuke,
+    isVanillaNukeActive,
+    cancelVanillaNuke,
     nukeQueue,
     nukeQueueAdd: queueNuke,
     queueNuke,

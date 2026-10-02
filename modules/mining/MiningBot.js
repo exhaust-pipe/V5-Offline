@@ -10,6 +10,7 @@ import { manager } from '../../utils/SkyblockEvents';
 import { Utils } from '../../utils/Utils';
 import { Guis } from '../../utils/player/Inventory';
 import { OreRotations } from '../../utils/player/OreRotations';
+import { RotationModule } from '../../utils/player/Rotations';
 import { ServerInfo } from '../../utils/player/ServerInfo';
 import { TabListUtils } from '../../utils/TabListUtils';
 import { Mouse } from '../../utils/Ungrab';
@@ -60,7 +61,8 @@ class Bot extends ModuleBase {
         this.SCAN_ONLY = false;
         this.DEBUG_MODE = false;
         this.ADDITIONAL_LAG_COMP = 0;
-        this.rotationSpeed = 0.48;
+        this.miningRotationSpeed = 0.48;
+        this.useGlobalRotationSpeed = false;
         this.sneakWhileMining = true;
         this.minimumVisibleRays = 0;
         this.miningSpeedAdaptation = true;
@@ -484,7 +486,19 @@ class Bot extends ModuleBase {
             'Aims at the Precision Miner particle, speeds up mining mithril.',
             true
         );
-        this.addSlider('Mining Rotation Speed', 1, 100, 48, (value) => (this.rotationSpeed = value / 100), 'Rotation speed for mining targets.');
+        this.addToggle(
+            'Use Global Rotation Speed',
+            (value) => (this.useGlobalRotationSpeed = value),
+            'Use the shared Rotations speed instead of Mining Rotation Speed.'
+        );
+        this.addSlider(
+            'Mining Rotation Speed',
+            1,
+            100,
+            48,
+            (value) => (this.miningRotationSpeed = value / 100),
+            'Rotation speed when Use Global Rotation Speed is off.'
+        );
         this.addMultiToggle(
             'Fakelook',
             ['Off', 'Queued'],
@@ -1029,14 +1043,14 @@ class Bot extends ModuleBase {
         if (this.isPrecisionMinerAimValid(aim)) this.precisionMinerAim = aim;
     }
 
+    get rotationSpeed() {
+        return this.useGlobalRotationSpeed ? 0.48 * (RotationModule.ROTATION_SPEED / 400) : this.miningRotationSpeed;
+    }
+
     getPrecisionMinerAim() {
         if (!this.PRECISION_MINER) return null;
         if (!this.precisionMinerAim || this.precisionMinerAim.expiresAt < Date.now()) return null;
-        const player = Player.getPlayer();
-        if (!player) return null;
-        const distance = Math.hypot(this.precisionMinerAim.x - player.getX(), this.precisionMinerAim.z - player.getZ());
-        const aim = MathUtils.offsetPitch(this.precisionMinerAim, 5 / Math.max(1, distance - 1));
-        return this.isPrecisionMinerAimValid(aim) ? aim : null;
+        return this.isPrecisionMinerAimValid(this.precisionMinerAim) ? this.precisionMinerAim : null;
     }
 
     isPrecisionMinerAimValid(aim) {

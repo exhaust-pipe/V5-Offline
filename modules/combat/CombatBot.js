@@ -1,4 +1,4 @@
-import { ArmorStandEntity, EndermanEntity, Vec3d, ZombieEntity } from '../../utils/Constants';
+import { ArmorStandEntity, CreeperEntity, EndermanEntity, MobEntity, PlayerEntity, Vec3d, ZombieEntity } from '../../utils/Constants';
 import { MathUtils } from '../../utils/Math';
 import { ModuleBase } from '../../utils/ModuleBase';
 import Pathfinder from '../../utils/pathfinder/PathFinder';
@@ -34,6 +34,7 @@ const BLACKHOLE_TEXTURES = new Set([
 ]);
 
 const ATTACK_REACH = 4;
+const NAMETAG_MOB_RANGE = 1;
 const PATH_HANDOFF_DISTANCE = 6;
 const REPATH_DISTANCE = 7;
 const REPATH_DELAY_MS = 1200;
@@ -58,6 +59,11 @@ const COMBAT_PRESETS = {
     Endermen: {
         entityClass: EndermanEntity,
         checkVisibility: true,
+    },
+    Ghost: {
+        entityClass: CreeperEntity,
+        entityCheck: (entity) => entity.isPowered(),
+        allowInvisible: true,
     },
     Goblins: {
         names: ['Goblin', 'Weakling', 'Knifethrower', 'Fireslinger'],
@@ -211,7 +217,7 @@ class Combat extends ModuleBase {
             'Target Names',
             '',
             (value) => (this.targetNames = parseNames(value)),
-            'Generic internal entity names separated by commas. Use presets for location-specific mobs.'
+            'Case-insensitive nametag text separated by commas. Matches partial names and links armor stands to mob hitboxes within 1 block.'
         );
 
         this.addTextInput(
@@ -458,7 +464,7 @@ class Combat extends ModuleBase {
             return;
         }
 
-        this.blacklistTarget(target);
+        if (this.externalTargets === null) this.blacklistTarget(target);
         this.setTarget(null);
     }
 
@@ -599,8 +605,7 @@ class Combat extends ModuleBase {
         if (!target) return false;
 
         try {
-            const entity = target.toMC ? target.toMC() : target;
-            if (!entity || entity.isRemoved?.() || entity.isDeadOrDying?.() || target.isDead?.()) return false;
+            if (!this.isCombatTargetCandidate(target, true)) return false;
 
             const uuid = this.getTargetUuid(target);
             if (uuid && this.blacklistedTargets.has(uuid)) return false;
@@ -677,16 +682,24 @@ class Combat extends ModuleBase {
     findMob(config, whitelist = null) {
         if (!config?.entityClass && !Array.isArray(config?.names)) return [];
 
-        const names = config.names?.map((name) => name.toLowerCase());
-        const entities = config.entityClass ? World.getAllEntitiesOfType(config.entityClass) : World.getAllEntities();
+        const names = Array.isArray(config.names)
+            ? config.names
+                  .filter((name) => typeof name === 'string')
+                  .map((name) => name.trim().toLowerCase())
+                  .filter(Boolean)
+            : null;
+        if (names && !names.length) return [];
 
-        return entities.filter((entity) => {
+        const entities = names ? World.getAllEntities() : World.getAllEntitiesOfType(config.entityClass);
+        const nametagMobs = names ? entities.filter((entity) => this.isCombatTargetCandidate(entity, true)) : [];
+        const mobs = entities.filter((entity) => {
             try {
-                const uuid = entity.getUUID();
-                if (whitelist?.has(uuid)) return false;
-                if (names && !names.some((candidate) => this.getCleanEntityName(entity).includes(candidate))) return false;
-                if (entity.isSpectator?.() || entity.isInvisible?.() || entity.isDead?.()) return false;
+                if (whitelist?.has(entity.getUUID())) return false;
+                if (!this.isCombatTargetCandidate(entity, config.allowInvisible)) return false;
+                if (config.entityClass && !(entity.toMC() instanceof config.entityClass)) return false;
+                if (this.isTargetNameBlacklisted(entity)) return false;
                 if (config.boundaryCheck && !config.boundaryCheck(entity.getX(), entity.getY(), entity.getZ())) return false;
+                if (config.entityCheck && !config.entityCheck(entity.toMC())) return false;
 
                 return this.isVisibleOrRecent(entity, config.checkVisibility);
             } catch (e) {
@@ -694,6 +707,70 @@ class Combat extends ModuleBase {
                 return false;
             }
         });
+        const candidates = new Map(mobs.map((mob) => [this.getTargetUuid(mob), mob]));
+        if (!names) return [...candidates.values()];
+
+        const targets = new Map();
+        for (const entity of entities) {
+            try {
+                const name = this.getCleanEntityName(entity);
+                if (!names.some((candidate) => name.includes(candidate)) || this.isTargetNameBlacklisted(entity)) continue;
+
+                const target = entity.toMC() instanceof ArmorStandEntity ? this.resolveNametagTarget(entity, nametagMobs) : entity;
+                if (target && candidates.has(this.getTargetUuid(target))) targets.set(this.getTargetUuid(target), target);
+            } catch (e) {
+                console.error('V5 Combat Bot target scan error: ' + e);
+            }
+        }
+
+        return [...targets.values()];
+    }
+
+    isCombatTargetCandidate(entity, allowInvisible = false) {
+        try {
+            const mcEntity = entity?.toMC ? entity.toMC() : entity;
+            if (mcEntity instanceof PlayerEntity) {
+                const uuid = mcEntity.getUUID();
+                if (uuid.version() !== 2 || String(uuid) === String(Player.getUUID())) return false;
+            } else if (!(mcEntity instanceof MobEntity)) {
+                return false;
+            }
+
+            return (
+                !mcEntity.isSpectator() &&
+                !mcEntity.isRemoved?.() &&
+                !mcEntity.isDeadOrDying?.() &&
+                (allowInvisible || !entity.isInvisible?.()) &&
+                !entity.isDead?.()
+            );
+        } catch (e) {
+            return false;
+        }
+    }
+
+    resolveNametagTarget(namedEntity, mobs) {
+        const mcEntity = namedEntity.toMC();
+        if (mcEntity.isRemoved?.() || namedEntity.isDead?.()) return null;
+
+        const point = mcEntity.position();
+
+        const maxDistanceSq = NAMETAG_MOB_RANGE ** 2;
+        let closest = null;
+        let closestDistanceSq = Infinity;
+
+        for (const mob of mobs) {
+            try {
+                const distanceSq = mob.toMC().getBoundingBox().distanceToSqr(point);
+                if (distanceSq <= maxDistanceSq && distanceSq < closestDistanceSq) {
+                    closest = mob;
+                    closestDistanceSq = distanceSq;
+                }
+            } catch (e) {
+                console.error('V5 Combat Bot target scan error: ' + e);
+            }
+        }
+
+        return closest;
     }
 
     getCleanEntityName(entity) {

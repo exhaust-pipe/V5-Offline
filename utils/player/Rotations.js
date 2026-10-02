@@ -46,7 +46,7 @@ class RotationConfig extends ModuleBase {
     }
 }
 
-const RotationModule = new RotationConfig();
+export const RotationModule = new RotationConfig();
 
 const DEFAULT_PRECISION = 0.1;
 const ENTITY_PRECISION = 0.5;
