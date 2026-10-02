@@ -1,3 +1,41 @@
+# Upstream sync — 2026-10-02
+
+Ported selected changes from upstream [`5.2.1-r22` through `5.2.2-r2`](https://github.com/V5-Client/V5/compare/5.2.1-r21...5.2.2-r2), inclusive, onto `dev` at `71ed7ac4226352871edd13510250f9714adc1932`. The reviewed upstream tip is `ab6117aae1b3e2704c9f97e50b9fff3ea9e1d4f9`.
+
+| Upstream release | Ported changes |
+| --- | --- |
+| `5.2.1-r22`, `r23` | Scribe Nuker, its excluded coal-block region, and scoreboard/Rift sub-area detection. |
+| `5.2.1-r24` | Vanilla block-breaking mode and Agaricus Cap Triggerbot. |
+| `5.2.1-r25` | Auto Chest scans nearby blocks on ticks and works independently of block-entity rendering. |
+| `5.2.1-r27` | Path completion no longer blacklists caller-managed external combat targets. |
+| `5.2.1-r30` | Resolve matching armor-stand nametags to nearby mob hitboxes; reject ordinary player targets; add powered-creeper Ghost support. |
+| `5.2.1-r31` | Auto-Perspective selects back/front third person or Freelook, Precision Miner targets particles without an added pitch offset, and mining can use the shared rotation speed. |
+| `5.2.1-r31`, `5.2.2-r2` | Structure ESP uses the new Loader cache API, configurable structure filters, and batch rendering. The upstream developer-mode registration guard remains in place. |
+
+## Offline adaptations
+
+- Keep the existing commission recovery, NPC/Pigeon claim handling, scheduler, offline GUI, combat travel clicks, roaming, pitch variation, escalating blacklist delays, and `findMob` whitelist argument.
+- Keep Hypixel as the default Nuker mode. Vanilla mining tracks block damage, sends stop/abort packets, and cancels on disable, mode change, chest solving, GUI/manual attack, invalid/replaced targets, or world/game unload. Delayed break packets are discarded after a world change.
+- New Rift helpers guard world availability, GUI state, and the Rift area. Preserve the existing `NukerUtils` compatibility export and Minecraft 26.1.2/26.2 packet constructors.
+- Keep the independent Mining Rotation Speed setting and its saved values. `Use Global Rotation Speed` is opt-in and defaults off.
+- Migrate an old enabled Auto-Perspective boolean to Third Person Back. Restore the original camera perspective when a macro stops, including after a temporary Freecam/Freelook session; stop only Freelook enabled by the controller.
+- Copy the Loader's freshly generated typings without manual changes. Install both `dev` updates together because the StructureFinder API changed.
+
+## Deferred or already covered
+
+- Keep Tree ESP enabled as before; do not copy upstream's blanket disablement.
+- Living Metal remains deferred because upstream leaves its import disabled. MusicOverlay/Discord changes remain inapplicable to the offline fork.
+- Skip upstream version-only changes, broad formatting/renaming, and wholesale Commission/SunGecko rewrites. Preserve the existing 26.1.2/26.2 particle API instead of copying 26.3-specific helpers.
+
+## Validation
+
+- All changed JavaScript passed Prettier 3.6.2 formatting checks. Reviewed imports, lifecycle cancellation, legacy settings, and retained offline behavior.
+- Verified the new Creeper, AABB distance, and block-breaking APIs in both Minecraft target JARs. The companion Loader builds for both targets and generates the matching typings.
+- The existing `.github/scripts/build-package.py` produced a 211-file script ZIP including both new Rift modules and the updated Structure ESP/Nuker APIs.
+- This repository has no automated test runner; none was added or run. Rift interactions, Vanilla mining, combat targeting, chest handling, camera transitions, and Structure ESP still require in-game validation.
+
+---
+
 # Upstream sync — 2026-09-26
 
 Reviewed upstream [`5.2.0-r15` through `5.2.1-r21`](https://github.com/V5-Client/V5/compare/5.2.0-r14...5.2.1-r21), inclusive. The reviewed upstream tip is `06d368f018e42fd3e7dc1ebbc84d8fa55903590f`; the offline base is `92fe7f5d719d5779e23480ce40affd5d55048fdd`.
