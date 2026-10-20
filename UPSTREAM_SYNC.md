@@ -1,3 +1,34 @@
+# Upstream sync — 2026-10-21
+
+Ported selected changes from upstream [`5.2.2-r3` through `5.2.2-r12`](https://github.com/V5-Client/V5/compare/5.2.2-r2...5.2.2-r12), inclusive, onto `dev` at `488d2940aeb57bc99480a7e6d986def4dcdba2fa`. The reviewed upstream tip is `d6ab6c186ce8cecb75f1154068ab07eb5f41a1f8`, also the current `upstream/main` tip.
+
+| Upstream release | Decision |
+| --- | --- |
+| `5.2.2-r3` (`0c590f0`), `r8` (`42f0a3f`) | Notification workflows are already absent. Do not add CommitBot or Discord credentials. |
+| `5.2.2-r4` (`208cd70`) | Auto Experiments uses a 250 ms default action delay and a 50–500 ms slider range. |
+| `5.2.2-r5` (`49400f5`) | Avoid sneaking when the lower eye position would put the mining aim point out of reach. |
+| `5.2.2-r6` (`59e6add`, `de5882c`) | Prevent invisible-path rollback while airborne, seek a forward point with sufficient horizontal separation, and suppress unstable turns while falling. |
+| `5.2.2-r7` (`ee9becd`) | Stop clearing held mining keys on every GUI tick so mining resumes after the GUI closes. |
+| `5.2.2-r9`–`r11` (`d74b3fc`, `c8ca0dc`, `fe56707`, `4b1631c`) | Bazaar realised profit and active-time hourly profit, persisted NPC sale totals, limit-triggered order cleanup, inventory-confirmed sale retries, and a separately labelled estimated hourly profit. |
+| `5.2.2-r12` (`d6ab6c1`) | Already covered: the existing commission target list includes `Treasure Hunter` along with the legacy names. |
+
+## Offline adaptations
+
+- Apply the sneak reach check inside the shared `setSneak` path so random movement, movement settings, ability pauses, and recovery also respect it. Keep the offline key-state check and explicit attack resumption after mining-stat GUIs; GUI opening still pauses automated attacks in the loader.
+- Keep the existing path rotation utility, pitch drift, teleport recovery, and entity tracking. Use the existing `MathUtils` and spline APIs for the falling-camera fix.
+- Keep Bazaar's inventory baseline, SkyBlock Menu allowance, world-unload disable behavior, command throttling, and GUI retries. Reset pending claims/sales on disable or restart so stale clicks are not reused; retain known purchase lots for subsequent cleanup.
+- Store the per-player, UTC-day NPC sale tracker only in `V5Config/bazaar-npc-tracker.json`. Validate its object/numeric fields and claimed quantities. Chat-based totals include manual NPC sales while the module is disabled, but cannot account for sales made while these scripts were not loaded. Cleanup begins at the upstream 490M threshold, and selling stops at the tracked 500M limit.
+- Calculate realised profit only for sales with known purchase costs. Pause its elapsed-time counter while disabled; keep estimated profit separate. No new network endpoint or loader API is introduced.
+- Keep existing offline version numbers, generated typings, Minecraft 26.1.2/26.2 support, and the loader's manual-update policy.
+
+## Validation
+
+- All four changed JavaScript files passed Prettier 3.6.2 formatting checks; `git diff --check` passed.
+- The existing `.github/scripts/build-package.py` produced a 211-file script ZIP including all four updated modules/helpers.
+- Reviewed loader input handling, existing API calls, purchase-cost accounting, cleanup transitions, and retained offline changes. No automated tests were added or run, as required by this repository. Mining reach/GUI recovery, falling-camera behavior, experiment timing, and Bazaar transactions still require in-game validation.
+
+---
+
 # Upstream sync — 2026-10-02
 
 Ported selected changes from upstream [`5.2.1-r22` through `5.2.2-r2`](https://github.com/V5-Client/V5/compare/5.2.1-r21...5.2.2-r2), inclusive, onto `dev` at `71ed7ac4226352871edd13510250f9714adc1932`. The reviewed upstream tip is `ab6117aae1b3e2704c9f97e50b9fff3ea9e1d4f9`.

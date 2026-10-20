@@ -26,6 +26,7 @@ const VISIBILITY_SAMPLE_COUNT = VISIBILITY_OFFSETS.length / 3;
 const AIM_POINT_FACE_INSET = 0.48;
 const AIM_POINT_EDGE_MAG = 0.4;
 const AIM_POINT_MID_CAP = 0.3;
+const SNEAK_EYE_DROP = 0.35;
 const AIM_POINT_LO = 0.02;
 const AIM_POINT_HI = 0.98;
 const AIM_RETRY_MIN_DELTA_SQ = 0.0025;
@@ -274,7 +275,6 @@ class Bot extends ModuleBase {
             }
             if (Client.isInGui()) {
                 this.stopRandomMovement();
-                Client.unpressKeys();
                 OreRotations.stop();
                 return;
             }
@@ -431,7 +431,7 @@ class Bot extends ModuleBase {
                     this.lastSneakCommand = false;
                 }
             },
-            'Keeps sneaking while Mining Bot is active, including movement and pickaxe ability use.',
+            'Sneaks while mining and moving, unless lowering the eyes would put the target out of reach.',
             true
         );
         this.addSlider(
@@ -1602,7 +1602,19 @@ class Bot extends ModuleBase {
         return bestKey;
     }
 
+    shouldSneakForTarget() {
+        if (!this.sneakWhileMining) return false;
+        const target = this.currentTarget;
+        const player = Player.getPlayer();
+        if (!target || !player || ![target.aimX, target.aimY, target.aimZ].every(Number.isFinite)) return true;
+
+        const eye = player.getEyePosition();
+        const sneakEyeY = Player.isSneaking() ? eye.y() : eye.y() - SNEAK_EYE_DROP;
+        return Math.hypot(target.aimX - eye.x(), target.aimY - sneakEyeY, target.aimZ - eye.z()) <= this.faceReach - 0.05;
+    }
+
     setSneak(shouldSneak, force = false) {
+        shouldSneak = shouldSneak && this.shouldSneakForTarget();
         if (force || this.lastSneakCommand !== shouldSneak || Client.isKeyDown('shift') !== shouldSneak || Player.isSneaking() !== shouldSneak) {
             Client.setKey('shift', shouldSneak);
             this.lastSneakCommand = shouldSneak;

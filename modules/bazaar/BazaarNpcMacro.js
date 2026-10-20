@@ -4,6 +4,7 @@ import { DataComponents } from '../../utils/Constants';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { setSignLine } from '../../utils/Sign';
 import { v5Command } from '../../utils/V5Commands';
+import { getConfigFile, writeConfigFile } from '../../utils/Utils';
 import { clickSlot, closeInventory, getGuiName } from '../../utils/player/Inventory';
 
 // This entire macro is AI generated, good luck!
@@ -11,6 +12,9 @@ import { clickSlot, closeInventory, getGuiName } from '../../utils/player/Invent
 const BAZAAR_URL = 'https://api.hypixel.net/v2/skyblock/bazaar';
 const ITEMS_URL = 'https://api.hypixel.net/v2/resources/skyblock/items';
 const MAX_ORDER_ITEMS = 4096;
+const NPC_DAILY_LIMIT = 500_000_000;
+const NPC_CLEANUP_LIMIT = 490_000_000;
+const TRACKER_FILE = 'bazaar-npc-tracker.json';
 const MAX_API_PRICE_INCREASE = 0.05;
 const MIN_API_PRICE_SLACK = 1;
 const GUI_TIMEOUT = 10_000;
@@ -42,6 +46,12 @@ class BazaarNpcMacro extends ModuleBase {
             isMacro: true,
         });
         this.bindToggleKey();
+        const dailyTrackers = getConfigFile(TRACKER_FILE);
+        this.dailyTrackers = dailyTrackers && typeof dailyTrackers === 'object' && !Array.isArray(dailyTrackers) ? dailyTrackers : {};
+        this.realisedProfit = 0;
+        this.realisedProfitStartedAt = 0;
+        this.realisedProfitElapsedMs = 0;
+        this.claimedCosts = new Map();
 
         this.clickDelay = 350;
         this.addSlider(
@@ -102,8 +112,15 @@ class BazaarNpcMacro extends ModuleBase {
                 title: 'Status',
                 data: {
                     State: () => this.status,
+                    'NPC Daily Limit': () => `${formatCoins(this.dailyTracker()?.soldCoins || 0)}/${formatCoins(NPC_DAILY_LIMIT)}`,
                     'Active Orders': () => `${this.activeTargets.length}/${this.maxBuyOrders}`,
-                    'Hourly Profit': () => `${formatCoins(this.activeTargets.reduce((total, target) => total + Number(target.profit || 0) * 2, 0))} coins`,
+                    'Realised Profit': () => `${formatCoins(this.realisedProfit)} coins`,
+                    'Realised Profit/h': () =>
+                        `${formatCoins(
+                            (this.realisedProfit * 3_600_000) /
+                                Math.max(1, this.realisedProfitElapsedMs + (this.realisedProfitStartedAt ? Date.now() - this.realisedProfitStartedAt : 0))
+                        )} coins`,
+                    'Estimated Profit/h': () => `${formatCoins(this.activeTargets.reduce((total, target) => total + Number(target.profit || 0) * 2, 0))} coins`,
                 },
             },
             {
@@ -117,7 +134,7 @@ class BazaarNpcMacro extends ModuleBase {
         ]);
 
         this.on('tick', () => this.tick());
-        this.on('chat', (event) => this.onChat(event));
+        register('chat', (event) => this.onChat(event));
         v5Command('bazaar npc cleanup', () => this.startCleanup());
         this.commandTokens = COMMAND_CAPACITY;
         this.commandRefillAt = Date.now();
@@ -133,6 +150,7 @@ class BazaarNpcMacro extends ModuleBase {
         this.cleanupOnEnable = false;
         this.cleanupInventory = null;
         this.reset();
+        this.dailyTracker();
         const inventory = Player.getInventory();
         if (!inventory) return this.fail('Could not snapshot your inventory.');
         if (
@@ -143,15 +161,18 @@ class BazaarNpcMacro extends ModuleBase {
                 .some((item) => item && item.getStackSize() > 0 && !clean(item.getName()).startsWith('skyblock menu'))
         )
             return this.fail('Empty your inventory before enabling the macro. The SkyBlock Menu can remain.');
-        this.cleanupMode = cleanupMode;
+        this.cleanupMode = cleanupMode || this.dailyTracker().soldCoins >= NPC_CLEANUP_LIMIT;
         this.startingInventory = cleanupMode && cleanupInventory ? cleanupInventory : this.inventorySnapshot(inventory.getItems());
         this.lastCheckedInventory = this.startingInventory;
         this.inventoryReady = true;
-        this.message(cleanupMode ? '&aCleanup started' : '&aEnabled');
+        this.realisedProfitStartedAt = Date.now();
+        this.message(this.cleanupMode ? '&aCleanup started' : '&aEnabled');
         this.openOrders();
     }
 
     onDisable() {
+        if (this.realisedProfitStartedAt) this.realisedProfitElapsedMs += Date.now() - this.realisedProfitStartedAt;
+        this.realisedProfitStartedAt = 0;
         const cleanupFinished = this.cleanupFinished;
         if (!cleanupFinished && this.inventoryReady) this.cleanupInventory = this.startingInventory;
         else if (cleanupFinished) this.cleanupInventory = null;
@@ -164,6 +185,8 @@ class BazaarNpcMacro extends ModuleBase {
     }
 
     reset() {
+        this.pendingClaim = null;
+        this.pendingSale = null;
         this.action = null;
         this.status = 'Idle';
         this.target = null;
@@ -206,6 +229,75 @@ class BazaarNpcMacro extends ModuleBase {
         this.toggle(true);
     }
 
+    dailyTracker() {
+        const name = Player.getName()?.toLowerCase();
+        const today = Math.floor(Date.now() / 86_400_000);
+        const tracker = this.dailyTrackers[name];
+        if (tracker?.day !== today || !Number.isFinite(tracker.soldCoins) || tracker.soldCoins < 0) {
+            this.dailyTrackers[name] = { day: today, soldCoins: 0 };
+            writeConfigFile(TRACKER_FILE, this.dailyTrackers);
+        }
+        return this.dailyTrackers[name];
+    }
+
+    checkNpcLimit() {
+        if (this.cleanupMode) return false;
+        const tracker = this.dailyTracker();
+        if (tracker.soldCoins < NPC_CLEANUP_LIMIT) return false;
+        this.message('&eNPC sales reached 490M/500M; cleaning up buy orders and stopping.');
+        this.cleanupMode = true;
+        this.orderQueue = [];
+        this.orderCheckQueue = [];
+        this.cancelQuantity = 0;
+        this.requestToken++;
+        this.openOrders();
+        return true;
+    }
+
+    claimItems(slot) {
+        const item = Player.getContainer()?.getStackInSlot(slot);
+        this.pendingClaim = { price: this.unitPrice(item) };
+        clickSlot(slot);
+    }
+
+    recordClaim(message) {
+        const match = message.match(/^\[Bazaar\] Claimed ([\d,]+)x (.+) worth .* coins bought for ([\d,.]+)([kmb]?) each!$/i);
+        if (!match || !this.pendingClaim) return;
+        const quantity = Number(match[1].replace(/,/g, ''));
+        const name = clean(match[2]);
+        const price = match[4] ? this.pendingClaim.price : Number(match[3].replace(/,/g, ''));
+        this.pendingClaim = null;
+        if (!Number.isFinite(price) || price <= 0 || !Number.isSafeInteger(quantity) || quantity <= 0) {
+            return this.message('&eCould not read the claimed items purchase price for realised profit.');
+        }
+        if (!this.claimedCosts.has(name)) this.claimedCosts.set(name, []);
+        this.claimedCosts.get(name).push({ quantity, price });
+    }
+
+    recordSale(message, coins) {
+        const match = message.match(/^You sold (.+) x([\d,]+) for [\d,.]+ Coins!$/);
+        if (!match || !Number.isFinite(coins) || coins <= 0) return;
+        const name = clean(match[1]);
+        const quantity = Number(match[2].replace(/,/g, ''));
+        if (!Number.isSafeInteger(quantity) || quantity <= 0) return;
+        const lots = this.claimedCosts.get(name) || [];
+        if (!lots.length) return;
+        let remaining = quantity;
+        let cost = 0;
+        for (const lot of lots) {
+            const soldQuantity = Math.min(remaining, lot.quantity);
+            cost += soldQuantity * lot.price;
+            lot.quantity -= soldQuantity;
+            remaining -= soldQuantity;
+        }
+        this.claimedCosts.set(
+            name,
+            lots.filter((lot) => lot.quantity > 0)
+        );
+        if (!remaining) this.realisedProfit += coins - cost;
+        else this.message('&eSale cost was unavailable; excluded it from realised profit.');
+    }
+
     offerCleanup() {
         chat(
             new TextComponent(
@@ -223,6 +315,7 @@ class BazaarNpcMacro extends ModuleBase {
 
     tick() {
         const now = Date.now();
+        if (this.checkNpcLimit()) return;
         if (this.deadline && now >= this.deadline) return this.restart(`Timed out while ${this.status.toLowerCase()}.`);
         if (this.retryAction && now >= this.retryAt) {
             this.retryAt = now + STUCK_RETRY_DELAY;
@@ -573,7 +666,7 @@ class BazaarNpcMacro extends ModuleBase {
             this.refillIds.add(completed.target.id);
             this.orderQueue = [];
             this.claimedTargets.add(completed.target);
-            clickSlot(completed.slot);
+            this.claimItems(completed.slot);
             return this.setAction(this.inspectOrder, 'Claiming items', Math.max(250, this.clickDelay), 0);
         }
         if (!this.orderLimitReached && !this.orderSlotsChecked && this.openOrderCount < this.maxBuyOrders) {
@@ -598,7 +691,7 @@ class BazaarNpcMacro extends ModuleBase {
         if (claimable) {
             this.target = claimable.target;
             this.claimedTargets.add(claimable.target);
-            clickSlot(claimable.slot);
+            this.claimItems(claimable.slot);
             return this.setAction(this.inspectOrder, 'Claiming items', Math.max(250, this.clickDelay), 0);
         }
         if (hasNewItems) return this.setAction(this.openTrades, 'Selling claimed items', 500);
@@ -623,10 +716,14 @@ class BazaarNpcMacro extends ModuleBase {
             return this.fail('Inventory is full, but none of it can be sold by this cleanup.');
         }
         if (claimSlot !== undefined) {
-            clickSlot(claimSlot);
+            this.claimItems(claimSlot);
             return this.setAction(this.inspectOrder, 'Claiming items', Math.max(250, this.clickDelay), 0);
         }
-        if (buySlots.length) return this.clickAndWait(buySlots[0], this.cancelCleanupOrder, 'Opening buy order');
+        if (buySlots.length) {
+            const item = items[buySlots[0]];
+            this.pendingClaim = { price: this.unitPrice(item) };
+            return this.clickAndWait(buySlots[0], this.cancelCleanupOrder, 'Opening buy order');
+        }
         if (hasNewItems) return this.setAction(this.openTrades, 'Selling claimed items', 500);
 
         this.cleanupFinished = true;
@@ -687,6 +784,8 @@ class BazaarNpcMacro extends ModuleBase {
             if (this.hasInventoryIncrease()) return this.setAction(this.openTrades, 'Inventory full', 500);
             return this.fail('Inventory is full, but none of it was added by this macro.');
         }
+        const item = Player.getContainer()?.getStackInSlot(slot);
+        this.pendingClaim = { price: this.unitPrice(item) };
         this.clickAndWait(slot, this.cancelOutbidOrder, 'Opening outbid order');
     }
 
@@ -716,7 +815,7 @@ class BazaarNpcMacro extends ModuleBase {
     afterOrderCancelled() {
         if (!clean(getGuiName()).includes('bazaar orders')) return;
         const slot = this.findOrderSlot(this.target);
-        if (slot !== -1) return this.clickAndWait(slot, this.cancelOutbidOrder, 'Opening duplicate order');
+        if (slot !== -1) return this.openOutbidOrder();
         this.finishOrderCancellation();
     }
 
@@ -761,8 +860,21 @@ class BazaarNpcMacro extends ModuleBase {
         this.deadline = 0;
         this.nextTradesRetryAt = now + STUCK_RETRY_DELAY;
         const items = Player.getContainer()?.getItems() || [];
+        if (items.length < 90) return;
+        if (this.pendingSale) {
+            const remaining = this.inventorySnapshot(items.slice(54)).get(this.pendingSale.key) || 0;
+            if (remaining >= this.pendingSale.quantity && now - this.pendingSale.at < STUCK_RETRY_DELAY) {
+                this.nextActionAt = now + this.clickDelay;
+                return;
+            }
+            this.pendingSale = null;
+        }
         const slot = this.findNewSellSlot(items);
         if (slot !== -1) {
+            const tracker = this.dailyTracker();
+            if (tracker.soldCoins >= NPC_DAILY_LIMIT) return this.fail('NPC daily limit reached; remaining items could not be sold.');
+            const key = this.itemKey(items[slot]);
+            this.pendingSale = { at: now, key, quantity: this.inventorySnapshot(items.slice(54)).get(key) || 0 };
             this.sellEmptySince = 0;
             clickSlot(slot, false, 'LEFT');
             this.status = 'Selling to NPC';
@@ -778,12 +890,31 @@ class BazaarNpcMacro extends ModuleBase {
         }
 
         this.lastCheckedInventory = this.inventorySnapshot();
-        const nextAction = this.cancelQuantity > 0 ? this.finishOrderCancellation : this.orderQueue.length ? this.placeNextOrder : this.openOrders;
+        const nextAction = this.cleanupMode
+            ? this.openOrders
+            : this.cancelQuantity > 0
+              ? this.finishOrderCancellation
+              : this.orderQueue.length
+                ? this.placeNextOrder
+                : this.openOrders;
         this.setAction(nextAction, 'Resuming Bazaar', 500, 0);
     }
 
     onChat(event) {
-        const message = event?.message?.getUnformattedText?.() ?? event?.message?.getString?.() ?? '';
+        const message = ChatLib.removeFormatting(event?.message?.getUnformattedText?.() ?? event?.message?.getString?.() ?? '').trim();
+        const sold = message.match(/^You sold .+ for ([\d,.]+) Coins!$/);
+        if (sold) {
+            const coins = Number(sold[1].replace(/,/g, ''));
+            const tracker = this.dailyTracker();
+            if (tracker && Number.isFinite(coins) && coins > 0) {
+                tracker.soldCoins += coins;
+                writeConfigFile(TRACKER_FILE, this.dailyTrackers);
+            }
+            this.recordSale(message, coins);
+            if (this.enabled) this.checkNpcLimit();
+        }
+        this.recordClaim(message);
+        if (!this.enabled || this.cleanupMode) return;
         if (/^\[Bazaar\] You reached your maximum of [\d,]+ Bazaar orders!$/.test(message)) {
             this.orderLimitReached = true;
             this.orderQueue = [];
