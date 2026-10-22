@@ -166,7 +166,12 @@ class AutoForge extends ModuleBase {
         this.maxDelay = 500;
         this.waitForAll = false;
 
-        this.addTextInput('Forge Item', this.itemName, (value) => (this.itemName = String(value).trim()), 'The exact item name to forge.');
+        this.addTextInput(
+            'Forge Item',
+            this.itemName,
+            (value) => (this.itemName = String(value).trim()),
+            'An item name prefix matching exactly one Forge item.'
+        );
         this.addRangeSlider('Click Delay (ms)', 50, 2000, { low: this.minDelay, high: this.maxDelay }, (value) => {
             this.minDelay = Math.round(value.low);
             this.maxDelay = Math.round(value.high);
@@ -180,7 +185,7 @@ class AutoForge extends ModuleBase {
     onEnable() {
         const item = this.findConfiguredItem();
         if (!item) {
-            this.message(`&cUnknown Forge item: ${this.itemName || '(blank)'}`);
+            this.message(`&cUnknown or ambiguous Forge item: ${this.itemName || '(blank)'}`);
             this.message('&eValid items:');
             Object.entries(FORGE_PROCESSES).forEach(([process, items]) => ChatLib.chat(`&6${process}: &f${items.join(', ')}`));
             return this.toggle(false);
@@ -410,7 +415,11 @@ class AutoForge extends ModuleBase {
     }
 
     findConfiguredItem() {
-        return FORGE_ITEMS[normalize(this.itemName)] || null;
+        const prefix = normalize(this.itemName);
+        if (!prefix) return null;
+
+        const matches = Object.keys(FORGE_ITEMS).filter((name) => name.startsWith(prefix));
+        return matches.length === 1 ? FORGE_ITEMS[matches[0]] : null;
     }
 
     closestForgeNpc() {
