@@ -11,7 +11,7 @@ class BazaarUtil {
         this.deadline = 0;
         this.waitUntil = 0;
         this.confirmSlot = -1;
-        register('tick', () => this.tick());
+        this.tickRegister = register('tick', () => this.tick()).unregister();
     }
 
     buy(itemName, count, maxPrice, callback) {
@@ -126,6 +126,7 @@ class BazaarUtil {
         this.state = state;
         this.deadline = Date.now() + TIMEOUT;
         this.waitUntil = Date.now() + delay;
+        this.tickRegister.register();
     }
 
     finish(success) {
@@ -133,6 +134,7 @@ class BazaarUtil {
         this.state = 'idle';
         this.callback = null;
         this.confirmSlot = -1;
+        this.tickRegister.unregister();
         if (Client.isInGui()) closeInventory();
         if (typeof callback === 'function') callback(success);
     }

@@ -91,7 +91,7 @@ class RewarpHandler {
             }
             if (!this.task) {
                 if (this.resumeAfterTasks) return this.macro.finishRewarp(Player.getPlayer());
-                this.phase = this.runPestKiller && !rewarpSettings.looping ? PHASES.RETURNING : PHASES.REWARP;
+                this.phase = this.runPestKiller && !rewarpSettings.looping && !rewarpSettings.hybrid ? PHASES.RETURNING : PHASES.REWARP;
             }
         }
 

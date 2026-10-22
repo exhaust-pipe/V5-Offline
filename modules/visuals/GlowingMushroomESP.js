@@ -26,7 +26,8 @@ class GlowingMushroomESP extends ModuleBase {
         this.when(
             () => this.enabled && this.mushrooms.size > 0,
             'postRenderWorld',
-            () => this.renderMushrooms()
+            () => this.renderMushrooms(),
+            true
         );
     }
 

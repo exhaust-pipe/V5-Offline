@@ -14,6 +14,7 @@ EXCLUDED_FILES = {
     'jsconfig.json',
     'typings.d.ts',
     'AGENTS.md',
+    'UPSTREAM_SYNC.md',
 }
 
 

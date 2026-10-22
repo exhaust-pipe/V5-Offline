@@ -87,7 +87,8 @@ class PeltQOL extends ModuleBase {
         this.when(
             () => this.enabled && this.renderESP && area() === 'The Farming Islands' && this.animals.length,
             'postRenderWorld',
-            () => this.render()
+            () => this.render(),
+            true
         );
     }
 

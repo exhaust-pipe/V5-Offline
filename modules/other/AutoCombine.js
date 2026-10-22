@@ -31,6 +31,8 @@ class AutoCombine extends ModuleBase {
         this.first = null;
         this.second = null;
         this.timeoutFlags = 0;
+        this.stuckCount = 0;
+        this.stuckLimit = 3;
         this.enableLevelTenBooks = false;
         this.tickCounter = 0;
 
@@ -39,6 +41,14 @@ class AutoCombine extends ModuleBase {
             (value) => (this.enableLevelTenBooks = !!value),
             'Combines books up to level 10. Do not enable if your using normal level 5 capped books.',
             false
+        );
+        this.addSlider(
+            'Stuck Limit',
+            0,
+            10,
+            3,
+            (value) => (this.stuckLimit = Math.floor(value)),
+            'Automatically disables after this many stuck detections per run. 0 disables the limit.'
         );
 
         this.on('tick', () => this.onTick());
@@ -201,6 +211,13 @@ class AutoCombine extends ModuleBase {
         this.message('Returned without doing anything? stuck? waiting?');
         this.timeoutFlags++;
         if (this.timeoutFlags > 4) {
+            this.stuckCount++;
+            if (this.stuckLimit > 0 && this.stuckCount >= this.stuckLimit) {
+                this.message(`&cStuck detected ${this.stuckCount} times. Automatically disabling.`);
+                closeInventory();
+                this.toggle(false);
+                return;
+            }
             this.message('&cStuck detected. Force resetting.');
             this.reset(true);
         }
@@ -220,6 +237,7 @@ class AutoCombine extends ModuleBase {
 
     onEnable() {
         this.message('&aEnabled');
+        this.stuckCount = 0;
         this.reset();
     }
 

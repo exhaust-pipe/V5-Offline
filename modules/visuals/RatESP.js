@@ -53,7 +53,8 @@ class RatESP extends ModuleBase {
         this.when(
             () => this.enabled && World.isLoaded() && area() === 'Hub' && this.rats.length > 0,
             'postRenderWorld',
-            () => this.renderRats()
+            () => this.renderRats(),
+            true
         );
 
         this.on('worldUnload', () => {

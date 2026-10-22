@@ -66,14 +66,14 @@ export const getClientSettingsRect = () => {
     };
 };
 
-export const getModuleNavRect = (xOffset = 0) => {
+export const getModuleNavRect = (xOffset = 0, padding = PADDING) => {
     const panel = GuiRectangles.RightPanel;
-    return { x: panel.x + PADDING + xOffset, y: 4, width: panel.width - PADDING * 2, height: 26 };
+    return { x: panel.x + padding + xOffset, y: 4, width: panel.width - padding * 2, height: 26 };
 };
 
-export const drawModuleNavBackground = (xOffset = 0) => {
+export const drawModuleNavBackground = (xOffset = 0, padding = PADDING) => {
     drawRoundedRectangleWithBorder({
-        ...getModuleNavRect(xOffset),
+        ...getModuleNavRect(xOffset, padding),
         radius: 8,
         color: THEME.BG_COMPONENT,
         borderWidth: 1,
@@ -84,26 +84,27 @@ export const drawModuleNavBackground = (xOffset = 0) => {
 export const getCategoryContentY = (catObj, panel) =>
     catObj?.subcategories.length > 0 ? getModuleNavRect().y + getModuleNavRect().height + 16 : catObj?.name === 'Dashboard' ? panel.y : panel.y + PADDING;
 
-export const getModuleNavButtonRect = (catObj, index, xOffset = 0) => {
-    const navRect = getModuleNavRect(xOffset);
+export const getModuleNavButtonRect = (catObj, index, xOffset = 0, padding = PADDING) => {
+    const navRect = getModuleNavRect(xOffset, padding);
     const subcategories = ['All', ...catObj.subcategories];
     let x = navRect.x + 4;
     for (let i = 0; i < index; i++) x += getTextWidth(subcategories[i], FontSizes.MEDIUM) + 16 + SUBCATEGORY_BUTTON_SPACING;
     return { x, y: navRect.y + 1, width: getTextWidth(subcategories[index], FontSizes.MEDIUM) + 16, height: navRect.height - 2 };
 };
 
-const getModuleNavScrollTarget = (catObj, state = Categories) => {
-    const navRect = getModuleNavRect();
+const getModuleNavScrollTarget = (catObj, state = Categories, padding = PADDING, rightInset = 0) => {
+    const navRect = getModuleNavRect(0, padding);
     const subcategories = ['All', ...catObj.subcategories];
     const selectedIndex = Math.max(0, subcategories.indexOf(state.selectedSubcategory || 'All'));
-    const selectedRect = getModuleNavButtonRect(catObj, selectedIndex);
-    const lastRect = getModuleNavButtonRect(catObj, subcategories.length - 1);
-    const maxScroll = Math.max(0, lastRect.x + lastRect.width + 4 - (navRect.x + navRect.width));
-    return clamp(selectedRect.x + selectedRect.width / 2 - (navRect.x + navRect.width / 2), 0, maxScroll);
+    const selectedRect = getModuleNavButtonRect(catObj, selectedIndex, 0, padding);
+    const lastRect = getModuleNavButtonRect(catObj, subcategories.length - 1, 0, padding);
+    const viewportWidth = Math.max(0, navRect.width - rightInset);
+    const maxScroll = Math.max(0, lastRect.x + lastRect.width + 4 - (navRect.x + viewportWidth));
+    return clamp(selectedRect.x + selectedRect.width / 2 - (navRect.x + viewportWidth / 2), 0, maxScroll);
 };
 
-export const getModuleNavScrollX = (catObj, animate = false, state = Categories) => {
-    const target = getModuleNavScrollTarget(catObj, state);
+export const getModuleNavScrollX = (catObj, animate = false, state = Categories, padding = PADDING, rightInset = 0) => {
+    const target = getModuleNavScrollTarget(catObj, state, padding, rightInset);
     if (!animate) return state.subcatScrollX;
 
     const now = Date.now();
@@ -119,9 +120,9 @@ export const getModuleNavScrollX = (catObj, animate = false, state = Categories)
     return state.subcatScrollX;
 };
 
-export const drawSubcategoryButtons = (catObj, mouseX, mouseY, xOffset = 0, drawBackground = true, state = Categories) => {
+export const drawSubcategoryButtons = (catObj, mouseX, mouseY, xOffset = 0, drawBackground = true, state = Categories, padding = PADDING, rightInset = 0) => {
     const cat = state;
-    const scrollX = getModuleNavScrollX(catObj, xOffset === 0, state);
+    const scrollX = getModuleNavScrollX(catObj, xOffset === 0, state, padding, rightInset);
 
     if (cat.animationRect && xOffset === 0) {
         const elapsed = Date.now() - cat.subcatTransitionStart;
@@ -138,7 +139,14 @@ export const drawSubcategoryButtons = (catObj, mouseX, mouseY, xOffset = 0, draw
 
     const subcategoriesToDraw = ['All', ...catObj.subcategories];
 
-    if (drawBackground) drawModuleNavBackground(xOffset);
+    if (drawBackground) drawModuleNavBackground(xOffset, padding);
+
+    const navRect = getModuleNavRect(xOffset, padding);
+    const viewportWidth = Math.max(0, navRect.width - rightInset);
+    if (rightInset) {
+        Render2D.save();
+        Render2D.scissor(navRect.x, navRect.y, viewportWidth, navRect.height);
+    }
 
     const drawSelectedButton = (rect, color = THEME.ACCENT_DIM) => {
         drawRoundedRectangle({
@@ -156,10 +164,13 @@ export const drawSubcategoryButtons = (catObj, mouseX, mouseY, xOffset = 0, draw
     }
 
     subcategoriesToDraw.forEach((subcat) => {
-        const rawButtonRect = getModuleNavButtonRect(catObj, subcategoriesToDraw.indexOf(subcat), xOffset);
+        const rawButtonRect = getModuleNavButtonRect(catObj, subcategoriesToDraw.indexOf(subcat), xOffset, padding);
         const buttonRect = { ...rawButtonRect, x: rawButtonRect.x - scrollX };
         const isSelected = (cat.selectedSubcategory === subcat || (!cat.selectedSubcategory && subcat === 'All')) && !cat.animationRect;
-        const isHovered = isInside(mouseX, mouseY, buttonRect) && !cat.isHoverBlocked;
+        const isHovered =
+            isInside(mouseX, mouseY, buttonRect) &&
+            (!rightInset || isInside(mouseX, mouseY, { x: navRect.x, y: navRect.y, width: viewportWidth, height: navRect.height })) &&
+            !cat.isHoverBlocked;
 
         const hoverKey = `subcat_${subcat}`;
         if (!cat.hoverStates[hoverKey]) {
@@ -192,6 +203,7 @@ export const drawSubcategoryButtons = (catObj, mouseX, mouseY, xOffset = 0, draw
             textColor
         );
     });
+    if (rightInset) Render2D.restore();
 };
 
 export const drawDirectComponents = (panel, panelX, yOffset, mouseX, mouseY, scrollY, categoryName) => {

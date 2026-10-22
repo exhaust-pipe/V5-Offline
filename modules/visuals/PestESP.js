@@ -80,7 +80,8 @@ class PestESP extends ModuleBase {
                 });
                 Render3D.drawHitboxes(entities, PEST_BOX_COLOR, 5, false);
                 Render3D.drawTracers(positions, PEST_TRACER_COLOR, 2, false);
-            }
+            },
+            true
         );
     }
 }

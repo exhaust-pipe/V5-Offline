@@ -146,7 +146,8 @@ class WynnProfessionMacro extends ModuleBase {
         this.when(
             () => this.enabled && this.route.length > 0,
             'postRenderWorld',
-            () => this.renderRoute()
+            () => this.renderRoute(),
+            true
         );
 
         v5Command('wynn', (...args) => this.handleCommand(args), ['greedyString']);

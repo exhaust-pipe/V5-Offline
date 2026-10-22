@@ -132,6 +132,7 @@ GuiRectangles.ModuleSearch = {
 GuiRectangles.RightPanel = {
     name: 'Right',
     get x() {
+        if (GuiState.macroToggleOpen) return (GuiState.getGuiWidth() - this.width) / 2;
         const leftEdge = GuiRectangles.LeftPanel.x + GuiRectangles.LeftPanel.width + PADDING / 2;
         const rightEdge = GuiState.getGuiWidth() - PADDING / 2;
         return leftEdge + (rightEdge - leftEdge - this.width) / 2;
@@ -140,6 +141,10 @@ GuiRectangles.RightPanel = {
         return 4;
     },
     get width() {
+        if (GuiState.macroToggleOpen) {
+            const availableWidth = GuiState.getGuiWidth();
+            return GuiState.limitRightPanelWidth ? Math.min(440, availableWidth) : availableWidth;
+        }
         const availableWidth = GuiState.getGuiWidth() - GuiRectangles.LeftPanel.width - PADDING;
         return GuiState.limitRightPanelWidth ? Math.min(440, availableWidth) : availableWidth;
     },

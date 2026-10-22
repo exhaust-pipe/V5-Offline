@@ -9,6 +9,9 @@ import { Utils } from '../utils/Utils';
 import { v5Command } from '../utils/V5Commands';
 
 const ROW_HEIGHT = 28;
+const SETTINGS_NAV_WIDTH = 30;
+const MIN_PANEL_WIDTH = 300;
+const MAX_PANEL_WIDTH = 440;
 const FAVORITES_FILE = 'macro-toggle.json';
 const SETTINGS_ICON_PATH = `${globalAssetsDir.getPath()}/settings.svg`;
 const InputConstants = com.mojang.blaze3d.platform.InputConstants;
@@ -113,10 +116,12 @@ export const macroToggleGui = {
         syncCategories();
         const panel = GuiRectangles.RightPanel;
         const rows = getRows();
-        const x = panel.x + PADDING;
+        const inset = PADDING * Math.max(0, Math.min(1, (panel.width - MIN_PANEL_WIDTH) / (MAX_PANEL_WIDTH - MIN_PANEL_WIDTH)));
+        const x = panel.x + inset;
         const y = panel.y + PADDING;
-        const width = panel.width - PADDING * 2;
-        const nav = getModuleNavRect();
+        const width = panel.width - inset * 2;
+        const fullNav = getModuleNavRect(0, inset);
+        const nav = { ...fullNav, width: Math.max(0, fullNav.width - SETTINGS_NAV_WIDTH) };
         const listY = nav.y + nav.height + 42;
         const listHeight = panel.height - (listY - panel.y) - PADDING;
         const maxScroll = Math.max(0, rows.reduce((height, row) => height + (row.subcategory ? 20 : ROW_HEIGHT), 0) - listHeight);
@@ -125,15 +130,31 @@ export const macroToggleGui = {
         layout = {
             nav,
             filter: { x, y: nav.y + nav.height + 8, width: 76, height: 24 },
-            search: { x: x + 82, y: nav.y + nav.height + 8, width: width - 82, height: 24 },
-            settings: { x: nav.x + nav.width - 26, y: nav.y + 1, width: 24, height: nav.height - 2 },
+            search: {
+                x: x + 82,
+                y: nav.y + nav.height + 8,
+                width: width - 82,
+                height: 24,
+            },
+            settings: {
+                x: fullNav.x + fullNav.width - 26,
+                y: fullNav.y + 1,
+                width: 24,
+                height: fullNav.height - 2,
+            },
             list: { x, y: listY, width, height: listHeight },
             rows: [],
         };
 
-        drawRoundedRectangleWithBorder({ ...panel, radius: panel.radius, color: THEME.BG_WINDOW, borderWidth: 1, borderColor: THEME.BORDER_ACCENT });
-        drawSubcategoryButtons(macroCategory, mouseX, mouseY, 0, true, macroCategoryState);
-        drawImage(SETTINGS_ICON_PATH, layout.settings.x + 5, layout.settings.y + 5, 14, 14);
+        drawRoundedRectangleWithBorder({
+            ...panel,
+            radius: panel.radius,
+            color: THEME.BG_WINDOW,
+            borderWidth: 1,
+            borderColor: THEME.BORDER_ACCENT,
+        });
+        drawSubcategoryButtons(macroCategory, mouseX, mouseY, 0, true, macroCategoryState, inset, SETTINGS_NAV_WIDTH);
+        if (panel.width >= 30) drawImage(SETTINGS_ICON_PATH, layout.settings.x + 5, layout.settings.y + 5, 14, 14);
         drawButton(layout.filter, favoritesOnly ? 'Favorites' : 'All', favoritesOnly);
         drawRoundedRectangleWithBorder({
             ...layout.search,
@@ -181,15 +202,21 @@ export const macroToggleGui = {
     },
 
     handleClick(mouseX, mouseY) {
+        const panel = GuiRectangles.RightPanel;
+        const inset = PADDING * Math.max(0, Math.min(1, (panel.width - MIN_PANEL_WIDTH) / (MAX_PANEL_WIDTH - MIN_PANEL_WIDTH)));
         if (isInside(mouseX, mouseY, layout.settings)) {
             GuiState.macroToggleOpen = false;
             return;
         }
         if (isInside(mouseX, mouseY, layout.nav)) {
-            const scrollX = getModuleNavScrollX(macroCategory, false, macroCategoryState);
+            queryFocused = false;
+            const scrollX = getModuleNavScrollX(macroCategory, false, macroCategoryState, inset, SETTINGS_NAV_WIDTH);
             const subcategories = ['All', ...macroCategory.subcategories];
             const index = subcategories.findIndex((subcategory, i) =>
-                isInside(mouseX, mouseY, { ...getModuleNavButtonRect(macroCategory, i), x: getModuleNavButtonRect(macroCategory, i).x - scrollX })
+                isInside(mouseX, mouseY, {
+                    ...getModuleNavButtonRect(macroCategory, i, 0, inset),
+                    x: getModuleNavButtonRect(macroCategory, i, 0, inset).x - scrollX,
+                })
             );
             if (index !== -1) {
                 macroCategoryState.selectedSubcategory = index ? subcategories[index] : null;

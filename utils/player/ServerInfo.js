@@ -9,6 +9,7 @@ const JITTER_CAP_MS = 10;
 
 let lastTpsNano = 0;
 let currentTps = 20;
+let displayedTps = 20;
 let tpsSamples = [];
 let pingSamples = [];
 let waitingForPing = false;
@@ -34,12 +35,18 @@ const estimateJitter = () => {
     return Math.min(Math.max(0, (sorted[Math.floor(sorted.length / 2)] - Math.min(minimumPing, sorted[0])) / 2), JITTER_CAP_MS);
 };
 
+const normalizeTps = (value) => {
+    const tps = Number(value);
+    return Number.parseFloat((Number.isFinite(tps) ? Math.max(0, Math.min(20, tps)) : 20).toFixed(2));
+};
+
 const recordTpsPacket = () => {
     const now = System.nanoTime();
     if (lastTpsNano > 0) {
         const elapsed = Math.max(1, (now - lastTpsNano) / 1_000_000 - estimateJitter());
         addSample(tpsSamples, Math.min(20, 1000 / elapsed), TPS_WINDOW_SIZE);
         currentTps += (averageTps() - currentTps) * TPS_EMA_ALPHA;
+        displayedTps = normalizeTps(currentTps);
     }
     lastTpsNano = now;
 };
@@ -63,6 +70,7 @@ const resolvePing = () => {
 const reset = () => {
     lastTpsNano = 0;
     currentTps = 20;
+    displayedTps = 20;
     tpsSamples = [];
     pingSamples = [];
     averagePing = 0;
@@ -79,8 +87,7 @@ register('step', requestPing).setDelay(1);
 export const getPing = () => Math.round(averagePing);
 
 export function getTPS() {
-    const tps = Number(currentTps);
-    return Number.parseFloat((Number.isFinite(tps) ? Math.max(0, Math.min(20, tps)) : 20).toFixed(2));
+    return displayedTps;
 }
 
 export function getTpsColor(tps) {

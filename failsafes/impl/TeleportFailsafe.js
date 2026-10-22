@@ -72,11 +72,7 @@ class TeleportFailsafe extends Failsafe {
 
     _isTeleportItemHeld() {
         const heldItem = Player.getHeldItem()?.getName()?.removeFormatting()?.toLowerCase();
-        return !!(
-            heldItem?.includes('aspect of the void') ||
-            heldItem?.includes('aspect of the end') ||
-            heldItem?.includes('aspect of the leech')
-        );
+        return !!(heldItem?.includes('aspect of the void') || heldItem?.includes('aspect of the end') || heldItem?.includes('aspect of the leech'));
     }
 
     _hasSmallRotationDiff(data) {

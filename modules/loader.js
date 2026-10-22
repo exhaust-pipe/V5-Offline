@@ -49,6 +49,13 @@ import './skills/MinionCollector';
 import './skills/RouteWalker';
 import './skills/WynnProfessionMacro';
 
+/* RIFT */
+import './rift/ScribeNuker';
+import './rift/AgaricusCapTriggerbot';
+import './rift/KloonHackingMacro';
+import './rift/SunGeckoMacro';
+import './rift/MirrorverseMacro';
+
 /* BAZAAR */
 import './bazaar/BazaarNpcMacro';
 
@@ -69,11 +76,9 @@ import './other/LeftClickEtherwarp';
 import './other/VoidgloomHelper';
 import './other/AutoCombine';
 import './other/AutoFusionRepeat';
-import './other/SunGeckoMacro';
 import './other/RatMacro';
 import './other/PeltMacro';
 import './other/PeltQOL';
 
 /* INTEGRATIONS */
 import './integrations/SkydiaoAutoAfk';
-

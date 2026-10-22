@@ -17,7 +17,7 @@ class OreRotationController {
         this.pitchRemainder = 0;
         this.trackingVector = null;
 
-        register('postRenderWorld', () => this.update());
+        this.renderRegister = register('postRenderWorld', () => this.update()).unregister();
     }
 
     get isRotating() {
@@ -46,6 +46,7 @@ class OreRotationController {
         this.pitchRemainder = 0;
         this.trackingVector = null;
         this.active = true;
+        if (!this.renderRegister.isRegistered()) this.renderRegister.register();
         return true;
     }
 
@@ -65,6 +66,7 @@ class OreRotationController {
 
     stop() {
         this.active = false;
+        if (this.renderRegister.isRegistered()) this.renderRegister.unregister();
     }
 
     update() {

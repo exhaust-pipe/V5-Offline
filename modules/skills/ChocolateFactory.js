@@ -113,7 +113,8 @@ class ChocolateFactory extends ModuleBase {
         this.when(
             () => this.enabled && this.eggEsp && World.isLoaded() && this.detectedEggs.size > 0,
             'postRenderWorld',
-            () => this.renderEggs()
+            () => this.renderEggs(),
+            true
         );
     }
 

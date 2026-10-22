@@ -42,7 +42,7 @@ class Pingless extends ModuleBase {
 
                 const block = World.getBlockAt(x, y, z);
                 const blockName = block?.type?.getRegistryName() || '';
-                if ((block?.type?.getID() !== 1 && !blockName.includes('ore')) || blockName.includes('redstone')) return;
+                if ((blockName !== 'minecraft:stone' && !blockName.includes('ore')) || blockName.includes('redstone')) return;
 
                 this.pos = pos;
                 this.tickCount = this.tickDelay;

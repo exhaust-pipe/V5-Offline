@@ -1,88 +1,164 @@
 import { isDeveloperModeEnabled } from '../../utils/DeveloperModeState';
 import { Vec3d } from '../../utils/Constants';
 import { ModuleBase } from '../../utils/ModuleBase';
-import { ClientboundBlockUpdatePacket, ClientboundLevelChunkWithLightPacket } from '../../utils/Packets';
+import { getArea } from '../../utils/TabListUtils';
 
-const FAIRY_COLOR = new RenderColor(180, 70, 255, 110);
-const STRUCTURE_COLOR = new RenderColor(0, 255, 200, 100);
+const Objects = Java.type('java.util.Objects');
+
+const GOLD = new RenderColor(255, 215, 0, 100);
+const BLUE = new RenderColor(0, 0, 255, 100);
+const GREEN = new RenderColor(0, 255, 0, 100);
+const RED = new RenderColor(255, 0, 0, 100);
+const PURPLE = new RenderColor(180, 70, 255, 110);
+const WHITE = new RenderColor(255, 255, 255, 100);
+const STRUCTURE_COLORS = {
+    'Mines of Divan': GOLD,
+    'Precursor Remnants': BLUE,
+    'Jungle Temple': GREEN,
+    'Goblin King': RED,
+    Bal: RED,
+    'Fairy Grotto': PURPLE,
+    'Key Guardian Spiral': PURPLE,
+    'Golden Dragon Nest': GOLD,
+};
+const DEFAULT_STRUCTURES = Object.keys(STRUCTURE_COLORS);
+for (const name of [
+    'Odawa',
+    'Goblin Hall',
+    'Goblin Ring',
+    'Grunt Bridge',
+    'Corleone Dock',
+    'Corleone Hole',
+    'Grunt Rails',
+    'Grunt Hero Statue',
+    'Small Grunt Bridge',
+    'Sludge Waterfalls',
+    'Sludge Bridges',
+    'Yog Bridge',
+    'Mini Jungle Temple',
+    'Precursor Tripwire Chamber',
+    'Precursor Tall Pillars',
+    'Goblin Hole Camp',
+    'Goblin Hideout',
+])
+    STRUCTURE_COLORS[name] = WHITE;
 
 class StructureESP extends ModuleBase {
     constructor() {
         super({
             name: 'Structure ESP',
             subcategory: 'Visuals',
-            developerMode: true,
-            description: 'Super quick Structure ESP',
+            description: 'Structure ESP for Crystal Hollows',
         });
+        this.renderData = null;
+        this.structureData = null;
+        this.selectedStructures = new Set(DEFAULT_STRUCTURES);
 
-        this.on('packetReceived', (packet) => {
-            const cx = packet?.getX();
-            const cz = packet?.getZ();
-            if (typeof cx !== 'number' || typeof cz !== 'number') return;
-            setTimeout(() => {
-                if (!this.enabled) return;
-                StructureFinder.submitChunkScan(cx, cz);
-            }, 50);
-        }).setFilteredClass(ClientboundLevelChunkWithLightPacket);
+        this.addMultiToggle(
+            'Structures',
+            Object.keys(STRUCTURE_COLORS),
+            false,
+            (options) => {
+                this.selectedStructures = new Set(options.filter((option) => option.enabled).map((option) => option.name));
+                this.renderData = null;
+            },
+            'Choose which structures to show',
+            DEFAULT_STRUCTURES
+        );
 
-        this.on('packetReceived', (packet) => {
-            const pos = packet?.getPos();
-            if (!pos) return;
-            StructureFinder.submitBlockUpdate(pos.getX(), pos.getY(), pos.getZ());
-        }).setFilteredClass(ClientboundBlockUpdatePacket);
+        this.on('tick', () => this.updateRenderData());
 
-        this.on('postRenderWorld', () => {
-            this.render();
-        });
+        this.on('postRenderWorld', () => this.render());
 
         this.on('worldUnload', () => {
-            StructureFinder.clear();
+            StructureFinder.setActive(false);
+            this.renderData = null;
+            this.structureData = null;
         });
 
         register('gameUnload', () => {
-            StructureFinder.clear();
+            StructureFinder.setActive(false);
         });
     }
 
-    onDisable() {
-        StructureFinder.clear();
+    onEnable() {
+        this.updateRenderData();
     }
 
-    render() {
+    onDisable() {
+        StructureFinder.setActive(false);
+        this.renderData = null;
+        this.structureData = null;
+    }
+
+    updateRenderData() {
         try {
-            const blocks = StructureFinder.getRenderBlocksArray();
-            if (!blocks?.length) return;
-            const labels = StructureFinder.getRenderLabelsArray();
+            const inHollows = getArea() === 'Crystal Hollows';
+            StructureFinder.setActive(inHollows);
+            if (!inHollows) {
+                this.renderData = null;
+                this.structureData = null;
+                return;
+            }
+            const structures = StructureFinder.getRenderStructures();
+            if (!structures.length) {
+                this.renderData = null;
+                return;
+            }
+            const structuresChanged = !this.structureData || !Objects.equals(structures, this.structureData.structures);
+            if (structuresChanged) {
+                const entries = [];
+                for (let i = 0; i < structures.length; i++) {
+                    const structure = structures[i];
+                    const name = String(structure.getName());
+                    entries.push({ x: structure.getX() + 0.5, y: structure.getY(), z: structure.getZ() + 0.5, name, color: STRUCTURE_COLORS[name] });
+                }
+                this.structureData = { structures, entries };
+            }
             const playerX = Player.getX();
             const playerY = Player.getY() + 1.6;
             const playerZ = Player.getZ();
             const maxDistance = Math.max(16, (Client.getMinecraft().options.getEffectiveRenderDistance() - 1) * 16);
 
-            const fairyPositions = [];
-            const structurePositions = [];
+            const previous = this.renderData;
+            if (
+                !structuresChanged &&
+                previous &&
+                previous.playerX === playerX &&
+                previous.playerY === playerY &&
+                previous.playerZ === playerZ &&
+                previous.maxDistance === maxDistance
+            )
+                return;
+
+            const positionsByColor = new Map();
             const names = [];
             const namePositions = [];
-            for (let i = 0; i + 2 < blocks.length; i += 3) {
-                const name = String(labels[i / 3]);
-                const x = blocks[i] + 0.5;
-                const y = blocks[i + 1];
-                const z = blocks[i + 2] + 0.5;
+            for (const entry of this.structureData.entries) {
+                if (!this.selectedStructures.has(entry.name)) continue;
+                const { x, y, z } = entry;
                 const dx = x - playerX;
                 const dy = y - playerY;
                 const dz = z - playerZ;
                 const distance = Math.hypot(dx, dy, dz);
                 const scale = distance > maxDistance ? maxDistance / distance : 1;
                 const pos = new Vec3d(playerX + dx * scale, playerY + dy * scale, playerZ + dz * scale);
-                (name === 'Fairy Grotto' ? fairyPositions : structurePositions).push(pos);
-                names.push(name);
+                if (!positionsByColor.has(entry.color)) positionsByColor.set(entry.color, []);
+                positionsByColor.get(entry.color).push(pos);
+                names.push(entry.name);
                 namePositions.push(pos.add(0, 8.5, 0));
             }
-            Render3D.drawSizedBoxes(fairyPositions, 8, 8, 8, FAIRY_COLOR, true, 1, false);
-            Render3D.drawSizedBoxes(structurePositions, 8, 8, 8, STRUCTURE_COLOR, true, 1, false);
-            Render3D.drawTexts(names, namePositions, 7.5, true, false, true);
+            this.renderData = { positionsByColor, names, namePositions, playerX, playerY, playerZ, maxDistance };
         } catch (e) {
             console.error(e);
         }
+    }
+
+    render() {
+        const data = this.renderData;
+        if (!data) return;
+        for (const [color, positions] of data.positionsByColor) Render3D.drawSizedBoxes(positions, 8, 8, 8, color, true, 1, false);
+        Render3D.drawTexts(data.names, data.namePositions, 7.5, true, false, true);
     }
 }
 

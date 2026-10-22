@@ -34,7 +34,7 @@ on:
             - '!.prettierignore'
             - '!jsconfig.json'
             - '!typings.d.ts'
-            - '!AGENTS.md'
+            - '!**/*.md'
             - '.github/workflows/package.yml'
             - '.github/scripts/build-package.py'
     pull_request:
@@ -49,7 +49,7 @@ on:
             - '!.prettierignore'
             - '!jsconfig.json'
             - '!typings.d.ts'
-            - '!AGENTS.md'
+            - '!**/*.md'
             - '.github/workflows/package.yml'
             - '.github/scripts/build-package.py'
 

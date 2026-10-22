@@ -1,4 +1,4 @@
-import { ClipContext, GLFW, InputConstants, Vec3d } from '../../utils/Constants';
+import { ClipContext, InputConstants, Vec3d } from '../../utils/Constants';
 import { clearCameraPosition, setCameraPosition } from '../../utils/Camera';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { wrapTo180 } from '../../utils/Math';
@@ -21,22 +21,23 @@ class Freecam extends ModuleBase {
         this.bindToggleKey();
 
         this.moveSpeed = 0.8;
+        const options = mc.options;
+        this.physicalKeybinds = [options.keyUp, options.keyDown, options.keyLeft, options.keyRight, options.keyJump, options.keyShift].map(
+            (keybind) => new KeyBind(keybind)
+        );
         this.cameraPos = null;
         this.velocity = new Vec3d(0, 0, 0);
         this.savedPerspective = null;
         this.lastRenderAt = 0;
         this.possessedUUID = null;
-        this.rightClickWasDown = false;
 
         this.addSlider('Move Speed', 5, 30, 10, (value) => (this.moveSpeed = Number(value) / 25), 'Freecam move speed.');
 
-        this.on('tick', () => {
-            const rightClickDown = this.isRightClickDown();
-            if (World.isLoaded() && !Client.isInGui() && rightClickDown && !this.rightClickWasDown) {
+        this.on('clicked', (x, y, button, isPressed) => {
+            if (button === 1 && isPressed && World.isLoaded() && !Client.isInGui()) {
                 if (this.possessedUUID) this.releasePossession();
                 else this.tryPossessPlayer();
             }
-            this.rightClickWasDown = rightClickDown;
         });
         this.on('renderWorld', () => this.onRender());
         this.on('renderEntity', (entity, partialTicks, event) => {
@@ -57,7 +58,6 @@ class Freecam extends ModuleBase {
         this.savedPerspective = mc.options.getCameraType();
         this.lastRenderAt = Date.now();
         this.possessedUUID = null;
-        this.rightClickWasDown = this.isRightClickDown();
         forceGrab();
         Client.setCameraRotation(wrapTo180(player.getYRot()), player.getXRot());
         Client.setFreecam(true);
@@ -81,7 +81,6 @@ class Freecam extends ModuleBase {
         this.cameraPos = null;
         this.velocity = new Vec3d(0, 0, 0);
         this.possessedUUID = null;
-        this.rightClickWasDown = false;
         Client.setUngrabbed(false);
         Client.setFreecam(false);
         Client.setSpectatedEntity(null);
@@ -110,7 +109,6 @@ class Freecam extends ModuleBase {
             mc.options.setCameraType(Perspective.THIRD_PERSON_BACK);
         }
 
-        const options = mc.options;
         const yaw = (Number(Client.getCameraYaw() ?? player.getYRot()) * Math.PI) / 180;
 
         let moveX = 0;
@@ -120,24 +118,24 @@ class Freecam extends ModuleBase {
         const sinYaw = Math.sin(yaw);
         const cosYaw = Math.cos(yaw);
 
-        if (this.isKeyDown(options.keyUp)) {
+        if (this.isKeyDown(this.physicalKeybinds[0])) {
             moveX -= sinYaw;
             moveZ += cosYaw;
         }
-        if (this.isKeyDown(options.keyDown)) {
+        if (this.isKeyDown(this.physicalKeybinds[1])) {
             moveX += sinYaw;
             moveZ -= cosYaw;
         }
-        if (this.isKeyDown(options.keyLeft)) {
+        if (this.isKeyDown(this.physicalKeybinds[2])) {
             moveX += cosYaw;
             moveZ += sinYaw;
         }
-        if (this.isKeyDown(options.keyRight)) {
+        if (this.isKeyDown(this.physicalKeybinds[3])) {
             moveX -= cosYaw;
             moveZ -= sinYaw;
         }
-        if (this.isKeyDown(options.keyJump)) moveY += 1;
-        if (this.isKeyDown(options.keyShift)) moveY -= 1;
+        if (this.isKeyDown(this.physicalKeybinds[4])) moveY += 1;
+        if (this.isKeyDown(this.physicalKeybinds[5])) moveY -= 1;
 
         const magnitude = Math.hypot(moveX, moveY, moveZ) || 1;
         const hasInput = Math.abs(moveX) > 0 || Math.abs(moveY) > 0 || Math.abs(moveZ) > 0;
@@ -251,12 +249,8 @@ class Freecam extends ModuleBase {
         return nearest;
     }
 
-    isRightClickDown() {
-        return GLFW.glfwGetMouseButton(mc.getWindow().handle(), GLFW.GLFW_MOUSE_BUTTON_RIGHT) === GLFW.GLFW_PRESS;
-    }
-
     isKeyDown(keybind) {
-        return Client.getCurrentScreen() == null && InputConstants.isKeyDown(mc.getWindow(), InputConstants.getKey(keybind.saveString()).getValue());
+        return Client.getCurrentScreen() == null && InputConstants.isKeyDown(mc.getWindow(), keybind.getKeyCode());
     }
 
     getInitialCameraPos(player, yaw, pitch) {

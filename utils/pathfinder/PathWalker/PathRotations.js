@@ -35,6 +35,8 @@ class PathRotations {
         this.TELEPORT_RESYNC_SEARCH_WINDOW = 72;
         this.ENTITY_TRACK_DISTANCE = 8;
         this.ENTITY_BLEND_RATE = 0.08;
+        this.MIN_HORIZONTAL_LOOK = 1.2;
+        this.MAX_AIR_TURN = 90;
         this.lookaheadOverride = null;
         this.lookaheadOverrideExpiry = 0;
         this.currentPathCurvature = 0;
@@ -43,7 +45,7 @@ class PathRotations {
 
         this.resetRotations();
 
-        register('renderWorld', () => {
+        this.renderRegister = register('renderWorld', () => {
             if (!this.rotationActive || !this.boxPositions || this.boxPositions.length < 2) return;
             if (!Player.getPlayer()) {
                 this.resetRotations();
@@ -55,7 +57,7 @@ class PathRotations {
             this.updateLookPoint(timeScale);
             this.applyHumanizedPhysics(timeScale);
             PathRotationsUtility.applyRotationWithGCD(this.currentYaw, this.currentPitch);
-        });
+        }).unregister();
 
         PathExecutor.onTick(() => {
             if (this.postTeleportResyncTicks > 0) {
@@ -103,6 +105,12 @@ class PathRotations {
         this.pitchDriftStartedAt = 0;
         this.pitchDriftDuration = 0;
         PathRotationsUtility.stopRotation();
+        this.syncRender();
+    }
+
+    syncRender() {
+        if (this.rotationActive && !this.renderRegister?.isRegistered()) this.renderRegister.register();
+        else if (!this.rotationActive && this.renderRegister?.isRegistered()) this.renderRegister.unregister();
     }
 
     onTeleportTriggered(targetPathPosition = null) {
@@ -301,6 +309,7 @@ class PathRotations {
         const pathAnchor = this.getInterpolatedPoint(this.currentPathPosition);
         if (!pathAnchor) {
             this.rotationActive = false;
+            this.syncRender();
             return;
         }
         const isJumpingHigh = motionY > 0.1 || player.getY() - pathAnchor.y > 2.0;
@@ -362,7 +371,8 @@ class PathRotations {
                 this.unseenSince = now;
                 this.unseenStartPathPosition = this.currentPathPosition;
             }
-            if (now - this.unseenSince >= 600) {
+            // Rolling back mid-air puts the look point behind us and turns the camera around.
+            if (now - this.unseenSince >= 600 && player.onGround()) {
                 let attempts = 0;
                 const minRollbackPosition = Math.max(0, this.unseenStartPathPosition - 8);
                 while (this.currentPathPosition > minRollbackPosition && attempts < 8) {
@@ -397,9 +407,12 @@ class PathRotations {
             targetPoint = new Vec3d(targetPoint.x, playerEyes.y() + newDy, targetPoint.z);
         }
 
-        if ((isFalling || isPathDropping) && rawHorz < 0.5) {
-            const boostT = Math.min(this.boxPositions.length - 1, this.currentPathPosition + 2.5);
-            targetPoint = this.getInterpolatedPoint(boostT);
+        // A look point almost straight below us gives an unstable yaw while falling.
+        let holdYaw = false;
+        if ((!player.onGround() || isFalling || isPathDropping) && rawHorz < this.MIN_HORIZONTAL_LOOK) {
+            const farPoint = this.findHorizontallyDistantPoint(playerEyes);
+            if (farPoint) targetPoint = farPoint;
+            else holdYaw = true;
         }
 
         const dx = targetPoint.x - playerEyes.x();
@@ -416,6 +429,7 @@ class PathRotations {
         const angles = MathUtils.calculateAbsoluteAngles(this.currentTargetPoint);
         const targetYaw = MathUtils.wrapTo180(angles.yaw);
         const yawDelta = MathUtils.getAngleDifference(this.rawTargetYaw, targetYaw);
+        const blockAirTurn = !player.onGround() && Math.abs(yawDelta) > this.MAX_AIR_TURN;
 
         const lastIndex = this.boxPositions.length - 1;
         const remainingPath = lastIndex - this.currentPathPosition;
@@ -426,12 +440,12 @@ class PathRotations {
         const dynamicSmooth = 1 - Math.pow(1 - Math.min(1.0, dynamicSmoothBase * this.getInitialTurnBoostFactor(yawDelta)), timeScale);
         const dynamicYawDeadzone = (isStraight ? this.YAW_DEADZONE * 1.5 : this.YAW_DEADZONE) * finishFactor;
 
-        if (Math.abs(yawDelta) > dynamicYawDeadzone) {
+        if (!holdYaw && !blockAirTurn && Math.abs(yawDelta) > dynamicYawDeadzone) {
             this.rawTargetYaw = MathUtils.wrapTo180(this.rawTargetYaw + yawDelta * Math.min(1.0, dynamicSmooth));
         }
 
         const pitchDelta = angles.pitch - this.rawTargetPitch;
-        if (Math.abs(pitchDelta) > this.PITCH_DEADZONE * finishFactor) {
+        if (!holdYaw && Math.abs(pitchDelta) > this.PITCH_DEADZONE * finishFactor) {
             this.rawTargetPitch += pitchDelta * Math.min(1.0, dynamicSmooth);
         }
 
@@ -452,7 +466,22 @@ class PathRotations {
             this.currentPathPosition = lastIndex;
             this.complete = true;
             this.rotationActive = false;
+            this.syncRender();
         }
+    }
+
+    findHorizontallyDistantPoint(playerEyes) {
+        const last = this.boxPositions.length - 1;
+        const start = Math.max(this.currentPathPosition, this.projectPathPositionHorizontal(playerEyes.x(), playerEyes.z(), this.currentPathPosition));
+        const anchor = this.getInterpolatedPoint(start);
+        for (let t = start; t <= Math.min(last, start + 10); t += 0.5) {
+            const point = this.getInterpolatedPoint(t);
+            const dx = point.x - playerEyes.x();
+            const dz = point.z - playerEyes.z();
+            if (Math.hypot(dx, dz) < this.MIN_HORIZONTAL_LOOK + 0.3) continue;
+            if (dx * (point.x - anchor.x) + dz * (point.z - anchor.z) > 0) return point;
+        }
+        return null;
     }
 
     getPitchDrift() {
@@ -656,6 +685,7 @@ class PathRotations {
             if (!lookPoints || lookPoints.length < 2) {
                 this.boxPositions = null;
                 this.rotationActive = false;
+                this.syncRender();
                 return;
             }
             this.boxPositions = lookPoints;
@@ -671,6 +701,7 @@ class PathRotations {
             this.currentPathPosition = 0;
             this.isInitialized = true;
             this.rotationActive = true;
+            this.syncRender();
             this.initialTurnBoostTicks = 10;
         }
     }

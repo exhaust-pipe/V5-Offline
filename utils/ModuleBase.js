@@ -10,6 +10,11 @@ import { Utils } from './Utils';
 export class ModuleBase {
     static conditions = [];
     static conditionChecker = null;
+    static worldUnloadModules = new Set();
+    static worldUnloadRegister = null;
+    static keybinds = null;
+    static toggleKeys = [];
+    static keybindUnloadRegister = null;
     static loadingUserScript = false;
     static defaultThemes = {
         Combat: '#c74d4d',
@@ -61,7 +66,10 @@ export class ModuleBase {
         }
 
         if (opts.autoDisableOnWorldUnload) {
-            register('worldUnload', () => this.toggle(false, this.isParentManaged, 'world-unload'));
+            ModuleBase.worldUnloadModules.add(this);
+            ModuleBase.worldUnloadRegister ??= register('worldUnload', () => {
+                ModuleBase.worldUnloadModules.forEach((module) => module.toggle(false, module.isParentManaged, 'world-unload'));
+            });
         }
 
         if (opts.isMacro && opts.recoverFromLimbo !== false) {
@@ -94,10 +102,11 @@ export class ModuleBase {
     }
 
     static setupConditionChecker() {
-        if (ModuleBase.conditionChecker) return;
+        if (ModuleBase.conditionChecker) return ModuleBase.syncConditionChecker();
 
         ModuleBase.conditionChecker = register('tick', () => {
             for (const item of ModuleBase.conditions) {
+                if (item.ownerEnabled && !item.parent.enabled) continue;
                 const shouldBeActive = !!item.condition();
 
                 if (shouldBeActive && !item.isRegistered) {
@@ -108,7 +117,21 @@ export class ModuleBase {
                     item.isRegistered = false;
                 }
             }
-        });
+        }).unregister();
+        ModuleBase.syncConditionChecker();
+    }
+
+    static syncConditionChecker() {
+        const shouldPoll = ModuleBase.conditions.some((item) => !item.ownerEnabled || item.parent.enabled);
+        if (shouldPoll && !ModuleBase.conditionChecker.isRegistered()) ModuleBase.conditionChecker.register();
+        else if (!shouldPoll && ModuleBase.conditionChecker.isRegistered()) ModuleBase.conditionChecker.unregister();
+
+        for (const item of ModuleBase.conditions) {
+            if (item.ownerEnabled && !item.parent.enabled && item.isRegistered) {
+                item.action.unregister();
+                item.isRegistered = false;
+            }
+        }
     }
 
     // automatically handle enabling/disabling of registers
@@ -126,7 +149,7 @@ export class ModuleBase {
     }
 
     // toggle register based on the condition
-    when(condition, registerName, callback) {
+    when(condition, registerName, callback, ownerEnabled = false) {
         const actionRegister = register(registerName, callback).unregister();
 
         ModuleBase.conditions.push({
@@ -134,7 +157,9 @@ export class ModuleBase {
             condition: condition,
             action: actionRegister,
             isRegistered: false,
+            ownerEnabled,
         });
+        ModuleBase.syncConditionChecker();
     }
 
     /**
@@ -175,6 +200,7 @@ export class ModuleBase {
             }
             if (!this.enabled) return;
             this._registers.forEach((h) => h.register());
+            ModuleBase.syncConditionChecker();
         } else {
             if (this.isMacro) {
                 MacroState.onModuleDisabled(this.name, toggleContext);
@@ -190,6 +216,7 @@ export class ModuleBase {
             }
 
             this._registers.forEach((h) => h.unregister());
+            ModuleBase.syncConditionChecker();
             try {
                 this.onDisable();
             } catch (e) {
@@ -254,7 +281,7 @@ export class ModuleBase {
     }
 
     bindToggleKey(title = `Toggle ${this.name}`) {
-        const existingKeybinds = Utils.getConfigFile('keybinds.json') || {};
+        const existingKeybinds = (ModuleBase.keybinds ??= Utils.getConfigFile('keybinds.json') || {});
         const savedKeycode = existingKeybinds[title] || Keyboard.KEY_NONE;
         this._wrappedKeyTitle = title;
         this._wrappedKey = new KeyBind(title, savedKeycode, `v5_${this.subcategory.toLowerCase()}`);
@@ -263,8 +290,13 @@ export class ModuleBase {
             this.requestToggleFromUser();
         });
 
-        register('gameUnload', () => {
-            this._saveKey(title, this._wrappedKey.getKeyCode());
+        ModuleBase.toggleKeys.push({ title, keybind: this._wrappedKey });
+        ModuleBase.keybindUnloadRegister ??= register('gameUnload', () => {
+            ModuleBase.keybinds = Utils.getConfigFile('keybinds.json') || {};
+            ModuleBase.toggleKeys.forEach(({ title, keybind }) => {
+                ModuleBase.keybinds[title] = keybind.getKeyCode();
+            });
+            Utils.writeConfigFile('keybinds.json', ModuleBase.keybinds);
         });
         return this;
     }
@@ -522,7 +554,7 @@ export class ModuleBase {
      * Saves a specific keybind description and keycode.
      */
     _saveKey(description, keycode) {
-        let allKeybinds = Utils.getConfigFile('keybinds.json') || {};
+        const allKeybinds = (ModuleBase.keybinds = Utils.getConfigFile('keybinds.json') || {});
         allKeybinds[description] = keycode;
         Utils.writeConfigFile('keybinds.json', allKeybinds);
     }
