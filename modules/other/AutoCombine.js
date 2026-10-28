@@ -1,5 +1,6 @@
 import { ModuleBase } from '../../utils/ModuleBase';
-import { clickSlot, closeInventory } from '../../utils/player/Inventory';
+import { manager } from '../../utils/SkyblockEvents';
+import { clickSlot, closeInventory, getGuiName } from '../../utils/player/Inventory';
 
 const BASE_BOOK_LEVELS = ['I', 'II', 'III', 'IV'];
 const EXTENDED_BOOK_LEVELS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
@@ -9,8 +10,8 @@ class AutoCombine extends ModuleBase {
         super({
             name: 'Auto Combine',
             subcategory: 'Other',
-            description: 'Automatically combine items in your inventory with /anvil.',
-            tooltip: 'Automatically combine items in your inventory with /anvil.',
+            description: 'Automatically combine items in your inventory with an anvil.',
+            tooltip: 'Open an anvil manually or use /anvil to combine items in your inventory.',
             theme: '#f1a64b',
             showEnabledToggle: false,
             autoDisableOnWorldUnload: true,
@@ -20,6 +21,7 @@ class AutoCombine extends ModuleBase {
 
         this.STATES = {
             OPEN_ANVIL: 'OPEN_ANVIL',
+            WAIT_ANVIL: 'WAIT_ANVIL',
             SEARCH_PAIR: 'SEARCH_PAIR',
             FIRST_BOOK: 'FIRST_BOOK',
             SECOND_BOOK: 'SECOND_BOOK',
@@ -33,6 +35,8 @@ class AutoCombine extends ModuleBase {
         this.timeoutFlags = 0;
         this.stuckCount = 0;
         this.stuckLimit = 3;
+        this.autoRetry = true;
+        this.useAnvilCommand = true;
         this.enableLevelTenBooks = false;
         this.tickCounter = 0;
 
@@ -48,10 +52,22 @@ class AutoCombine extends ModuleBase {
             10,
             3,
             (value) => (this.stuckLimit = Math.floor(value)),
-            'Automatically disables after this many stuck detections per run. 0 disables the limit.'
+            'Retries or disables after this many stuck detections, depending on Auto Retry. 0 disables the limit.'
+        );
+        this.addToggle(
+            'Auto Retry',
+            (value) => (this.autoRetry = !!value),
+            'Automatically starts another attempt when the stuck limit is reached instead of disabling.',
+            true
         );
 
         this.on('tick', () => this.onTick());
+        manager.subscribe('noboostercookie', () => {
+            if (!this.enabled || this.state !== this.STATES.WAIT_ANVIL || !this.useAnvilCommand) return;
+            this.useAnvilCommand = false;
+            this.resetTimeout();
+            this.message('&eCannot use /anvil. Open an anvil manually to continue.');
+        });
     }
 
     onTick() {
@@ -60,6 +76,9 @@ class AutoCombine extends ModuleBase {
         switch (this.state) {
             case this.STATES.OPEN_ANVIL:
                 this.openAnvil();
+                break;
+            case this.STATES.WAIT_ANVIL:
+                this.waitForAnvil();
                 break;
             case this.STATES.SEARCH_PAIR:
                 this.searchForNextPair();
@@ -80,20 +99,25 @@ class AutoCombine extends ModuleBase {
     }
 
     openAnvil() {
-        if (String(Player.getContainer()?.getName()) !== '§rAnvil') ChatLib.command('anvil');
-        this.setState(this.STATES.SEARCH_PAIR);
+        if (getGuiName() === 'Anvil') return this.setState(this.STATES.SEARCH_PAIR);
+
+        this.setState(this.STATES.WAIT_ANVIL);
+        if (this.useAnvilCommand) ChatLib.command('anvil');
+        else this.message('&eOpen an anvil manually to continue.');
+    }
+
+    waitForAnvil() {
+        if (getGuiName() === 'Anvil') this.setState(this.STATES.SEARCH_PAIR);
+        else if (this.useAnvilCommand) this.timeout();
     }
 
     getAnvilItems() {
         const container = Player.getContainer();
-        return String(container?.getName()) === '§rAnvil' ? container.getItems() : null;
+        return getGuiName() === 'Anvil' ? container.getItems() : null;
     }
 
     searchForNextPair() {
-        const container = Player.getContainer();
-        if (!container) return this.timeout();
-
-        if (String(container.getName()) !== '§rAnvil') {
+        if (getGuiName() !== 'Anvil') {
             this.setState(this.STATES.OPEN_ANVIL);
             return;
         }
@@ -213,12 +237,17 @@ class AutoCombine extends ModuleBase {
         if (this.timeoutFlags > 4) {
             this.stuckCount++;
             if (this.stuckLimit > 0 && this.stuckCount >= this.stuckLimit) {
-                this.message(`&cStuck detected ${this.stuckCount} times. Automatically disabling.`);
-                closeInventory();
-                this.toggle(false);
-                return;
+                if (!this.autoRetry) {
+                    this.message(`&cStuck detected ${this.stuckCount} times. Automatically disabling.`);
+                    closeInventory();
+                    this.toggle(false);
+                    return;
+                }
+                this.message(`&eStuck detected ${this.stuckCount} times. Automatically retrying.`);
+                this.stuckCount = 0;
+            } else {
+                this.message('&cStuck detected. Force resetting.');
             }
-            this.message('&cStuck detected. Force resetting.');
             this.reset(true);
         }
     }
@@ -238,6 +267,7 @@ class AutoCombine extends ModuleBase {
     onEnable() {
         this.message('&aEnabled');
         this.stuckCount = 0;
+        this.useAnvilCommand = getGuiName() !== 'Anvil';
         this.reset();
     }
 
