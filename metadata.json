@@ -2,7 +2,7 @@
     "name": "V5",
     "creator": "Zurviq, Rdbt, EpilsonPhoenix and Contributors",
     "description": "V5 Offline: V5 5.2 features adapted for local scripts with public Hypixel data only.",
-    "version": "2.2.0-offline",
+    "version": "2.2.1-offline",
     "entry": "loader.js",
     "requires": []
 }
