@@ -4,7 +4,7 @@ import { DataComponents } from '../../utils/Constants';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { setSignLine } from '../../utils/Sign';
 import { v5Command } from '../../utils/V5Commands';
-import { getConfigFile, writeConfigFile } from '../../utils/Utils';
+import { getConfigFile, randomInt, writeConfigFile } from '../../utils/Utils';
 import { clickSlot, closeInventory, getGuiName } from '../../utils/player/Inventory';
 
 // This entire macro is AI generated, good luck!
@@ -53,14 +53,23 @@ class BazaarNpcMacro extends ModuleBase {
         this.realisedProfitElapsedMs = 0;
         this.claimedCosts = new Map();
 
-        this.clickDelay = 350;
-        this.addSlider(
+        this.clickDelayRange = { low: 250, high: 450 };
+        this.addRangeSlider(
             'Click Delay (ms)',
             50,
             2_000,
-            350,
-            (milliseconds) => (this.clickDelay = milliseconds),
-            'Delay between normal Bazaar and NPC menu clicks.'
+            this.clickDelayRange,
+            (value) => (this.clickDelayRange = { low: Math.round(value.low), high: Math.round(value.high) }),
+            'Minimum and maximum random delay before Bazaar and NPC menu clicks.'
+        );
+        this.inputDelayRange = { low: 250, high: 450 };
+        this.addRangeSlider(
+            'Input Delay (ms)',
+            50,
+            2_000,
+            this.inputDelayRange,
+            (value) => (this.inputDelayRange = { low: Math.round(value.low), high: Math.round(value.high) }),
+            'Minimum and maximum random delay before commands and sign input.'
         );
         this.maxBuyOrders = 14;
         this.addSlider('Order Limit', 14, 28, 14, (limit) => (this.maxBuyOrders = Math.round(limit)), 'Maximum number of active Bazaar orders.');
@@ -210,12 +219,12 @@ class BazaarNpcMacro extends ModuleBase {
         this.startingInventory = new Map();
         this.lastCheckedInventory = new Map();
         this.confirmSlot = -1;
+        this.actionDelay = 0;
         this.nextActionAt = 0;
         this.deadline = 0;
         this.retryAction = null;
         this.retryAt = 0;
         this.sellEmptySince = 0;
-        this.nextTradesRetryAt = 0;
         this.orderCooldownUntil = 0;
         this.orderMissingSince = 0;
         this.cleanupMode = false;
@@ -317,26 +326,35 @@ class BazaarNpcMacro extends ModuleBase {
         const now = Date.now();
         if (this.checkNpcLimit()) return;
         if (this.deadline && now >= this.deadline) return this.restart(`Timed out while ${this.status.toLowerCase()}.`);
-        if (this.retryAction && now >= this.retryAt) {
-            this.retryAt = now + STUCK_RETRY_DELAY;
-            this.nextActionAt = now + this.clickDelay;
-            this.retryAction.call(this);
-            return;
-        }
         if (now < this.nextActionAt) return;
-        if (this.action) this.action.call(this);
+
+        // A ready UI must advance before retries can postpone it again.
+        const action = this.action;
+        const retryAction = this.retryAction;
+        if (action) action.call(this);
+        if (this.action !== action || this.retryAction !== retryAction || now < this.nextActionAt) return;
+        if (retryAction && now >= this.retryAt) {
+            this.nextActionAt = now + this.getDelay(this.actionDelay);
+            this.retryAt = this.nextActionAt + STUCK_RETRY_DELAY;
+            retryAction.call(this);
+        }
     }
 
-    setAction(action, status, delay = this.clickDelay, timeout = GUI_TIMEOUT, retryAction = null) {
+    getDelay(delay = this.clickDelayRange) {
+        return typeof delay === 'number' ? delay : randomInt(delay.low, delay.high);
+    }
+
+    setAction(action, status, delay = this.clickDelayRange, timeout = GUI_TIMEOUT, retryAction = null) {
         this.action = action;
         this.status = status;
-        this.nextActionAt = Date.now() + delay;
-        this.deadline = timeout ? Date.now() + timeout : 0;
+        this.actionDelay = delay;
+        this.nextActionAt = Date.now() + this.getDelay(delay);
+        this.deadline = timeout ? this.nextActionAt + timeout : 0;
         this.retryAction = retryAction;
-        this.retryAt = retryAction ? Date.now() + STUCK_RETRY_DELAY : 0;
+        this.retryAt = retryAction ? this.nextActionAt + STUCK_RETRY_DELAY : 0;
     }
 
-    clickAndWait(slot, action, status, delay = this.clickDelay, timeout = GUI_TIMEOUT) {
+    clickAndWait(slot, action, status, delay = this.clickDelayRange, timeout = GUI_TIMEOUT) {
         const gui = clean(getGuiName());
         const item = clean(Player.getContainer()?.getStackInSlot(slot)?.getName?.());
         const click = () => {
@@ -346,7 +364,7 @@ class BazaarNpcMacro extends ModuleBase {
         click();
     }
 
-    commandAndWait(command, action, status, delay = 0, timeout = GUI_TIMEOUT) {
+    commandAndWait(command, action, status, delay = this.clickDelayRange, timeout = GUI_TIMEOUT) {
         const previousGui = getGuiName();
         const run = () => {
             const wait = this.runCommand(command);
@@ -360,15 +378,12 @@ class BazaarNpcMacro extends ModuleBase {
             this.retryAction = () => {
                 const nextAction = this.action;
                 nextRetry?.call(this);
-                if (this.action === nextAction && getGuiName() === previousGui) run();
+                if (this.action === nextAction && getGuiName() === previousGui) retry();
             };
-            this.retryAt = Date.now() + STUCK_RETRY_DELAY;
+            this.retryAt = this.nextActionAt + STUCK_RETRY_DELAY;
         };
-        const retry = () => {
-            waitForGui();
-            if (this.action === waitForGui && this.retryAction === retry) run();
-        };
-        run();
+        const retry = () => this.setAction(run, status, this.inputDelayRange, 0);
+        retry();
     }
 
     runCommand(command) {
@@ -400,13 +415,13 @@ class BazaarNpcMacro extends ModuleBase {
                 this.bazaarData = bazaar;
                 this.itemData = items;
                 this.adoptOpenOrders(bazaar, items);
-                if (adoptOnly) return this.setAction(this.inspectOrder, 'Checking duplicates', this.clickDelay);
+                if (adoptOnly) return this.setAction(this.inspectOrder, 'Checking duplicates');
                 this.orderQueue = this.findBestFlips(bazaar, items);
                 this.refillIds.clear();
                 if (!this.orderQueue.length) {
                     if (!this.activeTargets.length) return this.setAction(this.openOrders, 'Waiting for profitable items', 60_000, 0);
-                    if (resumeChecks) return this.setAction(this.inspectOrder, 'Checking orders', this.clickDelay, 0);
-                    return this.setAction(this.openOrders, 'Checking orders', this.clickDelay, 0);
+                    if (resumeChecks) return this.setAction(this.inspectOrder, 'Checking orders', this.clickDelayRange, 0);
+                    return this.setAction(this.openOrders, 'Checking orders', 0, 0);
                 }
 
                 this.message(`Found &b${this.orderQueue.length}&f profitable item${this.orderQueue.length === 1 ? '' : 's'}.`);
@@ -523,9 +538,9 @@ class BazaarNpcMacro extends ModuleBase {
 
         this.target = this.orderQueue.shift() || null;
         if (!this.target) {
-            if (this.orderCheckQueue.length) return this.setAction(this.checkNextOrder, 'Checking next order', this.clickDelay, 0);
+            if (this.orderCheckQueue.length) return this.setAction(this.checkNextOrder, 'Checking next order', 0, 0);
             if (!this.activeTargets.length) return this.setAction(this.openOrders, 'Waiting for profitable items', 60_000, 0);
-            return this.setAction(this.openOrders, 'Checking orders', this.clickDelay, 0);
+            return this.setAction(this.openOrders, 'Checking orders', 0, 0);
         }
 
         this.message(
@@ -559,7 +574,7 @@ class BazaarNpcMacro extends ModuleBase {
                 ?.replace(/,/g, '')
         );
         if (limit > 0) this.target.quantity = Math.min(this.target.quantity, limit);
-        this.clickAndWait(slot, this.enterAmount, 'Entering amount');
+        this.clickAndWait(slot, this.enterAmount, 'Entering amount', this.inputDelayRange);
     }
 
     enterAmount() {
@@ -569,7 +584,7 @@ class BazaarNpcMacro extends ModuleBase {
             setSignLine(1, this.target.quantity);
             Client.currentGui.close();
         };
-        this.setAction(this.choosePrice, 'Selecting price', this.clickDelay, GUI_TIMEOUT, submit);
+        this.setAction(this.choosePrice, 'Selecting price', this.clickDelayRange, GUI_TIMEOUT, submit);
         submit();
     }
 
@@ -602,7 +617,7 @@ class BazaarNpcMacro extends ModuleBase {
         this.target.profit = (this.target.npcPrice - price) * this.target.quantity;
         this.target.profitPercent = ((this.target.npcPrice - price) / this.target.npcPrice) * 100;
         this.confirmSlot = slot;
-        this.clickAndWait(slot, this.awaitOrderCreated, 'Creating order', 500);
+        this.clickAndWait(slot, this.awaitOrderCreated, 'Creating order');
     }
 
     awaitOrderCreated() {
@@ -614,7 +629,7 @@ class BazaarNpcMacro extends ModuleBase {
     waitForWarning() {
         const name = clean(Player.getContainer()?.getStackInSlot(this.confirmSlot)?.getName?.());
         if (!name || name === 'warning') return;
-        this.clickAndWait(this.confirmSlot, this.awaitOrderCreated, 'Creating order', 500);
+        this.clickAndWait(this.confirmSlot, this.awaitOrderCreated, 'Creating order');
     }
 
     openOrders(claimOnly = false) {
@@ -659,7 +674,7 @@ class BazaarNpcMacro extends ModuleBase {
         if (completed) {
             const hasNewItems = this.hasInventoryIncrease();
             if (this.inventoryFull()) {
-                if (hasNewItems) return this.setAction(this.openTrades, 'Inventory full', 500);
+                if (hasNewItems) return this.setAction(this.openTrades, 'Inventory full', 0, 0);
                 return this.fail('Inventory is full, but none of it was added by this macro.');
             }
             this.target = completed.target;
@@ -667,7 +682,7 @@ class BazaarNpcMacro extends ModuleBase {
             this.orderQueue = [];
             this.claimedTargets.add(completed.target);
             this.claimItems(completed.slot);
-            return this.setAction(this.inspectOrder, 'Claiming items', Math.max(250, this.clickDelay), 0);
+            return this.setAction(this.inspectOrder, 'Claiming items', this.clickDelayRange, 0);
         }
         if (!this.orderLimitReached && !this.orderSlotsChecked && this.openOrderCount < this.maxBuyOrders) {
             this.orderSlotsChecked = true;
@@ -685,19 +700,19 @@ class BazaarNpcMacro extends ModuleBase {
 
         const hasNewItems = this.hasInventoryIncrease();
         if (this.inventoryFull()) {
-            if (hasNewItems) return this.setAction(this.openTrades, 'Inventory full', 500);
+            if (hasNewItems) return this.setAction(this.openTrades, 'Inventory full', 0, 0);
             return this.fail('Inventory is full, but none of it was added by this macro.');
         }
         if (claimable) {
             this.target = claimable.target;
             this.claimedTargets.add(claimable.target);
             this.claimItems(claimable.slot);
-            return this.setAction(this.inspectOrder, 'Claiming items', Math.max(250, this.clickDelay), 0);
+            return this.setAction(this.inspectOrder, 'Claiming items', this.clickDelayRange, 0);
         }
-        if (hasNewItems) return this.setAction(this.openTrades, 'Selling claimed items', 500);
+        if (hasNewItems) return this.setAction(this.openTrades, 'Selling claimed items', 0, 0);
         this.orderQueue = [];
         this.claimOnly = false;
-        this.setAction(this.openOrders, 'Checking orders', this.clickDelay, 0);
+        this.setAction(this.openOrders, 'Checking orders', 0, 0);
     }
 
     cleanupOrders() {
@@ -709,7 +724,7 @@ class BazaarNpcMacro extends ModuleBase {
 
         const hasNewItems = this.hasInventoryIncrease();
         const inventoryFull = this.inventoryFull();
-        if (inventoryFull && hasNewItems) return this.setAction(this.openTrades, 'Inventory full', 500);
+        if (inventoryFull && hasNewItems) return this.setAction(this.openTrades, 'Inventory full', 0, 0);
 
         const claimSlot = buySlots.find((slot) => lore(items[slot]).some((line) => /^you have [\d,]+ items? to claim!$/i.test(line)));
         if (claimSlot !== undefined && inventoryFull) {
@@ -717,14 +732,14 @@ class BazaarNpcMacro extends ModuleBase {
         }
         if (claimSlot !== undefined) {
             this.claimItems(claimSlot);
-            return this.setAction(this.inspectOrder, 'Claiming items', Math.max(250, this.clickDelay), 0);
+            return this.setAction(this.inspectOrder, 'Claiming items', this.clickDelayRange, 0);
         }
         if (buySlots.length) {
             const item = items[buySlots[0]];
             this.pendingClaim = { price: this.unitPrice(item) };
             return this.clickAndWait(buySlots[0], this.cancelCleanupOrder, 'Opening buy order');
         }
-        if (hasNewItems) return this.setAction(this.openTrades, 'Selling claimed items', 500);
+        if (hasNewItems) return this.setAction(this.openTrades, 'Selling claimed items', 0, 0);
 
         this.cleanupFinished = true;
         this.toggle(false);
@@ -733,7 +748,7 @@ class BazaarNpcMacro extends ModuleBase {
     cancelCleanupOrder() {
         if (!clean(getGuiName()).includes('order options')) return;
         const slot = this.findSlot('Cancel Order', true);
-        if (slot !== -1) this.clickAndWait(slot, this.inspectOrder, 'Cancelling buy order', 500);
+        if (slot !== -1) this.clickAndWait(slot, this.inspectOrder, 'Cancelling buy order');
     }
 
     checkNextOrder() {
@@ -756,7 +771,7 @@ class BazaarNpcMacro extends ModuleBase {
         if (!Number.isFinite(topPrice)) return;
         const duplicateCount = this.openBuyOrders.filter((order) => clean(order.name) === clean(this.target.name)).length;
         if (duplicateCount < 2 && topPrice <= this.target.orderPrice + 0.001) {
-            return this.setAction(this.checkNextOrder, 'Checking next order', this.clickDelay, 0);
+            return this.setAction(this.checkNextOrder, 'Checking next order', 0, 0);
         }
 
         this.target.expectedOrderPrice = Math.ceil((topPrice + 0.1) * 10) / 10;
@@ -781,7 +796,7 @@ class BazaarNpcMacro extends ModuleBase {
         }
         this.orderMissingSince = 0;
         if (this.inventoryFull()) {
-            if (this.hasInventoryIncrease()) return this.setAction(this.openTrades, 'Inventory full', 500);
+            if (this.hasInventoryIncrease()) return this.setAction(this.openTrades, 'Inventory full', 0, 0);
             return this.fail('Inventory is full, but none of it was added by this macro.');
         }
         const item = Player.getContainer()?.getStackInSlot(slot);
@@ -809,7 +824,7 @@ class BazaarNpcMacro extends ModuleBase {
         this.orderCheckQueue = this.orderCheckQueue.filter((target) => clean(target.name) !== name);
         this.orderQueue = this.orderQueue.filter((target) => clean(target.name) !== name);
 
-        this.clickAndWait(slot, this.afterOrderCancelled, 'Cancelling outbid order', 500);
+        this.clickAndWait(slot, this.afterOrderCancelled, 'Cancelling outbid order');
     }
 
     afterOrderCancelled() {
@@ -821,7 +836,7 @@ class BazaarNpcMacro extends ModuleBase {
 
     finishOrderCancellation() {
         const target = this.target;
-        if (this.hasInventoryIncrease()) return this.setAction(this.openTrades, 'Selling claimed items', 500, 0);
+        if (this.hasInventoryIncrease()) return this.setAction(this.openTrades, 'Selling claimed items', 0, 0);
         if (this.cancelQuantity <= 0) return this.checkNextOrder();
         const quantity = Math.min(MAX_ORDER_ITEMS, this.cancelQuantity, Math.floor(this.maxSpend / target.expectedOrderPrice));
         this.cancelQuantity = 0;
@@ -843,28 +858,23 @@ class BazaarNpcMacro extends ModuleBase {
 
     openTrades() {
         this.sellEmptySince = 0;
-        this.nextTradesRetryAt = Date.now() + STUCK_RETRY_DELAY;
         this.commandAndWait('trades', this.sellItems, 'Opening Trades');
     }
 
     sellItems() {
         const now = Date.now();
         if (getGuiName() !== 'Trades') {
-            if (!this.retryAction && now >= this.nextTradesRetryAt) {
-                this.status = 'Reopening Trades';
-                this.nextTradesRetryAt = now + (this.runCommand('trades') || STUCK_RETRY_DELAY);
-            }
+            if (!this.retryAction) this.commandAndWait('trades', this.sellItems, 'Reopening Trades');
             return;
         }
         this.retryAction = null;
         this.deadline = 0;
-        this.nextTradesRetryAt = now + STUCK_RETRY_DELAY;
         const items = Player.getContainer()?.getItems() || [];
         if (items.length < 90) return;
         if (this.pendingSale) {
             const remaining = this.inventorySnapshot(items.slice(54)).get(this.pendingSale.key) || 0;
             if (remaining >= this.pendingSale.quantity && now - this.pendingSale.at < STUCK_RETRY_DELAY) {
-                this.nextActionAt = now + this.clickDelay;
+                this.nextActionAt = now + this.getDelay();
                 return;
             }
             this.pendingSale = null;
@@ -878,14 +888,14 @@ class BazaarNpcMacro extends ModuleBase {
             this.sellEmptySince = 0;
             clickSlot(slot, false, 'LEFT');
             this.status = 'Selling to NPC';
-            this.nextActionAt = Date.now() + this.clickDelay;
+            this.nextActionAt = Date.now() + this.getDelay();
             return;
         }
 
         if (!this.sellEmptySince) this.sellEmptySince = now;
         if (now - this.sellEmptySince < 1_000) {
             this.status = 'Finishing NPC sales';
-            this.nextActionAt = now + Math.max(250, this.clickDelay);
+            this.nextActionAt = now + this.getDelay();
             return;
         }
 
@@ -897,7 +907,7 @@ class BazaarNpcMacro extends ModuleBase {
               : this.orderQueue.length
                 ? this.placeNextOrder
                 : this.openOrders;
-        this.setAction(nextAction, 'Resuming Bazaar', 500, 0);
+        this.setAction(nextAction, 'Resuming Bazaar', 0, 0);
     }
 
     onChat(event) {
@@ -919,25 +929,25 @@ class BazaarNpcMacro extends ModuleBase {
             this.orderLimitReached = true;
             this.orderQueue = [];
             this.message('&eMaximum Bazaar orders reached; monitoring existing orders.');
-            return this.setAction(this.openOrders, 'Checking orders', this.clickDelay, 0);
+            return this.setAction(this.openOrders, 'Checking orders', 0, 0);
         }
         if (message.includes('[Bazaar] Placing orders is on cooldown for up to 1 minute!')) {
             if (this.action === this.awaitOrderCreated && this.target) this.orderQueue.unshift(this.target);
             this.orderCooldownUntil = Date.now() + 20_000;
             this.message('&eOrder placement is on cooldown; checking existing orders for 20 seconds.');
-            return this.setAction(this.openOrders, 'Bazaar order cooldown', this.clickDelay, 0);
+            return this.setAction(this.openOrders, 'Bazaar order cooldown', 0, 0);
         }
         if (this.action !== this.awaitOrderCreated) return;
         if (message.includes('[Bazaar] Buy Order Setup!')) {
             this.consecutiveSkips = 0;
             this.target.expectedOrderPrice = this.target.orderPrice;
             this.activeTargets.push(this.target);
-            this.setAction(this.placeNextOrder, 'Placing next order', this.clickDelay, 0);
+            this.setAction(this.placeNextOrder, 'Placing next order', 0, 0);
         } else if (/not enough coins|couldn't afford|cannot afford/i.test(message)) {
             this.orderQueue = [];
             if (!this.activeTargets.length) return this.fail('Not enough coins for that order. Lower Maximum Order Spend.');
             this.message('&eNot enough coins for more orders; monitoring the placed orders.');
-            this.setAction(this.openOrders, 'Checking orders', this.clickDelay, 0);
+            this.setAction(this.openOrders, 'Checking orders', 0, 0);
         }
     }
 
@@ -1106,7 +1116,7 @@ class BazaarNpcMacro extends ModuleBase {
             this.message('&eSkipped 3 items in a row; claiming and selling filled orders.');
             return this.openOrders(true);
         }
-        this.setAction(this.placeNextOrder, 'Skipping item', 500, 0);
+        this.setAction(this.placeNextOrder, 'Skipping item', 0, 0);
     }
 
     restart(message) {
