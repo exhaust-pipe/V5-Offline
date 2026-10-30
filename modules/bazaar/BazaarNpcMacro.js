@@ -876,18 +876,36 @@ class BazaarNpcMacro extends ModuleBase {
         if (items.length < 90) return;
         if (this.pendingSale) {
             const remaining = this.inventorySnapshot(items.slice(54)).get(this.pendingSale.key) || 0;
-            if (remaining >= this.pendingSale.quantity && now - this.pendingSale.at < STUCK_RETRY_DELAY) {
-                this.nextActionAt = now + this.getDelay();
-                return;
+            if (remaining >= this.pendingSale.quantity) {
+                if (now >= this.pendingSale.deadline) return this.fail('NPC sale could not be confirmed; stopping instead of retrying.');
+                if (now - this.pendingSale.at < STUCK_RETRY_DELAY) {
+                    this.nextActionAt = now + this.getDelay();
+                    return;
+                }
+            } else {
+                this.pendingSale = null;
             }
-            this.pendingSale = null;
         }
         const slot = this.findNewSellSlot(items);
         if (slot !== -1) {
             const tracker = this.dailyTracker();
             if (tracker.soldCoins >= NPC_DAILY_LIMIT) return this.fail('NPC daily limit reached; remaining items could not be sold.');
+            const sellPrice = Number(
+                lore(items[slot])
+                    .join(' ')
+                    .match(/\bSell Price:?\s+([\d,.]+)\s+Coins?\b/i)?.[1]
+                    ?.replace(/,/g, '')
+            );
+            if (Number.isFinite(sellPrice) && tracker.soldCoins + sellPrice > NPC_DAILY_LIMIT) {
+                return this.fail('The next stack would exceed the NPC daily sell limit; remaining items were left in your inventory.');
+            }
             const key = this.itemKey(items[slot]);
-            this.pendingSale = { at: now, key, quantity: this.inventorySnapshot(items.slice(54)).get(key) || 0 };
+            this.pendingSale = {
+                at: now,
+                deadline: this.pendingSale?.deadline ?? now + GUI_TIMEOUT,
+                key,
+                quantity: this.inventorySnapshot(items.slice(54)).get(key) || 0,
+            };
             this.sellEmptySince = 0;
             clickSlot(slot, false, 'LEFT');
             this.status = 'Selling to NPC';
@@ -915,6 +933,16 @@ class BazaarNpcMacro extends ModuleBase {
 
     onChat(event) {
         const message = ChatLib.removeFormatting(event?.message?.getUnformattedText?.() ?? event?.message?.getString?.() ?? '').trim();
+        if (
+            this.enabled &&
+            this.pendingSale &&
+            /^You\b/i.test(message) &&
+            /\b(?:sell(?:ing)?|sold)\b/i.test(message) &&
+            /\b(?:limit|cap|maximum|only)\b/i.test(message) &&
+            /\b(?:NPCs?|daily|today|per day|a day)\b/i.test(message)
+        ) {
+            return this.fail('The server rejected an NPC sale because of the daily limit; remaining items were left in your inventory.');
+        }
         const sold = message.match(/^You sold .+ for ([\d,.]+) Coins!$/);
         if (sold) {
             const coins = Number(sold[1].replace(/,/g, ''));
