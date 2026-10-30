@@ -1,4 +1,4 @@
-import { ClientboundLevelParticlesPacket } from '../../../utils/Packets';
+import { ClientboundLevelParticlesPacket, getLevelParticleData } from '../../../utils/Packets';
 import Pathfinder from '../../../utils/pathfinder/PathFinder';
 import { Rotations } from '../../../utils/player/Rotations';
 import { readPests } from '../../../utils/TabListUtils';
@@ -205,9 +205,10 @@ class PestKiller {
 
     onParticle(packet) {
         if (!this.running || this.state !== STATES.CAPTURING_PARTICLES) return;
-        const particle = packet.getParticle?.();
+        const data = getLevelParticleData(packet);
+        const particle = data.particle;
         const type = particle?.getType?.() ?? particle;
-        const position = { x: packet.getX(), y: packet.getY(), z: packet.getZ() };
+        const position = { x: data.x, y: data.y, z: data.z };
         const isAngryVillager = type === ANGRY_VILLAGER;
         if (!isAngryVillager) return;
 

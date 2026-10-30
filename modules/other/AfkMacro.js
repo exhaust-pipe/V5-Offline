@@ -1,11 +1,9 @@
 import { ModuleBase } from '../../utils/ModuleBase';
-import { GLFW } from '../../utils/Constants';
 import { MacroState } from '../../utils/MacroState';
 import { Mouse } from '../../utils/Ungrab';
 
 const MOVE_KEYS = ['w', 'a', 's', 'd'];
 const KEY_MAPPINGS = { w: 'keyUp', a: 'keyLeft', s: 'keyDown', d: 'keyRight', space: 'keyJump', shift: 'keyShift' };
-const InputConstants = com.mojang.blaze3d.platform.InputConstants;
 
 class AfkMacro extends ModuleBase {
     constructor() {
@@ -176,13 +174,7 @@ class AfkMacro extends ModuleBase {
 
         // Ending an AFK key press must preserve a key the player is still physically holding.
         const mapping = mc.options[KEY_MAPPINGS[key]];
-        const input = InputConstants.getKey(mapping.saveString());
-        const window = mc.getWindow();
-        if (input.getType().equals(InputConstants.Type.MOUSE)) {
-            if (GLFW.glfwGetMouseButton(window.handle(), input.getValue()) === GLFW.GLFW_PRESS) mapping.setDown(true);
-        } else if (input.getType().equals(InputConstants.Type.KEYSYM) && input.getValue() >= 0) {
-            if (InputConstants.isKeyDown(window, input.getValue())) mapping.setDown(true);
-        }
+        if (Client.getKeyBindFromDescription(mapping.saveString())?.isPhysicalKeyDown()) mapping.setDown(true);
     }
 
     releaseKeys() {

@@ -1,4 +1,4 @@
-import { Color, Identifier, SoundCategory, SoundEvent } from '../utils/Constants';
+import { Color, IS_MC_26_3, Identifier, SoundCategory, SoundEvent } from '../utils/Constants';
 
 const DEFAULT_FONT = Render2D.getDefaultFont();
 
@@ -38,10 +38,18 @@ export const TypingState = {
     isTyping: false,
 };
 
+export const setTextInputArea = (rect) => Keyboard.INSTANCE.setTextInputArea(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height);
+export const startTextInput = (owner, rect) => {
+    Keyboard.INSTANCE.startTextInput(owner);
+    if (rect) setTextInputArea(rect);
+};
+export const stopTextInput = (owner) => Keyboard.INSTANCE.stopTextInput(owner);
+
 const UNSHIFTED_CHARACTERS = "`1234567890-=[]\\;',./";
 const SHIFTED_CHARACTERS = '~!@#$%^&*()_+{}|:"<>?';
 
 export const getTypedCharacter = (char) => {
+    if (IS_MC_26_3) return char;
     const shiftDown = Keyboard.isKeyDown(Keyboard.KEY_LSHIFT) || Keyboard.isKeyDown(Keyboard.KEY_RSHIFT);
     if (!shiftDown) return char;
     const index = UNSHIFTED_CHARACTERS.indexOf(char);

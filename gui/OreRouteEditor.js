@@ -10,7 +10,11 @@ import {
     getTypedCharacter,
     isInside,
     playClickSound,
+    setTextInputArea,
+    startTextInput,
+    stopTextInput,
 } from './Utils';
+import { ScriptKey } from '../utils/Constants';
 import { getLookingAt } from '../utils/Raytrace';
 import {
     ServerboundInteractPacket,
@@ -98,9 +102,11 @@ const routeNameFromPath = (path) => {
 };
 
 const commitField = () => {
-    if (!activeField || !oreMiner) return;
+    if (!activeField) return;
     const field = activeField;
     activeField = null;
+    stopTextInput(routeEditorGui);
+    if (!oreMiner) return;
 
     if (field === 'route') {
         routeName = routeName.trim() || 'route';
@@ -329,6 +335,7 @@ const drawInput = (name, value, rect, placeholder = '') => {
         const cursorX = Math.min(rect.x + rect.width - 5, rect.x + 7 + getTextWidth(text, FontSizes.REGULAR));
         drawRect({ x: cursorX, y: rect.y + 5, width: 1, height: rect.height - 10, color: THEME.TEXT });
     }
+    if (activeField === name) setTextInputArea(rect);
 };
 
 const drawReorderButtons = (x, y, moveUp, moveDown) => {
@@ -636,6 +643,7 @@ const drawEditor = (mouseX, mouseY) => {
 const activateField = (name) => {
     commitField();
     activeField = name;
+    startTextInput(routeEditorGui, layout.inputs[name]);
 };
 
 routeEditorGui.registerClicked((mouseX, mouseY, button) => {
@@ -694,7 +702,7 @@ register('worldUnload', () => {
 
 register('guiKey', (char, keyCode, gui, event) => {
     if (!routeEditorGui.isOpen() || !activeField) return;
-    if (keyCode === 256 || keyCode === 257) {
+    if (keyCode === ScriptKey.ESCAPE || keyCode === ScriptKey.ENTER) {
         commitField();
         cancel(event);
         return;
@@ -702,10 +710,10 @@ register('guiKey', (char, keyCode, gui, event) => {
 
     const key = activeField;
     let value = key === 'route' ? routeName : fields[key];
-    if (keyCode === 259) value = value.slice(0, -1);
-    else if (char && String(char).length === 1) {
+    if (keyCode === ScriptKey.BACKSPACE) value = value.slice(0, -1);
+    else if (char) {
         const typed = getTypedCharacter(String(char));
-        if (!['x', 'y', 'z'].includes(key) || /[\d-]/.test(typed)) value += typed;
+        if (typed.codePointAt(0) >= ScriptKey.SPACE && (!['x', 'y', 'z'].includes(key) || /[\d-]/.test(typed))) value += typed;
     } else return;
 
     if (key === 'route') routeName = value;
@@ -733,6 +741,7 @@ export const oreRouteEditor = {
         expandedWaypoint = oreMiner.loadedWaypoints.length ? oreMiner.selectedWaypoint : -1;
         scrollY = 0;
         activeField = null;
+        stopTextInput(routeEditorGui);
         routesOpen = false;
         status = '';
         syncFields();

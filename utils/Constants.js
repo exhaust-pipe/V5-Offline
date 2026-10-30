@@ -3,6 +3,8 @@ export const MinecraftClient = net.minecraft.client.Minecraft;
 export const MCHand = net.minecraft.world.InteractionHand;
 
 export const CLIENT_VERSION = JSON.parse(FileLib.read('V5', 'metadata.json')).version;
+export const IS_MC_26_3 = java.lang.System.getProperty('v5.minecraft_version') === '26.3';
+export const ScriptKey = { SPACE: 32, V: 86, ESCAPE: 256, ENTER: 257, BACKSPACE: 259, RIGHT: 262, LEFT: 263 };
 
 export const UMatrixStack = Java.type('gg.essential.universal.UMatrixStack').Compat.INSTANCE;
 export const ConcurrentLinkedQueue = java.util.concurrent.ConcurrentLinkedQueue;
@@ -34,7 +36,9 @@ export const Scanner = java.util.Scanner;
 export const Toolkit = java.awt.Toolkit;
 export const AudioSystem = javax.sound.sampled.AudioSystem;
 export const FloatControl = javax.sound.sampled.FloatControl;
-export const GLFW = org.lwjgl.glfw.GLFW;
+export const GLFW = IS_MC_26_3 ? null : Java.type('org.lwjgl.glfw.GLFW');
+export const SDLVideo = IS_MC_26_3 ? Java.type('org.lwjgl.sdl.SDLVideo') : null;
+export const SDLRect = IS_MC_26_3 ? Java.type('org.lwjgl.sdl.SDL_Rect') : null;
 export const Desktop = java.awt.Desktop;
 export const System = java.lang.System;
 export const Base64 = java.util.Base64;
@@ -63,7 +67,7 @@ export const PlayerEntity = net.minecraft.world.entity.player.Player;
 export const CreeperEntity = net.minecraft.world.entity.monster.Creeper;
 export const ArmorStandEntity = net.minecraft.world.entity.decoration.ArmorStand;
 export const ZombieEntity = net.minecraft.world.entity.monster.zombie.Zombie;
-export const EndermanEntity = net.minecraft.world.entity.monster.EnderMan;
+export const EndermanEntity = Java.type(`net.minecraft.world.entity.monster.${IS_MC_26_3 ? 'Enderman' : 'EnderMan'}`);
 export const ShulkerEntity = net.minecraft.world.entity.monster.Shulker;
 export const BatEntity = net.minecraft.world.entity.ambient.Bat;
 export const PortalParticle = net.minecraft.client.particle.PortalParticle;

@@ -1,3 +1,22 @@
+# Minecraft 26.3 support — 2026-10-29
+
+Ported the previously deferred compatibility changes from upstream [26.3 support (`d5a2057`)](https://github.com/V5-Client/V5/commit/d5a20571ef8da76bea363335ac289e854be28e6b) onto `dev` at `0cd52efd688d0aceb0f76ff39cae384a15d56f30`, together with the matching V5Loader-Offline migration.
+
+- Select SDL window operations for 26.3 while retaining GLFW for 26.1.2/26.2. Adapt PiP, failsafe window focus, cursor release, physical movement input, key names, and rebinding without changing saved GLFW-style key codes.
+- Start/stop text input for focused controls, set the input area, and handle character events separately from control keys. Keep existing UI, scheduler, AFK input restoration, and offline settings behavior.
+- Use the 26.3 Enderman class, punch-packet singleton, command-suggestion record accessor, and shared particle-packet accessors. All particle consumers and swing-packet constructors use the compatibility helpers.
+- Retain the offline NanoVG HUD and existing StructureFinder implementation. The earlier registry-name fixes already cover the version-dependent block IDs; no unrelated upstream feature rewrites are included.
+- Install this scripts update together with the matching `dev` Loader on all supported Minecraft versions. The existing scripts ZIP and packaging workflow serve all three versions.
+
+## Validation
+
+- All 20 changed JavaScript files passed Prettier 3.6.2 formatting checks. `git diff --check` passes excluding the generated declarations, whose existing generator-emitted trailing-space style is preserved.
+- The existing `.github/scripts/build-package.py` produced a 210-file scripts ZIP containing the compatibility changes and updated installation notes.
+- `typings.d.ts` is an exact copy of the Loader's freshly generated 26.2 declarations, including physical key state, key naming, and rebinding APIs. The companion Loader builds successfully for all three supported Minecraft versions.
+- No automated tests were added or run. SDL window/input behavior, text entry, packet handling, rendering, and gameplay still require in-game validation with the matching Loader.
+
+---
+
 # Upstream sync — 2026-10-21
 
 Ported selected changes from upstream [`5.2.2-r3` through `5.2.2-r12`](https://github.com/V5-Client/V5/compare/5.2.2-r2...5.2.2-r12), inclusive, onto `dev` at `488d2940aeb57bc99480a7e6d986def4dcdba2fa`. The reviewed upstream tip is `d6ab6c186ce8cecb75f1154068ab07eb5f41a1f8`, also the current `upstream/main` tip.

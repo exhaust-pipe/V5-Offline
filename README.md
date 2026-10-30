@@ -6,6 +6,8 @@ An offline version of V5 with all networking features removed, adding and refini
 
 For installation instructions, please go to [V5Loader-Offline](https://github.com/exhaust-pipe/V5Loader-Offline)
 
+The `dev` branch supports Minecraft 26.1.2, 26.2, and 26.3. Update these scripts together with the matching `dev` Loader; the 26.3 input and packet compatibility requires both components.
+
 ## Original Project Links
 
 - [Original project documentation](https://rdbt.top/docs/getting-started)

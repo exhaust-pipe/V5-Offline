@@ -1,8 +1,21 @@
 import { GuiRectangles, GuiState } from './core/GuiState';
-import { FontSizes, PADDING, THEME, drawImage, drawRoundedRectangle, drawRoundedRectangleWithBorder, drawText, getTextWidth, isInside } from './Utils';
+import {
+    FontSizes,
+    PADDING,
+    THEME,
+    drawImage,
+    drawRoundedRectangle,
+    drawRoundedRectangleWithBorder,
+    drawText,
+    getTextWidth,
+    isInside,
+    setTextInputArea,
+    startTextInput,
+    stopTextInput,
+} from './Utils';
 import { loadSettings } from './GuiSave';
 import { MacroState } from '../utils/MacroState';
-import { globalAssetsDir } from '../utils/Constants';
+import { globalAssetsDir, ScriptKey } from '../utils/Constants';
 import { Categories } from './categories/CategorySystem';
 import { drawSubcategoryButtons, getModuleBorderColor, getModuleNavButtonRect, getModuleNavRect, getModuleNavScrollX } from './categories/CategoryRenderer';
 import { Utils } from '../utils/Utils';
@@ -14,8 +27,6 @@ const MIN_PANEL_WIDTH = 300;
 const MAX_PANEL_WIDTH = 440;
 const FAVORITES_FILE = 'macro-toggle.json';
 const SETTINGS_ICON_PATH = `${globalAssetsDir.getPath()}/settings.svg`;
-const InputConstants = com.mojang.blaze3d.platform.InputConstants;
-const KeyMapping = net.minecraft.client.KeyMapping;
 
 let query = '';
 let queryFocused = false;
@@ -31,6 +42,13 @@ const macroCategoryState = {
     subcatScrollX: 0,
     subcatScrollUpdatedAt: 0,
     hoverStates: {},
+};
+
+const setQueryFocused = (focused) => {
+    if (queryFocused === focused) return;
+    queryFocused = focused;
+    if (focused) startTextInput(GuiState.myGui, layout.search);
+    else stopTextInput(GuiState.myGui);
 };
 
 const loadFavorites = () => {
@@ -69,16 +87,13 @@ const getRows = () => {
 
 const getKeyName = (keybind) => {
     const keyCode = keybind?.getKeyCode?.();
-    return keyCode === undefined || keyCode === null || keyCode <= 0 ? 'Unbound' : InputConstants.Type.KEYSYM.getOrCreate(keyCode).getDisplayName().getString();
+    return keyCode === undefined || keyCode === null || keyCode <= 0 ? 'Unbound' : keybind.getKeyName();
 };
 
 const setMacroKeybind = (module, keyCode) => {
-    const mapping = Client.getMinecraft().options.keyMappings.find((entry) => entry.getName() === module._wrappedKeyTitle);
-    if (!mapping) return;
-
-    mapping.setKey(keyCode === 256 ? InputConstants.getKey('key.keyboard.unknown') : InputConstants.Type.KEYSYM.getOrCreate(keyCode));
-    KeyMapping.resetMapping();
-    module._saveKey(module._wrappedKeyTitle, keyCode === 256 ? Keyboard.KEY_NONE : keyCode);
+    const unbound = keyCode === ScriptKey.ESCAPE;
+    module._wrappedKey?.setKeyCode(unbound ? Keyboard.KEY_NONE : keyCode);
+    module._saveKey(module._wrappedKeyTitle, unbound ? Keyboard.KEY_NONE : keyCode);
 };
 
 const drawButton = (rect, text, active = false) => {
@@ -96,7 +111,7 @@ export const macroToggleGui = {
     open() {
         loadFavorites();
         query = '';
-        queryFocused = false;
+        setQueryFocused(false);
         favoritesOnly = false;
         bindingModule = null;
         macroCategoryState.selectedSubcategory = null;
@@ -145,6 +160,7 @@ export const macroToggleGui = {
             list: { x, y: listY, width, height: listHeight },
             rows: [],
         };
+        if (queryFocused) setTextInputArea(layout.search);
 
         drawRoundedRectangleWithBorder({
             ...panel,
@@ -206,10 +222,11 @@ export const macroToggleGui = {
         const inset = PADDING * Math.max(0, Math.min(1, (panel.width - MIN_PANEL_WIDTH) / (MAX_PANEL_WIDTH - MIN_PANEL_WIDTH)));
         if (isInside(mouseX, mouseY, layout.settings)) {
             GuiState.macroToggleOpen = false;
+            setQueryFocused(false);
             return;
         }
         if (isInside(mouseX, mouseY, layout.nav)) {
-            queryFocused = false;
+            setQueryFocused(false);
             const scrollX = getModuleNavScrollX(macroCategory, false, macroCategoryState, inset, SETTINGS_NAV_WIDTH);
             const subcategories = ['All', ...macroCategory.subcategories];
             const index = subcategories.findIndex((subcategory, i) =>
@@ -230,7 +247,7 @@ export const macroToggleGui = {
             return;
         }
 
-        queryFocused = isInside(mouseX, mouseY, layout.search);
+        setQueryFocused(isInside(mouseX, mouseY, layout.search));
         const row = layout.rows?.find((entry) => isInside(mouseX, mouseY, entry));
         if (!row) return;
         if (mouseX <= row.x + 28) {
@@ -243,7 +260,7 @@ export const macroToggleGui = {
         if (isInside(mouseX, mouseY, row.keybind)) {
             if (!row.module._wrappedKey) row.module.bindToggleKey();
             bindingModule = row.module;
-            queryFocused = false;
+            setQueryFocused(false);
             return;
         }
 
@@ -255,7 +272,7 @@ export const macroToggleGui = {
     },
 
     reset() {
-        queryFocused = false;
+        setQueryFocused(false);
         bindingModule = null;
         GuiState.macroToggleOpen = false;
     },
@@ -264,14 +281,15 @@ export const macroToggleGui = {
 register('guiKey', (char, keyCode, gui, event) => {
     if (!GuiState.macroToggleOpen) return;
     if (bindingModule) {
+        if (keyCode <= 0) return;
         setMacroKeybind(bindingModule, keyCode);
         bindingModule = null;
     } else if (!queryFocused) return;
-    else if (keyCode === 256 || keyCode === 257) queryFocused = false;
-    else if (keyCode === 259) {
+    else if (keyCode === ScriptKey.ESCAPE || keyCode === ScriptKey.ENTER) setQueryFocused(false);
+    else if (keyCode === ScriptKey.BACKSPACE) {
         query = query.slice(0, -1);
         scrollY = 0;
-    } else if (char && String(char).length === 1 && String(char).codePointAt(0) >= 32) {
+    } else if (char && String(char).codePointAt(0) >= ScriptKey.SPACE) {
         query += char;
         scrollY = 0;
     }

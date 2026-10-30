@@ -6,6 +6,8 @@ V5的离线版本，删除了所有包含联网的功能，并添加/完善了�
 
 安装方法见[V5Loader-Offline](https://github.com/exhaust-pipe/V5Loader-Offline)
 
+`dev` 分支支持 Minecraft 26.1.2、26.2 和 26.3。请同时更新配套的 `dev` Loader 和脚本；26.3 的输入与数据包兼容需要两者配合。
+
 ## 原项目链接
 
 - [原项目文档](https://rdbt.top/docs/getting-started)

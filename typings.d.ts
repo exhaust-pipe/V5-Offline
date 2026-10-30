@@ -9881,6 +9881,39 @@ declare global {
   namespace gg {
     namespace essential {
       namespace universal {
+        namespace render {
+          interface UGpuTextureView extends java.io.Closeable { 
+            getBaseMipLevel(): number;
+            isClosed(): boolean;
+            getMipLevels(): number;
+            getTexture(): gg.essential.universal.render.UGpuTexture;
+          }
+          const UGpuTexture: {
+            Usage: typeof gg.essential.universal.render.UGpuTexture$Usage;
+          }
+          interface UGpuTexture extends java.io.Closeable { 
+            getHeight(): number;
+            isClosed(): boolean;
+            getMipLevels(): number;
+            getWidth(): number;
+          }
+          const UGpuTexture$Usage: {
+            new(bits: number): gg.essential.universal.render.UGpuTexture$Usage;
+          }
+          interface UGpuTexture$Usage { 
+            getBits(): number;
+            component1(): number;
+            contains(other: gg.essential.universal.render.UGpuTexture$Usage): boolean;
+            copy(bits: number): gg.essential.universal.render.UGpuTexture$Usage;
+            plus(other: gg.essential.universal.render.UGpuTexture$Usage): gg.essential.universal.render.UGpuTexture$Usage;
+          }
+          interface UGpuTexture$Usage$Companion { 
+            getCOPY_DST(): gg.essential.universal.render.UGpuTexture$Usage;
+            getCOPY_SRC(): gg.essential.universal.render.UGpuTexture$Usage;
+            getRENDER_ATTACHMENT(): gg.essential.universal.render.UGpuTexture$Usage;
+            getTEXTURE_BINDING(): gg.essential.universal.render.UGpuTexture$Usage;
+          }
+        }
         const UKeyboard: {
           Modifiers: typeof gg.essential.universal.UKeyboard$Modifiers;
           KEY_0: number;
@@ -10133,6 +10166,10 @@ declare global {
           isKeyComboCtrlZ(key: number): boolean;
           isKeyDown(key: number): boolean;
           isShiftKeyDown(): boolean;
+          setTextInputArea(x1: number, y1: number, x2: number, y2: number): void;
+          startTextInput(owner: any): void;
+          stopTextInput(): void;
+          stopTextInput(owner: any): void;
         }
         const UKeyboard$Modifiers: {
           new(isCtrl: boolean, isShift: boolean, isAlt: boolean): gg.essential.universal.UKeyboard$Modifiers;
@@ -10175,6 +10212,8 @@ declare global {
           onScreenClose(): void;
           onTick(): void;
           restorePreviousScreen(): void;
+          uCreateRenderer(): gg.essential.universal.UScreen$Renderer | null | undefined;
+          uExtractRenderState(mouseX: number, mouseY: number, partialTicks: number): gg.essential.universal.UScreen$RenderState;
           updateGuiScale(): void;
         }
         const UMatrixStack: {
@@ -10230,6 +10269,12 @@ declare global {
           get(): gg.essential.universal.UMatrixStack;
           runLegacyMethod<R>(matrixStack: gg.essential.universal.UMatrixStack, block: kotlin.Function0<R>): R;
         }
+        interface UScreen$Renderer extends java.lang.AutoCloseable { 
+          render(state: gg.essential.universal.UScreen$RenderState): gg.essential.universal.render.UGpuTextureView;
+        }
+        interface UScreen$RenderState { 
+          getBackground(): boolean;
+        }
         const GuiScale: {
           Auto: gg.essential.universal.GuiScale;
           Small: gg.essential.universal.GuiScale;
@@ -10259,6 +10304,7 @@ declare global {
         interface UScreen$Companion { 
           getCurrentScreen(): net.minecraft.client.gui.screens.Screen | null | undefined;
           displayScreen(screen: net.minecraft.client.gui.screens.Screen | null | undefined): void;
+          isRendererRequired(): boolean;
         }
       }
       namespace vigilance {
@@ -44769,6 +44815,10 @@ declare global {
 							 */
               isKeyDown(): boolean;
 							/**
+							 * Returns the physical state of this key, even when a screen is open.
+							 */
+              isPhysicalKeyDown(): boolean;
+							/**
 							 * Returns true on the initial key press. For continuous querying use [isKeyDown].
 							 * 
 							 *  @return whether the key has just been pressed
@@ -44786,6 +44836,8 @@ declare global {
 							 *  @return the integer key code
 							 */
               getKeyCode(): number;
+              getKeyName(): string;
+              setKeyCode(keyCode: number): com.chattriggers.ctjs.api.client.KeyBind;
 							/**
 							 * Gets the category of the key.
 							 * 
