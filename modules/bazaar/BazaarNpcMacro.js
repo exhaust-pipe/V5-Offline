@@ -3,6 +3,7 @@ import { chat } from '../../utils/Chat';
 import { DataComponents } from '../../utils/Constants';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { setSignLine } from '../../utils/Sign';
+import { regrab, ungrab } from '../../utils/Ungrab';
 import { v5Command } from '../../utils/V5Commands';
 import { getConfigFile, randomInt, writeConfigFile } from '../../utils/Utils';
 import { clickSlot, closeInventory, getGuiName } from '../../utils/player/Inventory';
@@ -175,6 +176,7 @@ class BazaarNpcMacro extends ModuleBase {
         this.lastCheckedInventory = this.startingInventory;
         this.inventoryReady = true;
         this.realisedProfitStartedAt = Date.now();
+        ungrab();
         this.message(this.cleanupMode ? '&aCleanup started' : '&aEnabled');
         this.openOrders();
     }
@@ -187,6 +189,7 @@ class BazaarNpcMacro extends ModuleBase {
         else if (cleanupFinished) this.cleanupInventory = null;
         this.requestToken++;
         closeInventory();
+        regrab();
         this.reset();
         this.cleanupFinished = false;
         this.message(cleanupFinished ? '&aCleanup complete; no buy orders remain.' : '&cDisabled');
