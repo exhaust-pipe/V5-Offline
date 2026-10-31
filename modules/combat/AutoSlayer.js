@@ -472,9 +472,24 @@ class AutoSlayer extends ModuleBase {
         return clean(item?.getName()).toLowerCase().includes(this.callMethod.toLowerCase());
     }
 
+    findPhoneHotbarSlot(inventory) {
+        const protectedSlots = [this.combatSlot, 8, findItemInHotbar('Aspect of the End'), findItemInHotbar('Aspect of the Void')];
+        for (let slot = 0; slot < 9; slot++) {
+            if (protectedSlots.includes(slot)) continue;
+            if (!inventory.getStackInSlot(slot)) return slot;
+        }
+
+        for (let slot = 0; slot < 9; slot++) {
+            if (!protectedSlots.includes(slot)) return slot;
+        }
+
+        return -1;
+    }
+
     preparePhone() {
         const mc = Client.getMinecraft();
         const inventory = Player.getInventory();
+        if (!inventory) return;
         if (!this.phoneSwap) {
             if (findItemInHotbar(this.callMethod) !== -1) {
                 this.transition(STATES.CALL);
@@ -482,10 +497,8 @@ class AutoSlayer extends ModuleBase {
             }
             const source = findFirstItem(inventory, this.callMethod);
             if (source < 9 || source >= 36) return this.fail(`${this.callMethod} is missing from the inventory.`);
-            const protectedSlots = new Set([this.combatSlot, 8, findItemInHotbar('Aspect of the End'), findItemInHotbar('Aspect of the Void')]);
-            const slots = Array.from({ length: 8 }, (_, slot) => slot).filter((slot) => !protectedSlots.has(slot));
-            const target = slots.find((slot) => !inventory.getStackInSlot(slot)) ?? slots[0];
-            if (target == null) return this.fail('No hotbar slot is available for the phone.');
+            const target = this.findPhoneHotbarSlot(inventory);
+            if (target === -1) return this.fail('No hotbar slot is available for the phone.');
             this.phoneSwap = { source, target, step: 0, openAttempts: 0 };
         }
 
