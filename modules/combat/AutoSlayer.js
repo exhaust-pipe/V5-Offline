@@ -44,7 +44,7 @@ const SLAYERS = {
     Wolf: {
         boss: 'Sven Packmaster',
         area: 'Ruins',
-        destination: [-225, 92, 63],
+        destination: [-225, 91, 63],
         names: ['Wolf', 'Old Wolf', 'Pack Enforcer', 'Sven Follower', 'Sven Alpha'],
         boundaryCheck: (x, y, z) => x >= -300 && x <= -100 && y >= 55 && y <= 155 && z >= -65 && z <= 180,
     },
@@ -442,13 +442,22 @@ class AutoSlayer extends ModuleBase {
     }
 
     findMenuItem(name) {
-        const items = Player.getContainer()?.getItems() || [];
         const target = cleanLabel(name).toLowerCase();
+        return this.findMenuEntry((item) => cleanLabel(item.getName()).toLowerCase() === target);
+    }
+
+    findMenuEntry(matches) {
+        const items = Player.getContainer()?.getItems() || [];
         for (let slot = 0; slot < items.length - 36; slot++) {
             const item = items[slot];
-            if (item && cleanLabel(item.getName()).toLowerCase() === target) return { slot, item };
+            if (item && matches(item)) return { slot, item };
         }
         return null;
+    }
+
+    findCompletedQuest() {
+        const isComplete = (text) => /^Slayer Quest Complete!?$/i.test(cleanLabel(text));
+        return this.findMenuEntry((item) => isComplete(item.getName()) || (item.getLore() || []).some(isComplete));
     }
 
     lore(entry) {
@@ -595,6 +604,12 @@ class AutoSlayer extends ModuleBase {
 
     handleMenu() {
         const name = cleanLabel(getGuiName());
+        const completed = name === 'Slayer' ? this.findCompletedQuest() : null;
+        if (completed && this.state !== STATES.CLAIM) {
+            this.questVerified = false;
+            this.click(completed, STATES.CLAIM);
+            return;
+        }
         switch (this.state) {
             case STATES.PHONE:
                 if (name === 'Slayer') {
@@ -619,7 +634,7 @@ class AutoSlayer extends ModuleBase {
                 if (name === 'Slayer' && this.chooseQuest()) return;
                 break;
             case STATES.CLAIM:
-                if (name === 'Slayer' && !this.findMenuItem('Slayer Quest Complete!') && this.findMenuItem(this.config.boss)) {
+                if (name === 'Slayer' && !completed && this.findMenuItem(this.config.boss)) {
                     this.transition(STATES.MENU);
                     return;
                 }
@@ -669,12 +684,6 @@ class AutoSlayer extends ModuleBase {
     }
 
     chooseQuest() {
-        const reward = this.findMenuItem('Slayer Quest Complete!');
-        if (reward) {
-            this.questVerified = false;
-            this.click(reward, STATES.CLAIM);
-            return true;
-        }
         const ongoing = this.findMenuItem('Ongoing Slayer Quest');
         if (ongoing) {
             const lore = this.lore(ongoing);
