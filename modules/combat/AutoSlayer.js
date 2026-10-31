@@ -442,22 +442,13 @@ class AutoSlayer extends ModuleBase {
     }
 
     findMenuItem(name) {
-        const target = cleanLabel(name).toLowerCase();
-        return this.findMenuEntry((item) => cleanLabel(item.getName()).toLowerCase() === target);
-    }
-
-    findMenuEntry(matches) {
         const items = Player.getContainer()?.getItems() || [];
+        const target = cleanLabel(name).toLowerCase();
         for (let slot = 0; slot < items.length - 36; slot++) {
             const item = items[slot];
-            if (item && matches(item)) return { slot, item };
+            if (item && cleanLabel(item.getName()).toLowerCase() === target) return { slot, item };
         }
         return null;
-    }
-
-    findCompletedQuest() {
-        const isComplete = (text) => /^Slayer Quest Complete!?$/i.test(cleanLabel(text));
-        return this.findMenuEntry((item) => isComplete(item.getName()) || (item.getLore() || []).some(isComplete));
     }
 
     lore(entry) {
@@ -604,7 +595,7 @@ class AutoSlayer extends ModuleBase {
 
     handleMenu() {
         const name = cleanLabel(getGuiName());
-        const completed = name === 'Slayer' ? this.findCompletedQuest() : null;
+        const completed = name === 'Slayer' ? this.findMenuItem('Slayer Quest Complete!') : null;
         if (completed && this.state !== STATES.CLAIM) {
             this.questVerified = false;
             this.click(completed, STATES.CLAIM);
