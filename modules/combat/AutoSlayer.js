@@ -44,7 +44,7 @@ const SLAYERS = {
     Wolf: {
         boss: 'Sven Packmaster',
         area: 'Ruins',
-        destination: [-200, 89, 40],
+        destination: [-225, 92, 63],
         names: ['Wolf', 'Old Wolf', 'Pack Enforcer', 'Sven Follower', 'Sven Alpha'],
         boundaryCheck: (x, y, z) => x >= -300 && x <= -100 && y >= 55 && y <= 155 && z >= -65 && z <= 180,
     },
@@ -265,6 +265,10 @@ class AutoSlayer extends ModuleBase {
                 if (Client.isInGui()) {
                     closeInventory();
                     this.defer(150);
+                    break;
+                }
+                if (getArea() === 'Hub') {
+                    this.transition(STATES.HUB);
                     break;
                 }
                 if (++this.warpAttempts > MAX_ATTEMPTS) return this.fail('Could not travel to the Hub.');
