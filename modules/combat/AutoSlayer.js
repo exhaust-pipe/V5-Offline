@@ -747,6 +747,21 @@ class AutoSlayer extends ModuleBase {
             }
             return;
         }
+        if (
+            this.state === STATES.MOBS &&
+            getArea() === 'Hub' &&
+            !Pathfinder.isPathing() &&
+            !this.config.boundaryCheck(Player.getX(), Player.getY(), Player.getZ())
+        ) {
+            if (!Player.getPlayer().onGround()) {
+                this.stopCombat();
+                return;
+            }
+            this.questVerified = false;
+            this.message(`&eOutside ${this.config.area}; returning to the Slayer area.`);
+            this.pathTo([this.config.destination], STATES.CALL, this.config.area);
+            return;
+        }
         if (!Pathfinder.isPathing() && Player.getHeldItemIndex() !== this.combatSlot) {
             CombatBot.toggle(false, true);
             setItemSlot(this.combatSlot);
