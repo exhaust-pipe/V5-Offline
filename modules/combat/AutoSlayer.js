@@ -3,10 +3,11 @@ import { ModuleBase } from '../../utils/ModuleBase';
 import { finiteNumber } from '../../utils/NumberUtils';
 import Pathfinder from '../../utils/pathfinder/PathFinder';
 import { GuiStability } from '../../utils/player/GuiStability';
-import { clickSlot, closeInventory, findItemInHotbar, getGuiName, setItemSlot } from '../../utils/player/Inventory';
+import { clickSlot, closeInventory, findFirstItem, findItemInHotbar, getGuiName, setItemSlot } from '../../utils/player/Inventory';
 import { Rotations } from '../../utils/player/Rotations';
 import { Raytrace } from '../../utils/Raytrace';
 import { getArea, getTabListNames, resetAreaCache } from '../../utils/TabListUtils';
+import { Mouse } from '../../utils/Ungrab';
 import { CombatBot } from './CombatBot';
 
 const STATES = {
@@ -17,6 +18,7 @@ const STATES = {
     TRAVEL: 'Traveling',
     SELECTOR: 'Opening Hub Selector',
     HOP: 'Switching Hub',
+    PREPARE_PHONE: 'Moving phone to hotbar',
     CALL: 'Calling Maddox',
     PHONE: 'Selecting Maddox contact',
     SLAYER: 'Waiting for Slayer menu',
@@ -52,6 +54,11 @@ const HUB_SELECTOR = [-5.5, 69, -22.5];
 const MAX_ATTEMPTS = 4;
 const RESPONSE_TIMEOUT_MS = 15000;
 const clean = (value) => ChatLib.removeFormatting(String(value ?? '')).trim();
+const cleanLabel = (value) =>
+    clean(value)
+        .replace(/^[^a-z0-9]+/i, '')
+        .replace(/\s+/g, ' ');
+const InventoryScreen = net.minecraft.client.gui.screens.inventory.InventoryScreen;
 
 class AutoSlayer extends ModuleBase {
     constructor() {
@@ -70,7 +77,8 @@ class AutoSlayer extends ModuleBase {
         this.phone = 'Maddox Batphone';
         this.maxPlayers = 1;
         this.weaponSlot = 1;
-        this.actionDelay = { low: 1, high: 3 };
+        this.actionDelay = { low: 200, high: 400 };
+        this.phoneSwap = null;
         this.state = STATES.IDLE;
         this.revision = 0;
         this.guiStability = new GuiStability();
@@ -98,7 +106,7 @@ class AutoSlayer extends ModuleBase {
             ['Maddox Batphone', 'Abiphone'],
             true,
             (selected) => (this.phone = selected.find((option) => option.enabled)?.name || 'Maddox Batphone'),
-            'Keep the selected phone in your hotbar. Abiphone requires the Maddox the Slayer contact. Applies on the next start.',
+            'Uses the selected phone from your inventory, moving it to the hotbar if needed. Abiphone requires the Maddox the Slayer contact. Applies on the next start.',
             'Maddox Batphone'
         );
         this.addSlider(
@@ -118,12 +126,12 @@ class AutoSlayer extends ModuleBase {
             'Hotbar slot to restore after calling Maddox. Applies on the next start.'
         );
         this.addRangeSlider(
-            'Slayer Action Delay (s)',
-            0,
-            10,
+            'Slayer Action Delay (ms)',
+            100,
+            2000,
             this.actionDelay,
             (value) => (this.actionDelay = value),
-            'Random minimum/maximum delay for travel, phone use, menu clicks and phase changes. Attacks use Combat Bot CPS.'
+            'Random minimum/maximum delay in milliseconds for travel, phone use and menu clicks. Combat phase changes are immediate; attacks use Combat Bot CPS.'
         );
 
         this.createOverlay([
@@ -145,6 +153,7 @@ class AutoSlayer extends ModuleBase {
         this.on('worldLoad', () => {
             if (!this.enabled) return;
             this.stopCombat();
+            this.phoneSwap = null;
             resetAreaCache();
             this.players = null;
             this.populationStableAt = 0;
@@ -161,6 +170,7 @@ class AutoSlayer extends ModuleBase {
         this.callMethod = this.phone;
         this.combatSlot = this.weaponSlot - 1;
         this.originalSlot = Player.getHeldItemIndex();
+        this.phoneSwap = null;
         this.menuAttempts = 0;
         this.warpAttempts = 0;
         this.hopAttempts = 0;
@@ -170,6 +180,7 @@ class AutoSlayer extends ModuleBase {
         this.populationStableAt = 0;
         this.questVerified = false;
         this.restartSeen = false;
+        Mouse.ungrab();
         this.stopCombat();
         this.transition(STATES.STARTING, 5000);
         this.message(`&a${this.questName}. Starting in 5 seconds; toggle Auto Slayer off to cancel.`);
@@ -180,11 +191,16 @@ class AutoSlayer extends ModuleBase {
         this.state = STATES.IDLE;
         this.questVerified = false;
         if (!this.ownsCombat) return;
-        this.stopCombat();
-        this.ownsCombat = false;
-        this.guiStability.reset();
-        if (this.isSlayerGui(getGuiName()) || getGuiName()?.includes('Hub Selector')) closeInventory();
-        if (Player.getPlayer()) setItemSlot(this.originalSlot);
+        try {
+            this.stopCombat();
+            this.cancelPhoneSwap();
+            this.guiStability.reset();
+            if (this.isSlayerGui(getGuiName()) || getGuiName()?.includes('Hub Selector')) closeInventory();
+            if (Player.getPlayer()) setItemSlot(this.originalSlot);
+        } finally {
+            this.ownsCombat = false;
+            Mouse.regrab();
+        }
         this.message('&cDisabled');
     }
 
@@ -194,9 +210,9 @@ class AutoSlayer extends ModuleBase {
     }
 
     randomDelay() {
-        const first = Math.max(0, Math.min(10, finiteNumber(this.actionDelay?.low, 1)));
-        const second = Math.max(0, Math.min(10, finiteNumber(this.actionDelay?.high, 3)));
-        return (Math.min(first, second) + Math.random() * Math.abs(first - second)) * 1000;
+        const first = Math.max(100, Math.min(2000, finiteNumber(this.actionDelay?.low, 200)));
+        const second = Math.max(100, Math.min(2000, finiteNumber(this.actionDelay?.high, 400)));
+        return Math.min(first, second) + Math.random() * Math.abs(first - second);
     }
 
     defer(minimum = 0) {
@@ -207,7 +223,10 @@ class AutoSlayer extends ModuleBase {
     transition(state, minimum = 0) {
         this.revision++;
         this.state = state;
-        this.defer(minimum);
+        if (state === STATES.MOBS || state === STATES.BOSS || state === STATES.RESTART) {
+            this.readyAt = Date.now();
+            this.deadline = this.readyAt + RESPONSE_TIMEOUT_MS;
+        } else this.defer(minimum);
         this.guiStability.reset();
     }
 
@@ -232,13 +251,16 @@ class AutoSlayer extends ModuleBase {
         if (this.state === STATES.MOBS || this.state === STATES.BOSS) return this.tickCombat(guiReady);
 
         switch (this.state) {
-            case STATES.STARTING:
-                if (findItemInHotbar(this.callMethod) === -1) return this.fail(`${this.callMethod} is missing from the hotbar.`);
-                if (!Player.getInventory()?.getStackInSlot(this.combatSlot) || findItemInHotbar(this.callMethod) === this.combatSlot) {
+            case STATES.STARTING: {
+                const inventory = Player.getInventory();
+                const phoneSlot = findFirstItem(inventory, this.callMethod);
+                if (phoneSlot < 0 || phoneSlot >= 36) return this.fail(`${this.callMethod} is missing from the inventory.`);
+                if (!inventory?.getStackInSlot(this.combatSlot) || this.isPhone(inventory.getStackInSlot(this.combatSlot))) {
                     return this.fail('Select an occupied Slayer Weapon Slot different from the phone slot.');
                 }
                 this.transition(STATES.WARP);
                 break;
+            }
             case STATES.WARP:
                 if (Client.isInGui()) {
                     closeInventory();
@@ -270,8 +292,12 @@ class AutoSlayer extends ModuleBase {
                 if (guiReady) this.callMaddox();
                 else if (Date.now() >= this.deadline) this.retryMenu();
                 break;
+            case STATES.PREPARE_PHONE:
+                if (Date.now() >= this.deadline) this.fail('Moving the phone to the hotbar timed out.');
+                else if (guiReady) this.preparePhone();
+                break;
             case STATES.RESTART:
-                this.beginMenu();
+                if (Date.now() >= this.restartReadyAt) this.beginMenu();
                 break;
             default:
                 if (guiReady) this.handleMenu();
@@ -407,14 +433,16 @@ class AutoSlayer extends ModuleBase {
     }
 
     isSlayerGui(name) {
+        name = cleanLabel(name);
         return name === 'Slayer' || name === this.config?.boss || name === 'Confirm' || name?.includes('Abiphone');
     }
 
     findMenuItem(name) {
         const items = Player.getContainer()?.getItems() || [];
+        const target = cleanLabel(name).toLowerCase();
         for (let slot = 0; slot < items.length - 36; slot++) {
             const item = items[slot];
-            if (item && clean(item.getName()).toLowerCase() === name.toLowerCase()) return { slot, item };
+            if (item && cleanLabel(item.getName()).toLowerCase() === target) return { slot, item };
         }
         return null;
     }
@@ -440,8 +468,90 @@ class AutoSlayer extends ModuleBase {
         this.transition(STATES.CALL, 1000);
     }
 
+    isPhone(item) {
+        return clean(item?.getName()).toLowerCase().includes(this.callMethod.toLowerCase());
+    }
+
+    preparePhone() {
+        const mc = Client.getMinecraft();
+        const inventory = Player.getInventory();
+        if (!this.phoneSwap) {
+            if (findItemInHotbar(this.callMethod) !== -1) {
+                this.transition(STATES.CALL);
+                return;
+            }
+            const source = findFirstItem(inventory, this.callMethod);
+            if (source < 9 || source >= 36) return this.fail(`${this.callMethod} is missing from the inventory.`);
+            const protectedSlots = new Set([this.combatSlot, 8, findItemInHotbar('Aspect of the End'), findItemInHotbar('Aspect of the Void')]);
+            const slots = Array.from({ length: 8 }, (_, slot) => slot).filter((slot) => !protectedSlots.has(slot));
+            const target = slots.find((slot) => !inventory.getStackInSlot(slot)) ?? slots[0];
+            if (target == null) return this.fail('No hotbar slot is available for the phone.');
+            this.phoneSwap = { source, target, step: 0, openAttempts: 0 };
+        }
+
+        const swap = this.phoneSwap;
+        if (!(Client.currentGui.get() instanceof InventoryScreen)) {
+            if (swap.step !== 0) return this.fail('The inventory closed while moving the phone.');
+            if (Client.isInGui()) closeInventory();
+            else {
+                if (++swap.openAttempts > MAX_ATTEMPTS) return this.fail('Could not open the inventory to move the phone.');
+                mc.setScreen(new InventoryScreen(mc.player));
+            }
+            this.guiStability.reset();
+            this.defer();
+            return;
+        }
+
+        const container = Player.getContainer();
+        const carried = mc.player.containerMenu.getCarried();
+        if (swap.step === 0) {
+            if (!carried.isEmpty()) return this.fail('Clear the inventory cursor before moving the phone.');
+            if (!this.isPhone(container.getStackInSlot(swap.source))) return this.fail('The phone moved out of its inventory slot.');
+            if (clickSlot(swap.source)) {
+                swap.step = 1;
+                this.defer();
+            }
+            return;
+        }
+        if (swap.step === 1) {
+            if (!this.isPhone(Item.fromMC(carried))) return;
+            if (clickSlot(36 + swap.target)) {
+                swap.step = 2;
+                this.defer();
+            }
+            return;
+        }
+        if (!this.isPhone(inventory.getStackInSlot(swap.target))) return;
+        if (!carried.isEmpty()) {
+            if (swap.step === 3) return;
+            if (container.getStackInSlot(swap.source)) return this.fail('The original phone slot is occupied; cannot finish the swap.');
+            if (clickSlot(swap.source)) {
+                swap.step = 3;
+                this.defer();
+            }
+            return;
+        }
+
+        this.phoneSwap = null;
+        closeInventory();
+        setItemSlot(swap.target);
+        this.transition(STATES.CALL);
+    }
+
+    cancelPhoneSwap() {
+        if (!this.phoneSwap) return;
+        const mc = Client.getMinecraft();
+        if (mc.player && Client.currentGui.get() instanceof InventoryScreen) {
+            const container = Player.getContainer();
+            if (!mc.player.containerMenu.getCarried().isEmpty() && !container.getStackInSlot(this.phoneSwap.source)) clickSlot(this.phoneSwap.source);
+            if (mc.player.containerMenu.getCarried().isEmpty()) closeInventory();
+            else this.message('&eAn item is still on the inventory cursor. Place it in a free slot.');
+        }
+        this.phoneSwap = null;
+    }
+
     callMaddox() {
-        if (getGuiName() === 'Slayer') {
+        if (cleanLabel(getGuiName()) === 'Slayer') {
             this.transition(STATES.MENU);
             return;
         }
@@ -451,7 +561,12 @@ class AutoSlayer extends ModuleBase {
             return;
         }
         const slot = findItemInHotbar(this.callMethod);
-        if (slot === -1) return this.fail(`${this.callMethod} is missing from the hotbar.`);
+        if (slot === -1) {
+            this.phoneSwap = null;
+            this.transition(STATES.PREPARE_PHONE);
+            return;
+        }
+        if (slot === this.combatSlot) return this.fail('The phone is occupying the Slayer Weapon Slot.');
         if (Player.getHeldItemIndex() !== slot) {
             setItemSlot(slot);
             this.defer(150);
@@ -462,7 +577,7 @@ class AutoSlayer extends ModuleBase {
     }
 
     handleMenu() {
-        const name = getGuiName();
+        const name = cleanLabel(getGuiName());
         switch (this.state) {
             case STATES.PHONE:
                 if (name === 'Slayer') {
@@ -548,7 +663,7 @@ class AutoSlayer extends ModuleBase {
             const lore = this.lore(ongoing);
             const boss = lore.match(/^Boss:\s*(.+?)\s*$/m)?.[1];
             if (!boss) return false;
-            if (boss === this.questName) {
+            if (cleanLabel(boss) === this.questName) {
                 this.questVerified = true;
                 const phase = /slay the boss|kill the boss/i.test(lore) || this.scoreboardPhase() === STATES.BOSS ? STATES.BOSS : STATES.MOBS;
                 this.startCombat(phase);
@@ -580,11 +695,11 @@ class AutoSlayer extends ModuleBase {
             blacklistOnPathFailure: true,
         };
         setItemSlot(this.combatSlot);
-        this.transition(phase, 150);
+        this.transition(phase);
     }
 
     scoreboardPhase() {
-        const lines = (Scoreboard.getLines() || []).map((line) => clean(line?.getName?.() ?? line));
+        const lines = (Scoreboard.getLines() || []).map((line) => cleanLabel(line?.getName?.() ?? line));
         if (!lines.includes(this.questName)) return null;
         if (lines.some((line) => /^Boss slain!/i.test(line))) return STATES.RESTART;
         if (lines.some((line) => /^Slay the boss!/i.test(line))) return STATES.BOSS;
@@ -612,14 +727,12 @@ class AutoSlayer extends ModuleBase {
             CombatBot.toggle(false, true);
             if (guiReady && this.isSlayerGui(getGuiName())) {
                 closeInventory();
-                this.defer(150);
             }
             return;
         }
         if (!Pathfinder.isPathing() && Player.getHeldItemIndex() !== this.combatSlot) {
             CombatBot.toggle(false, true);
             setItemSlot(this.combatSlot);
-            this.defer(150);
             return;
         }
         if (CombatBot.enabled && !CombatBot.isParentManaged) CombatBot.toggle(false);
@@ -644,7 +757,6 @@ class AutoSlayer extends ModuleBase {
             else otherBosses.add(CombatBot.getTargetUuid(boss));
         }
         if (!this.bossTarget) {
-            if (Date.now() - this.bossStartedAt < 1500) return [];
             bosses = bosses.filter(
                 (boss) =>
                     !otherBosses.has(CombatBot.getTargetUuid(boss)) &&
@@ -671,7 +783,8 @@ class AutoSlayer extends ModuleBase {
             return;
         }
         this.stopCombat();
-        this.transition(STATES.RESTART, 5000);
+        this.restartReadyAt = Date.now() + 5000;
+        this.transition(STATES.RESTART);
     }
 
     onChat(message) {
@@ -695,6 +808,7 @@ class AutoSlayer extends ModuleBase {
         if (!this.enabled) return;
         const starting = this.state === STATES.STARTING;
         this.stopCombat();
+        this.phoneSwap = null;
         this.questVerified = false;
         this.restartSeen = false;
         this.hopAttempts = 0;
