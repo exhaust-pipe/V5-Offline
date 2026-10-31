@@ -1,4 +1,5 @@
 import { ArmorStandEntity } from '../../utils/Constants';
+import { ModuleBase } from '../../utils/ModuleBase';
 import { finiteNumber } from '../../utils/NumberUtils';
 import Pathfinder from '../../utils/pathfinder/PathFinder';
 import { GuiStability } from '../../utils/player/GuiStability';
@@ -6,6 +7,7 @@ import { clickSlot, closeInventory, findItemInHotbar, getGuiName, setItemSlot } 
 import { Rotations } from '../../utils/player/Rotations';
 import { Raytrace } from '../../utils/Raytrace';
 import { getArea, getTabListNames, resetAreaCache } from '../../utils/TabListUtils';
+import { CombatBot } from './CombatBot';
 
 const STATES = {
     IDLE: 'Idle',
@@ -51,11 +53,18 @@ const MAX_ATTEMPTS = 4;
 const RESPONSE_TIMEOUT_MS = 15000;
 const clean = (value) => ChatLib.removeFormatting(String(value ?? '')).trim();
 
-export class AutoSlayer {
-    constructor(bot) {
-        this.bot = bot;
-        this.enabled = false;
-        this.active = false;
+class AutoSlayer extends ModuleBase {
+    constructor() {
+        super({
+            name: 'Auto Slayer',
+            subcategory: 'Combat',
+            description: 'Automatically completes Zombie and Wolf Slayer quests.',
+            tooltip: 'Completes tier I-IV Slayer quests using Combat Bot. Toggle with the Auto Slayer keybind.',
+            autoDisableOnWorldUnload: false,
+            isMacro: true,
+        });
+        this.bindToggleKey();
+        this.ownsCombat = false;
         this.type = 'Zombie';
         this.tier = 1;
         this.phone = 'Maddox Batphone';
@@ -68,12 +77,7 @@ export class AutoSlayer {
         this.players = null;
         this.completed = 0;
 
-        bot.addToggle(
-            'Auto Slayer',
-            (value) => (this.enabled = !!value),
-            'Run Slayer quests when Combat Bot is enabled. Mode changes apply on the next start.'
-        );
-        bot.addMultiToggle(
+        this.addMultiToggle(
             'Slayer Type',
             Object.keys(SLAYERS),
             true,
@@ -81,7 +85,7 @@ export class AutoSlayer {
             'Zombie: Revenant Horror in the Crypts. Wolf: Sven Packmaster in the Ruins. Applies on the next start.',
             'Zombie'
         );
-        bot.addSlider(
+        this.addSlider(
             'Slayer Tier',
             1,
             4,
@@ -89,7 +93,7 @@ export class AutoSlayer {
             (value) => (this.tier = Math.max(1, Math.min(4, Math.round(finiteNumber(value, 1))))),
             'Tier I-IV. Applies on the next start.'
         );
-        bot.addMultiToggle(
+        this.addMultiToggle(
             'Slayer Phone',
             ['Maddox Batphone', 'Abiphone'],
             true,
@@ -97,7 +101,7 @@ export class AutoSlayer {
             'Keep the selected phone in your hotbar. Abiphone requires the Maddox the Slayer contact. Applies on the next start.',
             'Maddox Batphone'
         );
-        bot.addSlider(
+        this.addSlider(
             'Slayer Hub Player Limit',
             1,
             80,
@@ -105,7 +109,7 @@ export class AutoSlayer {
             (value) => (this.maxPlayers = Math.max(1, Math.min(80, Math.round(finiteNumber(value, 1))))),
             'Maximum Hub population, including yourself. Uses the Hub Selector to find a small random Hub.'
         );
-        bot.addSlider(
+        this.addSlider(
             'Slayer Weapon Slot',
             1,
             8,
@@ -113,7 +117,7 @@ export class AutoSlayer {
             (value) => (this.weaponSlot = Math.max(1, Math.min(8, Math.round(finiteNumber(value, 1))))),
             'Hotbar slot to restore after calling Maddox. Applies on the next start.'
         );
-        bot.addRangeSlider(
+        this.addRangeSlider(
             'Slayer Action Delay (s)',
             0,
             10,
@@ -122,10 +126,25 @@ export class AutoSlayer {
             'Random minimum/maximum delay for travel, phone use, menu clicks and phase changes. Attacks use Combat Bot CPS.'
         );
 
-        bot.on('chat', (event) => this.onChat(clean(event.message.getUnformattedText())));
-        bot.on('worldUnload', () => this.onWorldUnload());
-        bot.on('worldLoad', () => {
-            if (!this.active) return;
+        this.createOverlay([
+            {
+                title: 'Status',
+                data: {
+                    State: () => this.state,
+                    Quest: () => this.questName || 'None',
+                    Target: () => (CombatBot.enabled ? CombatBot.getTargetDisplayName(CombatBot.target) : 'None'),
+                    'Hub Players': () => this.players ?? 'Unknown',
+                    'Bosses Slain': () => this.completed,
+                },
+            },
+        ]);
+
+        this.on('tick', () => this.tick());
+        this.on('chat', (event) => this.onChat(clean(event.message.getUnformattedText())));
+        this.on('worldUnload', () => this.onWorldUnload());
+        this.on('worldLoad', () => {
+            if (!this.enabled) return;
+            this.stopCombat();
             resetAreaCache();
             this.players = null;
             this.populationStableAt = 0;
@@ -133,9 +152,10 @@ export class AutoSlayer {
         });
     }
 
-    start() {
-        if (!this.enabled || this.bot.isParentManaged) return;
-        this.active = true;
+    onEnable() {
+        if (CombatBot.enabled && CombatBot.isParentManaged) return this.fail('Combat Bot is already managed by another macro.');
+        if (!Player.getPlayer() || !World.getWorld()) return this.fail('Join SkyBlock before starting Auto Slayer.');
+        this.ownsCombat = true;
         this.config = SLAYERS[this.type] || SLAYERS.Zombie;
         this.questName = `${this.config.boss} ${TIERS[this.tier - 1]}`;
         this.callMethod = this.phone;
@@ -152,24 +172,25 @@ export class AutoSlayer {
         this.restartSeen = false;
         this.stopCombat();
         this.transition(STATES.STARTING, 5000);
-        this.bot.message(`&aAuto Slayer: ${this.questName}. Starting in 5 seconds; toggle Combat Bot off to cancel.`);
+        this.message(`&a${this.questName}. Starting in 5 seconds; toggle Auto Slayer off to cancel.`);
     }
 
-    stop() {
-        if (!this.active) return;
-        this.active = false;
+    onDisable() {
         this.revision++;
         this.state = STATES.IDLE;
         this.questVerified = false;
-        this.bossTarget = null;
+        if (!this.ownsCombat) return;
+        this.stopCombat();
+        this.ownsCombat = false;
         this.guiStability.reset();
         if (this.isSlayerGui(getGuiName()) || getGuiName()?.includes('Hub Selector')) closeInventory();
         if (Player.getPlayer()) setItemSlot(this.originalSlot);
+        this.message('&cDisabled');
     }
 
     fail(reason) {
-        this.bot.message(`&cAuto Slayer: ${reason} Stopping macro.`);
-        this.bot.toggle(false);
+        this.message(`&c${reason} Stopping macro.`);
+        this.toggle(false);
     }
 
     randomDelay() {
@@ -191,25 +212,22 @@ export class AutoSlayer {
     }
 
     stopCombat() {
-        this.bot.cancelPath();
-        this.bot.setTarget(null);
-        this.bot.pauseMovement();
+        if (!this.ownsCombat) return;
+        CombatBot.toggle(false, true);
+        CombatBot.clearExternalTargets();
+        Pathfinder.resetPath();
         Client.stopMovement();
         Client.setKey('leftclick', false);
         Client.setKey('rightclick', false);
         Rotations.stop();
-        this.bot.targets = [];
-        this.bot.spawnLocations = [];
-        this.bot.roamOrigin = null;
-        this.bot.blacklistedTargets.clear();
-        this.bot.targetFailureCounts.clear();
         this.bossTarget = null;
     }
 
     tick() {
-        if (!this.active) return true;
+        if (!this.enabled) return;
+        if (!Player.getPlayer() || !World.getWorld()) return this.stopCombat();
         const guiReady = this.guiStability.update();
-        if (Date.now() < this.readyAt) return false;
+        if (Date.now() < this.readyAt) return;
 
         if (this.state === STATES.MOBS || this.state === STATES.BOSS) return this.tickCombat(guiReady);
 
@@ -260,7 +278,6 @@ export class AutoSlayer {
                 else if (Date.now() >= this.deadline) this.retryMenu();
                 break;
         }
-        return false;
     }
 
     readPopulation() {
@@ -292,14 +309,14 @@ export class AutoSlayer {
         if (Date.now() < this.populationStableAt) return;
         this.warpAttempts = 0;
         if (count > this.maxPlayers) {
-            this.bot.message(`Auto Slayer: Hub has ${count} players (limit ${this.maxPlayers}). Finding another Hub.`);
+            this.message(`Hub has ${count} players (limit ${this.maxPlayers}). Finding another Hub.`);
             this.selectorClicks = 0;
             this.selectorAimed = false;
             const npc = this.findSelector();
-            const position = npc ? this.bot.getTargetPosition(npc) : { x: HUB_SELECTOR[0], y: HUB_SELECTOR[1], z: HUB_SELECTOR[2] };
-            this.pathTo(this.bot.buildPathGoals(position), STATES.SELECTOR, 'Hub Selector');
+            const position = npc ? CombatBot.getTargetPosition(npc) : { x: HUB_SELECTOR[0], y: HUB_SELECTOR[1], z: HUB_SELECTOR[2] };
+            this.pathTo(CombatBot.buildPathGoals(position), STATES.SELECTOR, 'Hub Selector');
         } else {
-            this.bot.message(`&aAuto Slayer: Hub has ${count} player(s). Traveling to ${this.config.area}.`);
+            this.message(`&aHub has ${count} player(s). Traveling to ${this.config.area}.`);
             this.menuAttempts = 0;
             this.pathTo([this.config.destination], STATES.CALL, this.config.area);
         }
@@ -327,7 +344,7 @@ export class AutoSlayer {
         Pathfinder.findPath(
             this.pathGoals,
             (success) => {
-                if (!this.active || this.state !== STATES.TRAVEL || this.revision !== revision) return;
+                if (!this.enabled || this.state !== STATES.TRAVEL || this.revision !== revision) return;
                 this.pathPending = false;
                 if (success) this.transition(this.afterTravel);
                 else if (this.pathAttempts >= MAX_ATTEMPTS) this.fail(`No path to ${this.destination}.`);
@@ -340,7 +357,7 @@ export class AutoSlayer {
     findSelector() {
         const named = World.getAllEntities().find((entity) => clean(entity.getName()).toLowerCase() === 'hub selector');
         if (!named) return null;
-        return named.toMC() instanceof ArmorStandEntity ? this.bot.resolveNametagTarget(named, World.getAllPlayers()) : named;
+        return named.toMC() instanceof ArmorStandEntity ? CombatBot.resolveNametagTarget(named, World.getAllPlayers()) : named;
     }
 
     openSelector() {
@@ -364,9 +381,9 @@ export class AutoSlayer {
             if (Date.now() >= this.deadline) this.fail('Cannot find the Hub Selector NPC.');
             return;
         }
-        const position = this.bot.getTargetPosition(npc);
-        if (this.bot.getDistanceToPlayer(position).distance > 3.5) {
-            this.pathTo(this.bot.buildPathGoals(position), STATES.SELECTOR, 'Hub Selector');
+        const position = CombatBot.getTargetPosition(npc);
+        if (CombatBot.getDistanceToPlayer(position).distance > 3.5) {
+            this.pathTo(CombatBot.buildPathGoals(position), STATES.SELECTOR, 'Hub Selector');
             return;
         }
         if (this.selectorAimed) {
@@ -383,7 +400,7 @@ export class AutoSlayer {
         const revision = this.revision;
         Rotations.lookAtVector([position.x, position.y + 1.5, position.z]);
         Rotations.onComplete(() => {
-            if (!this.active || this.state !== STATES.SELECTOR || revision !== this.revision) return;
+            if (!this.enabled || this.state !== STATES.SELECTOR || revision !== this.revision) return;
             this.selectorAimed = true;
             this.defer();
         });
@@ -418,7 +435,7 @@ export class AutoSlayer {
 
     retryMenu() {
         if (++this.menuAttempts >= MAX_ATTEMPTS) return this.fail(`Timed out during ${this.state.toLowerCase()} after ${MAX_ATTEMPTS} attempts.`);
-        this.bot.message(`&eAuto Slayer: ${this.state} timed out; calling Maddox again.`);
+        this.message(`&e${this.state} timed out; calling Maddox again.`);
         if (Client.isInGui()) closeInventory();
         this.transition(STATES.CALL, 1000);
     }
@@ -556,6 +573,12 @@ export class AutoSlayer {
         this.bossOrigin = { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
         this.bossStartedAt = Date.now();
         this.staleScoreboardPhase = this.scoreboardPhase();
+        this.combatOptions = {
+            roam: phase === STATES.MOBS,
+            boundaryCheck: this.config.boundaryCheck,
+            travelClicks: phase === STATES.MOBS,
+            blacklistOnPathFailure: true,
+        };
         setItemSlot(this.combatSlot);
         this.transition(phase, 150);
     }
@@ -575,73 +598,67 @@ export class AutoSlayer {
         else this.staleScoreboardPhase = null;
         if (phase === STATES.RESTART) {
             this.finishQuest();
-            return false;
+            return;
         }
         if (this.state === STATES.MOBS && phase === STATES.BOSS) {
             this.startCombat(STATES.BOSS);
-            return false;
+            return;
         }
         if (this.state === STATES.BOSS && Date.now() - this.bossStartedAt > 300000) {
             this.fail('The Slayer boss fight timed out.');
-            return false;
+            return;
         }
         if (Client.isInGui()) {
-            this.bot.pauseMovement();
+            CombatBot.toggle(false, true);
             if (guiReady && this.isSlayerGui(getGuiName())) {
                 closeInventory();
                 this.defer(150);
             }
-            return false;
+            return;
         }
         if (!Pathfinder.isPathing() && Player.getHeldItemIndex() !== this.combatSlot) {
-            this.bot.pauseMovement();
+            CombatBot.toggle(false, true);
             setItemSlot(this.combatSlot);
             this.defer(150);
-            return false;
+            return;
         }
-        return true;
+        if (CombatBot.enabled && !CombatBot.isParentManaged) CombatBot.toggle(false);
+        CombatBot.setExternalTargets(this.getTargets(), this.combatOptions);
+        CombatBot.toggle(true, true);
     }
 
     getTargets() {
-        if (this.state === STATES.MOBS) return this.bot.findMob(this.config);
+        if (this.state === STATES.MOBS) return CombatBot.findMob(this.config);
         if (this.state !== STATES.BOSS) return [];
-        if (this.bossTarget) return this.bot.isCombatTargetCandidate(this.bossTarget, true) ? [this.bossTarget] : [];
-        let bosses = this.bot.findMob({ names: [this.config.boss] });
+        if (this.bossTarget) return CombatBot.isCombatTargetCandidate(this.bossTarget, true) ? [this.bossTarget] : [];
+        let bosses = CombatBot.findMob({ names: [this.config.boss] });
         const otherBosses = new Set();
         for (const entity of World.getAllEntities()) {
             const owner = clean(entity.getName())
                 .toLowerCase()
                 .match(/^spawned by:\s*(\w+)$/)?.[1];
             if (!owner) continue;
-            const boss = this.bot.resolveNametagTarget(entity, bosses);
+            const boss = CombatBot.resolveNametagTarget(entity, bosses);
             if (!boss) continue;
             if (owner === Player.getName().toLowerCase()) this.bossTarget = boss;
-            else otherBosses.add(this.bot.getTargetUuid(boss));
+            else otherBosses.add(CombatBot.getTargetUuid(boss));
         }
         if (!this.bossTarget) {
             if (Date.now() - this.bossStartedAt < 1500) return [];
             bosses = bosses.filter(
                 (boss) =>
-                    !otherBosses.has(this.bot.getTargetUuid(boss)) &&
-                    this.bot.getDistanceBetween(this.bot.getTargetPosition(boss), this.bossOrigin).distance < 64
+                    !otherBosses.has(CombatBot.getTargetUuid(boss)) &&
+                    CombatBot.getDistanceBetween(CombatBot.getTargetPosition(boss), this.bossOrigin).distance < 64
             );
             bosses.sort((first, second) => {
                 return (
-                    this.bot.getDistanceBetween(this.bot.getTargetPosition(first), this.bossOrigin).distance -
-                    this.bot.getDistanceBetween(this.bot.getTargetPosition(second), this.bossOrigin).distance
+                    CombatBot.getDistanceBetween(CombatBot.getTargetPosition(first), this.bossOrigin).distance -
+                    CombatBot.getDistanceBetween(CombatBot.getTargetPosition(second), this.bossOrigin).distance
                 );
             });
             this.bossTarget = bosses[0] || null;
         }
         return this.bossTarget ? [this.bossTarget] : [];
-    }
-
-    canRoam(position) {
-        return this.state === STATES.MOBS && this.config.boundaryCheck(position.x, position.y, position.z);
-    }
-
-    get fightingBoss() {
-        return this.active && this.state === STATES.BOSS;
     }
 
     finishQuest() {
@@ -658,7 +675,7 @@ export class AutoSlayer {
     }
 
     onChat(message) {
-        if (!this.active) return;
+        if (!this.enabled) return;
         if (/^You cannot afford to start this quest!/i.test(message)) return this.fail('Not enough coins to start the Slayer quest.');
         if (/^☠ You |^SLAYER QUEST FAILED!/i.test(message)) return this.fail('The player died or the Slayer quest failed.');
         if (!this.questVerified) return;
@@ -675,7 +692,7 @@ export class AutoSlayer {
     }
 
     onWorldUnload() {
-        if (!this.active) return;
+        if (!this.enabled) return;
         const starting = this.state === STATES.STARTING;
         this.stopCombat();
         this.questVerified = false;
@@ -687,3 +704,5 @@ export class AutoSlayer {
         this.transition(starting ? STATES.STARTING : STATES.HUB, 5000);
     }
 }
+
+new AutoSlayer();
