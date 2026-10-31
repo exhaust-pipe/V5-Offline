@@ -7,6 +7,7 @@ import { Rotations as PathRotations } from '../../utils/pathfinder/PathWalker/Pa
 import { Movement } from '../../utils/player/Movement';
 import { Rotations } from '../../utils/player/Rotations';
 import { Raytrace } from '../../utils/Raytrace';
+import { AutoSlayer } from './AutoSlayer';
 
 const STATES = {
     IDLE: 'IDLE',
@@ -227,14 +228,19 @@ class Combat extends ModuleBase {
             'Case-insensitive entity names to exclude, separated by commas.'
         );
 
+        this.autoSlayer = new AutoSlayer(this);
+
         this.createOverlay([
             {
                 title: 'Status',
                 data: {
-                    State: () => this.state,
+                    State: () => (this.autoSlayer.active ? this.autoSlayer.state : this.state),
                     Target: () => this.getTargetDisplayName(this.target),
                     'Targets Found': () => this.targets.length,
                     'Known Blackholes': () => this.activeBlackholes.length,
+                    'Slayer Quest': () => (this.autoSlayer.active ? this.autoSlayer.questName : 'Off'),
+                    'Hub Players': () => (this.autoSlayer.active ? (this.autoSlayer.players ?? 'Unknown') : '-'),
+                    'Slayer Bosses Slain': () => this.autoSlayer.completed,
                 },
             },
         ]);
@@ -251,6 +257,7 @@ class Combat extends ModuleBase {
             this.roamOrigin = null;
             return;
         }
+        if (!this.autoSlayer.tick()) return;
         if (!Client.isInChat() && Client.isInGui()) {
             this.pauseMovement();
             return;
@@ -370,7 +377,7 @@ class Combat extends ModuleBase {
     }
 
     tryTravelClicks(distance) {
-        if (distance <= this.attackRange + 0.35) {
+        if (this.autoSlayer.fightingBoss || distance <= this.attackRange + 0.35) {
             this.resetTravelClicks();
             return;
         }
@@ -502,6 +509,7 @@ class Combat extends ModuleBase {
 
     isRoamPositionSafe(position) {
         if (!this.isPositionSafe(position.x, position.y, position.z)) return false;
+        if (this.autoSlayer.active) return this.autoSlayer.canRoam(position);
         if (this.externalTargets !== null || this.targetNames.length) return true;
         return [...this.enabledPresets].some((name) => {
             const check = COMBAT_PRESETS[name]?.boundaryCheck;
@@ -510,6 +518,7 @@ class Combat extends ModuleBase {
     }
 
     roam() {
+        if (this.autoSlayer.fightingBoss) return;
         const now = Date.now();
         if (this.state === STATES.ROAMING) {
             if (now - this.pathStartedAt < ROAM_PATH_TIMEOUT_MS) return;
@@ -518,7 +527,7 @@ class Combat extends ModuleBase {
             this.nextRoamAt = now + 500;
         }
         if (now < this.nextRoamAt || !this.roamOrigin) return;
-        if (this.externalTargets === null && !this.targetNames.length && !this.enabledPresets.size) return;
+        if (!this.autoSlayer.active && this.externalTargets === null && !this.targetNames.length && !this.enabledPresets.size) return;
 
         const locations = this.spawnLocations.length ? this.spawnLocations : [this.roamOrigin];
         const anchor = locations[Math.floor(Math.random() * locations.length)];
@@ -792,6 +801,7 @@ class Combat extends ModuleBase {
     }
 
     getTargets() {
+        if (this.autoSlayer.active) return this.autoSlayer.getTargets();
         const targets = this.externalTargets !== null ? this.externalTargets : this.targetNames.length ? this.findMob({ names: this.targetNames }) : [];
         if (this.externalTargets === null) this.enabledPresets.forEach((name) => targets.push(...this.findMob(COMBAT_PRESETS[name])));
         return [...new Map(targets.map((target) => [this.getTargetUuid(target), target])).values()].filter((target) => !this.isTargetNameBlacklisted(target));
@@ -895,12 +905,15 @@ class Combat extends ModuleBase {
         this.resetTravelClicks();
         this.activeBlackholes = [];
         this.scanTicker = 0;
+        this.autoSlayer.start();
+        if (this.autoSlayer.active) return;
         if (!this.isParentManaged) {
             this.message(this.targetNames.length || this.enabledPresets.size ? '&aEnabled' : '&eEnabled, but no targets are configured.');
         }
     }
 
     onDisable() {
+        this.autoSlayer.stop();
         if (!this.isParentManaged) this.message('&cDisabled');
 
         this.cancelPath();
