@@ -27,11 +27,13 @@ class AutoCombine extends ModuleBase {
             SECOND_BOOK: 'SECOND_BOOK',
             COMBINE_BOOKS: 'COMBINE_BOOKS',
             EXTRACT_BOOK: 'EXTRACT_BOOK',
+            WAIT_INVENTORY: 'WAIT_INVENTORY',
         };
 
         this.state = this.STATES.OPEN_ANVIL;
         this.first = null;
         this.second = null;
+        this.inventoryBookCount = 0;
         this.timeoutFlags = 0;
         this.stuckCount = 0;
         this.stuckLimit = 3;
@@ -94,6 +96,9 @@ class AutoCombine extends ModuleBase {
                 break;
             case this.STATES.EXTRACT_BOOK:
                 this.clickExtractItem();
+                break;
+            case this.STATES.WAIT_INVENTORY:
+                this.waitForInventory();
                 break;
         }
     }
@@ -179,18 +184,35 @@ class AutoCombine extends ModuleBase {
         if (!extractItem) return this.timeout();
         if (!items[22]?.getLore()?.join('')?.includes('Claim the result')) return this.timeout();
 
-        clickSlot(13, true);
+        this.inventoryBookCount = this.getInventoryBooks().length;
+        if (!clickSlot(13, true)) return this.timeout();
+        this.setState(this.STATES.WAIT_INVENTORY);
+    }
+
+    waitForInventory() {
+        if (!this.getAnvilItems()?.[22]?.getLore()?.join('')?.includes('left and right')) return this.timeout();
+        if (this.getInventoryBooks().length <= this.inventoryBookCount) return this.timeout();
+
         this.reset();
     }
 
-    findNextCombinePair() {
+    getInventoryBooks() {
         const container = Player.getContainer();
+        if (!container || getGuiName() !== 'Anvil') return [];
+
+        const books = [];
+        const size = container.getSize();
+        for (let slot = Math.max(0, size - 36); slot < size; slot++) {
+            const item = container.getStackInSlot(slot);
+            if (item?.getName()?.includes('Enchanted Book')) books.push({ item, slot });
+        }
+        return books;
+    }
+
+    findNextCombinePair() {
         const booksByTypeAndLevel = new Map();
 
-        for (let slot = 30; slot < container?.getSize(); slot++) {
-            const item = container?.getStackInSlot(slot);
-            if (!item?.getName()?.includes('Enchanted Book')) continue;
-
+        for (const { item, slot } of this.getInventoryBooks()) {
             const lore = item?.getLore?.();
             if (!lore?.length) continue;
 
@@ -259,6 +281,7 @@ class AutoCombine extends ModuleBase {
     reset(close = false) {
         this.first = null;
         this.second = null;
+        this.inventoryBookCount = 0;
         this.tickCounter = 0;
         this.setState(this.STATES.OPEN_ANVIL);
         if (close) closeInventory();
