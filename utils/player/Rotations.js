@@ -50,7 +50,7 @@ export const RotationModule = new RotationConfig();
 
 const DEFAULT_PRECISION = 0.1;
 const ENTITY_PRECISION = 0.5;
-const ENTITY_JITTER_SPEED = 120;
+const ENTITY_JITTER_DURATION_MS = 150;
 const TARGET_SHIFT_RESET_DEGREES = 5;
 
 class RotationController {
@@ -165,6 +165,15 @@ class RotationController {
             return;
         }
 
+        const jitter = this.request.jitter;
+        if (jitter) {
+            current.yaw -= jitter.appliedYaw;
+            current.pitch = clampPitch(current.pitch - jitter.appliedPitch);
+        }
+        const now = Date.now();
+        const deltaTime = this.lastTime > 0 ? Math.max(0, (now - this.lastTime) / 1000) : 0;
+        this.updateEntityJitter(deltaTime, now);
+
         const targetYaw = aimModulo360(current.yaw, this.targetAngles.yaw);
         const targetPitch = clampPitch(this.targetAngles.pitch);
         const deltaYaw = targetYaw - current.yaw;
@@ -172,17 +181,17 @@ class RotationController {
         const distance = Math.hypot(deltaYaw, deltaPitch);
 
         if (distance <= this.getPrecision()) {
+            if (this.request.jitter) this.applyRotation(current.yaw, current.pitch);
             this.onReachedTarget();
             return;
         }
 
         if (RotationModule.rotationMode === 'Instant') {
-            applyToPlayer(targetYaw, targetPitch);
+            this.applyRotation(targetYaw, targetPitch);
             this.onReachedTarget();
             return;
         }
 
-        const now = Date.now();
         if (this.lastTime === 0) {
             this.resetTiming(now, distance);
             return;
@@ -192,27 +201,50 @@ class RotationController {
             this.initialDistance = distance;
         }
 
-        const deltaTime = Math.max(0, (now - this.lastTime) / 1000);
         this.lastTime = now;
 
-        const adjustingJitter = this.request.jitter?.nextAt === null && distance <= this.request.entityJitter * 2 * Math.SQRT2 + this.getPrecision();
-        const ratio = adjustingJitter
-            ? Math.max(this.getStepRatio(distance, deltaTime), Math.min(1, (ENTITY_JITTER_SPEED * deltaTime) / distance))
-            : this.getStepRatio(distance, deltaTime);
-        const curve = adjustingJitter ? { x: 0, y: 0 } : this.getCurveOffset(this.getProgress(distance));
+        const ratio = this.getStepRatio(distance, deltaTime);
+        const curve = this.getCurveOffset(this.getProgress(distance));
         const nextYaw = current.yaw + deltaYaw * ratio + curve.x * ratio;
         const nextPitch = clampPitch(current.pitch + deltaPitch * ratio + curve.y * ratio);
 
         if (Number.isFinite(nextYaw) && Number.isFinite(nextPitch)) {
-            const applied = applyToPlayer(nextYaw, nextPitch);
-            if (
-                this.request.jitter &&
-                applied &&
-                ((adjustingJitter && ratio === 1) || Math.hypot(angleDifference(targetYaw, applied.yaw), targetPitch - applied.pitch) <= this.getPrecision())
-            ) {
+            const applied = this.applyRotation(nextYaw, nextPitch);
+            if (this.request.jitter && applied && Math.hypot(angleDifference(targetYaw, nextYaw), targetPitch - nextPitch) <= this.getPrecision()) {
                 this.onReachedTarget();
             }
         }
+    }
+
+    updateEntityJitter(deltaTime, now) {
+        const request = this.request;
+        if (request.type !== 'entity' || request.entityJitter <= 0) return;
+
+        if (!request.jitter) request.jitter = { yaw: 0, pitch: 0, appliedYaw: 0, appliedPitch: 0, nextAt: 0 };
+        const jitter = request.jitter;
+        if (jitter.nextAt !== null && now >= jitter.nextAt) {
+            jitter.fromYaw = jitter.yaw;
+            jitter.fromPitch = jitter.pitch;
+            jitter.targetYaw = (Math.random() * 2 - 1) * request.entityJitter;
+            jitter.targetPitch = (Math.random() * 2 - 1) * request.entityJitter;
+            jitter.progress = 0;
+            jitter.nextAt = null;
+        }
+
+        jitter.progress = Math.min(1, jitter.progress + (deltaTime * 1000) / ENTITY_JITTER_DURATION_MS);
+        jitter.yaw = jitter.fromYaw + (jitter.targetYaw - jitter.fromYaw) * jitter.progress;
+        jitter.pitch = jitter.fromPitch + (jitter.targetPitch - jitter.fromPitch) * jitter.progress;
+    }
+
+    applyRotation(yaw, pitch) {
+        const jitter = this.request.jitter;
+        const applied = applyToPlayer(yaw + (jitter?.yaw ?? 0), pitch + (jitter?.pitch ?? 0));
+        if (jitter && applied) {
+            // Keep mouse-step rounding and pitch clamping out of the underlying target tracking.
+            jitter.appliedYaw = angleDifference(applied.yaw, yaw);
+            jitter.appliedPitch = applied.pitch - pitch;
+        }
+        return applied;
     }
 
     start(nextRequest, options = {}) {
@@ -270,19 +302,7 @@ class RotationController {
         if (request.type === 'vector') return this.getAnglesFromVector(request.value);
         if (request.type === 'entity') {
             const aimPoint = this.getAimPoint(request.value);
-            const angles = aimPoint ? this.getAnglesFromVector(aimPoint) : null;
-            if (angles && request.entityJitter > 0) {
-                if (!request.jitter || (request.jitter.nextAt !== null && Date.now() >= request.jitter.nextAt)) {
-                    request.jitter = {
-                        yaw: (Math.random() * 2 - 1) * request.entityJitter,
-                        pitch: (Math.random() * 2 - 1) * request.entityJitter,
-                        nextAt: null,
-                    };
-                }
-                angles.yaw += request.jitter.yaw;
-                angles.pitch = clampPitch(angles.pitch + request.jitter.pitch);
-            }
-            return angles;
+            return aimPoint ? this.getAnglesFromVector(aimPoint) : null;
         }
         return null;
     }
@@ -314,7 +334,7 @@ class RotationController {
     getPrecision() {
         let precision = DEFAULT_PRECISION;
         if (Number.isFinite(this.request?.precision)) precision = this.request.precision;
-        else if (this.request?.type === 'entity' && !this.request.entityJitter) precision = ENTITY_PRECISION;
+        else if (this.request?.type === 'entity') precision = ENTITY_PRECISION;
         return Math.max(precision, calculateGCD() / Math.SQRT2);
     }
 
@@ -351,7 +371,10 @@ class RotationController {
     onReachedTarget() {
         if (this.request?.type === 'entity') {
             this.lastTime = Date.now();
-            if (this.request.jitter?.nextAt === null) this.request.jitter.nextAt = this.lastTime + Math.random() * 3000;
+            if (this.startTime === 0) this.startTime = this.lastTime;
+            if (this.request.jitter?.nextAt === null && this.request.jitter.progress === 1) {
+                this.request.jitter.nextAt = this.lastTime + Math.random() * 3000;
+            }
             return;
         }
 

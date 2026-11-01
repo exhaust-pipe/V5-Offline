@@ -160,13 +160,13 @@ class Combat extends ModuleBase {
         this.addSlider(
             'Target Lock Jitter',
             0,
-            5,
+            10,
             2,
             (value) => {
                 this.targetLockJitter = value;
                 this.refreshTargetRotation();
             },
-            'Maximum random yaw and pitch offset in degrees. Quickly moves to each offset, then holds it for 0-3 seconds while tracking. 0 disables it.'
+            'Maximum random yaw and pitch offset in degrees. Moves linearly to each offset over 150 ms, then holds it for 0-3 seconds while tracking. 0 disables it.'
         );
 
         this.addSlider(
