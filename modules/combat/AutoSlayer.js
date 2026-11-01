@@ -82,6 +82,7 @@ class AutoSlayer extends ModuleBase {
         this.clickDelay = { low: 200, high: 400 };
         this.actionDelay = { low: 1, high: 3 };
         this.phoneSwap = null;
+        this.pendingBoss = null;
         this.state = STATES.IDLE;
         this.revision = 0;
         this.guiStability = new GuiStability();
@@ -150,7 +151,7 @@ class AutoSlayer extends ModuleBase {
             10,
             this.actionDelay,
             (value) => (this.actionDelay = value),
-            'Random minimum/maximum delay in seconds for commands, travel, slot changes and state changes, including switching between mobs and the boss.'
+            'Random minimum/maximum delay in seconds for commands, travel, slot changes and state changes. Keeps fighting mobs while waiting to switch to the boss.'
         );
 
         this.createOverlay([
@@ -252,6 +253,7 @@ class AutoSlayer extends ModuleBase {
     }
 
     stopCombat() {
+        this.pendingBoss = null;
         if (!this.ownsCombat) return;
         CombatBot.toggle(false, true);
         CombatBot.clearExternalTargets();
@@ -749,11 +751,22 @@ class AutoSlayer extends ModuleBase {
     }
 
     startCombat(phase) {
+        const switchingToBoss = this.state === STATES.MOBS && phase === STATES.BOSS;
+        if (switchingToBoss) {
+            if (!this.pendingBoss) {
+                this.pendingBoss = {
+                    readyAt: Date.now() + this.randomDelay(),
+                    origin: { x: Player.getX(), y: Player.getY(), z: Player.getZ() },
+                };
+            }
+            if (Date.now() < this.pendingBoss.readyAt) return;
+        }
+        const bossOrigin = switchingToBoss ? this.pendingBoss.origin : { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
         this.stopCombat();
         if (Client.isInGui()) closeInventory();
         this.menuAttempts = 0;
         this.restartSeen = false;
-        this.bossOrigin = { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
+        this.bossOrigin = bossOrigin;
         this.staleScoreboardPhase = this.scoreboardPhase();
         this.combatOptions = {
             roam: phase === STATES.MOBS,
@@ -764,6 +777,11 @@ class AutoSlayer extends ModuleBase {
         };
         setItemSlot(this.combatSlot);
         this.transition(phase);
+        if (switchingToBoss) {
+            // The switch delay already elapsed while the mob combat loop kept running.
+            this.readyAt = Date.now();
+            this.deadline = this.readyAt + RESPONSE_TIMEOUT_MS;
+        }
         this.bossStartedAt = this.readyAt;
     }
 
@@ -784,9 +802,9 @@ class AutoSlayer extends ModuleBase {
             this.finishQuest();
             return;
         }
-        if (this.state === STATES.MOBS && phase === STATES.BOSS) {
+        if (this.state === STATES.MOBS && (phase === STATES.BOSS || this.pendingBoss)) {
             this.startCombat(STATES.BOSS);
-            return;
+            if (this.state === STATES.BOSS) return;
         }
         if (this.state === STATES.BOSS && Date.now() - this.bossStartedAt > 300000) {
             this.fail('The Slayer boss fight timed out.');
@@ -810,7 +828,7 @@ class AutoSlayer extends ModuleBase {
         if (CombatBot.enabled && !CombatBot.isParentManaged) CombatBot.toggle(false);
         CombatBot.setExternalTargets(this.getTargets(), this.combatOptions);
         CombatBot.toggle(true, true);
-        if (CombatBot.isTargetUsable(CombatBot.target)) this.noTargetSince = null;
+        if (this.pendingBoss || CombatBot.isTargetUsable(CombatBot.target)) this.noTargetSince = null;
         else if (this.noTargetSince === null) this.noTargetSince = Date.now();
         else if (Date.now() - this.noTargetSince >= NO_TARGET_TIMEOUT_MS) {
             this.questVerified = false;
@@ -854,7 +872,7 @@ class AutoSlayer extends ModuleBase {
 
     finishQuest() {
         if (this.state !== STATES.MOBS && this.state !== STATES.BOSS) return;
-        if (this.state === STATES.MOBS && Date.now() - this.lastCompletedAt < 5000) return;
+        if (this.state === STATES.MOBS && !this.pendingBoss && Date.now() - this.lastCompletedAt < 5000) return;
         this.lastCompletedAt = Date.now();
         this.completed++;
         if (this.restartSeen) {
@@ -872,7 +890,7 @@ class AutoSlayer extends ModuleBase {
         if (/^☠ You |^SLAYER QUEST FAILED!/i.test(message)) return this.fail('The player died or the Slayer quest failed.');
         if (!this.questVerified) return;
         if (message === 'SLAYER QUEST STARTED!') {
-            if (this.state === STATES.BOSS) this.restartSeen = true;
+            if (this.state === STATES.BOSS || this.pendingBoss) this.restartSeen = true;
             else if ([STATES.RESTART, STATES.ACCEPT, STATES.CALL, STATES.PHONE, STATES.SLAYER, STATES.MENU].includes(this.state)) {
                 this.startCombat(STATES.MOBS);
             }
