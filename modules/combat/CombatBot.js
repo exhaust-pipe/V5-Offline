@@ -120,7 +120,7 @@ class Combat extends ModuleBase {
         this.pathfindingThreshold = 15;
         this.attackCPS = 10;
         this.rightClickChance = 0;
-        this.targetLockJitter = 1;
+        this.targetLockJitter = 2;
         this.pathPitchJitter = 3;
         this.travelClickInterval = 4;
         this.overrideRotationSpeed = false;
@@ -159,14 +159,14 @@ class Combat extends ModuleBase {
 
         this.addSlider(
             'Target Lock Jitter',
-            1,
-            5,
-            1,
+            0,
+            10,
+            2,
             (value) => {
                 this.targetLockJitter = value;
                 this.refreshTargetRotation();
             },
-            'Maximum extra yaw and pitch movement in degrees while tracking a combat target.'
+            'Maximum extra yaw and pitch movement in degrees while tracking a combat target. 0 disables it.'
         );
 
         this.addSlider(

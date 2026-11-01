@@ -263,8 +263,8 @@ class RotationController {
             const angles = aimPoint ? this.getAnglesFromVector(aimPoint) : null;
             if (angles && request.entityJitter > 0) {
                 const time = (Date.now() - request.jitterStartedAt) / 1000;
-                angles.yaw += Math.sin(time * 3.1 + request.jitterPhase) * request.entityJitter;
-                angles.pitch = clampPitch(angles.pitch + Math.sin(time * 2.3 + request.jitterPhase + Math.PI / 2) * request.entityJitter);
+                angles.yaw += Math.sin(time * 1.55 + request.jitterPhase) * request.entityJitter;
+                angles.pitch = clampPitch(angles.pitch + Math.sin(time * 1.15 + request.jitterPhase + Math.PI / 2) * request.entityJitter);
             }
             return angles;
         }
