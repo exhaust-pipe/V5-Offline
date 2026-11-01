@@ -4,6 +4,7 @@ import { clickSlot, closeInventory, getGuiName } from '../../utils/player/Invent
 
 const BASE_BOOK_LEVELS = ['I', 'II', 'III', 'IV'];
 const EXTENDED_BOOK_LEVELS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
+const RETRY_DELAY_MS = 1000;
 
 class AutoCombine extends ModuleBase {
     constructor() {
@@ -27,17 +28,17 @@ class AutoCombine extends ModuleBase {
             SECOND_BOOK: 'SECOND_BOOK',
             COMBINE_BOOKS: 'COMBINE_BOOKS',
             EXTRACT_BOOK: 'EXTRACT_BOOK',
-            WAIT_INVENTORY: 'WAIT_INVENTORY',
         };
 
         this.state = this.STATES.OPEN_ANVIL;
         this.first = null;
         this.second = null;
-        this.inventoryBookCount = 0;
+        this.claimPending = false;
+        this.retryAt = 0;
+        this.noPairCheckAt = 0;
         this.timeoutFlags = 0;
         this.stuckCount = 0;
         this.stuckLimit = 3;
-        this.autoRetry = true;
         this.useAnvilCommand = true;
         this.enableLevelTenBooks = false;
         this.tickCounter = 0;
@@ -54,13 +55,7 @@ class AutoCombine extends ModuleBase {
             10,
             3,
             (value) => (this.stuckLimit = Math.floor(value)),
-            'Retries or disables after this many stuck detections, depending on Auto Retry. 0 disables the limit.'
-        );
-        this.addToggle(
-            'Auto Retry',
-            (value) => (this.autoRetry = !!value),
-            'Automatically starts another attempt when the stuck limit is reached instead of disabling.',
-            true
+            'Stops after this many consecutive stuck detections. Retries wait 1 second; a successful combine clears the count. 0 disables the limit.'
         );
 
         this.on('tick', () => this.onTick());
@@ -73,6 +68,7 @@ class AutoCombine extends ModuleBase {
     }
 
     onTick() {
+        if (!this.enabled || Date.now() < this.retryAt) return;
         this.tickCounter = (this.tickCounter + 1) % 5;
         if (this.tickCounter !== 1) return;
         switch (this.state) {
@@ -97,9 +93,6 @@ class AutoCombine extends ModuleBase {
             case this.STATES.EXTRACT_BOOK:
                 this.clickExtractItem();
                 break;
-            case this.STATES.WAIT_INVENTORY:
-                this.waitForInventory();
-                break;
         }
     }
 
@@ -122,16 +115,30 @@ class AutoCombine extends ModuleBase {
     }
 
     searchForNextPair() {
-        if (getGuiName() !== 'Anvil') {
+        const items = this.getAnvilItems();
+        if (!items) {
             this.setState(this.STATES.OPEN_ANVIL);
             return;
         }
 
-        const pair = this.findNextCombinePair();
+        const controlLore = items[22]?.getLore()?.join('') || '';
+        if (this.claimPending) {
+            if (!controlLore.includes('left and right')) return this.timeout();
+            this.claimPending = false;
+            this.stuckCount = 0;
+        }
+        if (controlLore.includes('Claim the result')) return this.setState(this.STATES.EXTRACT_BOOK);
+        if (this.noPairCheckAt && Date.now() < this.noPairCheckAt) return;
+
+        const pair = this.findNextCombinePair(items);
         if (!pair) {
-            this.message('No combineable pair found');
-            closeInventory();
+            if (!this.noPairCheckAt) {
+                this.noPairCheckAt = Date.now() + RETRY_DELAY_MS;
+                return;
+            }
+            this.message('No combineable pair found after rechecking');
             this.toggle(false);
+            closeInventory();
             return;
         }
 
@@ -143,12 +150,9 @@ class AutoCombine extends ModuleBase {
         if (!this.getAnvilItems()?.[22]?.getLore()?.join('')?.includes('left and right')) return this.timeout();
 
         const firstSlot = this.first?.slot;
-        if (firstSlot === undefined || firstSlot === null) {
-            this.reset(true);
-            return;
-        }
+        if (firstSlot === undefined || firstSlot === null) return this.timeout();
 
-        clickSlot(firstSlot, true);
+        if (!clickSlot(firstSlot, true)) return this.timeout();
         this.setState(this.STATES.SECOND_BOOK);
     }
 
@@ -156,12 +160,9 @@ class AutoCombine extends ModuleBase {
         if (!this.getAnvilItems()?.[22]?.getLore()?.join('')?.includes('left and right')) return this.timeout();
 
         const secondSlot = this.second?.slot;
-        if (secondSlot === undefined || secondSlot === null) {
-            this.reset(true);
-            return;
-        }
+        if (secondSlot === undefined || secondSlot === null) return this.timeout();
 
-        clickSlot(secondSlot, true);
+        if (!clickSlot(secondSlot, true)) return this.timeout();
         this.setState(this.STATES.COMBINE_BOOKS);
     }
 
@@ -172,7 +173,7 @@ class AutoCombine extends ModuleBase {
         const combineItem = items[22];
         if (!combineItem?.getLore()?.join('')?.includes('Cost')) return this.timeout();
 
-        clickSlot(22);
+        if (!clickSlot(22)) return this.timeout();
         this.setState(this.STATES.EXTRACT_BOOK);
     }
 
@@ -184,39 +185,25 @@ class AutoCombine extends ModuleBase {
         if (!extractItem) return this.timeout();
         if (!items[22]?.getLore()?.join('')?.includes('Claim the result')) return this.timeout();
 
-        this.inventoryBookCount = this.getInventoryBooks().length;
         if (!clickSlot(13, true)) return this.timeout();
-        this.setState(this.STATES.WAIT_INVENTORY);
+        this.first = null;
+        this.second = null;
+        this.claimPending = true;
+        this.setState(this.STATES.SEARCH_PAIR);
     }
 
-    waitForInventory() {
-        if (!this.getAnvilItems()?.[22]?.getLore()?.join('')?.includes('left and right')) return this.timeout();
-        if (this.getInventoryBooks().length <= this.inventoryBookCount) return this.timeout();
-
-        this.reset();
-    }
-
-    getInventoryBooks() {
-        const container = Player.getContainer();
-        if (!container || getGuiName() !== 'Anvil') return [];
-
-        const books = [];
-        const size = container.getSize();
-        for (let slot = Math.max(0, size - 36); slot < size; slot++) {
-            const item = container.getStackInSlot(slot);
-            if (item?.getName()?.includes('Enchanted Book')) books.push({ item, slot });
-        }
-        return books;
-    }
-
-    findNextCombinePair() {
+    findNextCombinePair(items) {
         const booksByTypeAndLevel = new Map();
+        const size = items.length;
 
-        for (const { item, slot } of this.getInventoryBooks()) {
-            const lore = item?.getLore?.();
+        for (let slot = Math.max(0, size - 36); slot < size; slot++) {
+            const item = items[slot];
+            if (!item?.getName()?.includes('Enchanted Book')) continue;
+
+            const lore = item.getLore();
             if (!lore?.length) continue;
 
-            const bookData = lore.map((line) => this.getBookData(line?.toString?.() ?? line)).find((data) => data);
+            const bookData = lore.map((line) => this.getBookData(String(line))).find((book) => book);
             if (!bookData) continue;
 
             const key = `${bookData.type}|${bookData.level}`;
@@ -250,28 +237,24 @@ class AutoCombine extends ModuleBase {
 
     setState(state) {
         this.state = state;
+        this.noPairCheckAt = 0;
         this.resetTimeout();
     }
 
     timeout() {
-        this.message('Returned without doing anything? stuck? waiting?');
-        this.timeoutFlags++;
-        if (this.timeoutFlags > 4) {
-            this.stuckCount++;
-            if (this.stuckLimit > 0 && this.stuckCount >= this.stuckLimit) {
-                if (!this.autoRetry) {
-                    this.message(`&cStuck detected ${this.stuckCount} times. Automatically disabling.`);
-                    closeInventory();
-                    this.toggle(false);
-                    return;
-                }
-                this.message(`&eStuck detected ${this.stuckCount} times. Automatically retrying.`);
-                this.stuckCount = 0;
-            } else {
-                this.message('&cStuck detected. Force resetting.');
-            }
-            this.reset(true);
+        if (++this.timeoutFlags <= 4) return;
+
+        this.stuckCount++;
+        if (this.stuckLimit > 0 && this.stuckCount >= this.stuckLimit) {
+            this.message(`&cStuck detected ${this.stuckCount} times. Automatically disabling.`);
+            this.toggle(false);
+            closeInventory();
+            return;
         }
+
+        this.message(`&eStuck detected ${this.stuckCount} times. Retrying in 1 second.`);
+        this.reset(true);
+        this.retryAt = Date.now() + RETRY_DELAY_MS;
     }
 
     resetTimeout() {
@@ -281,7 +264,8 @@ class AutoCombine extends ModuleBase {
     reset(close = false) {
         this.first = null;
         this.second = null;
-        this.inventoryBookCount = 0;
+        this.claimPending = false;
+        this.retryAt = 0;
         this.tickCounter = 0;
         this.setState(this.STATES.OPEN_ANVIL);
         if (close) closeInventory();
@@ -290,7 +274,7 @@ class AutoCombine extends ModuleBase {
     onEnable() {
         this.message('&aEnabled');
         this.stuckCount = 0;
-        this.useAnvilCommand = getGuiName() !== 'Anvil';
+        this.useAnvilCommand = true;
         this.reset();
     }
 
