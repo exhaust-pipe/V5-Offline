@@ -54,6 +54,7 @@ const HUB_SELECTOR = [-5.5, 69, -22.5];
 const MAX_ATTEMPTS = 4;
 const RESPONSE_TIMEOUT_MS = 15000;
 const NO_TARGET_TIMEOUT_MS = 10000;
+const BOSS_TURN_JITTER_DEGREES = 5;
 const clean = (value) => ChatLib.removeFormatting(String(value ?? '')).trim();
 const cleanLabel = (value) =>
     clean(value)
@@ -83,6 +84,7 @@ class AutoSlayer extends ModuleBase {
         this.actionDelay = { low: 1, high: 3 };
         this.phoneSwap = null;
         this.pendingBoss = null;
+        this.menuClickDelay = false;
         this.state = STATES.IDLE;
         this.revision = 0;
         this.guiStability = new GuiStability();
@@ -151,7 +153,7 @@ class AutoSlayer extends ModuleBase {
             10,
             this.actionDelay,
             (value) => (this.actionDelay = value),
-            'Random minimum/maximum delay in seconds for commands, travel, slot changes and state changes. Keeps fighting mobs while waiting to switch to the boss.'
+            'Random minimum/maximum delay in seconds for commands, travel, slot changes and state changes. Boss transitions randomly keep fighting mobs for this delay or stop and turn toward the boss. Returning to the Slayer menu after a kill uses Click Delay.'
         );
 
         this.createOverlay([
@@ -240,7 +242,7 @@ class AutoSlayer extends ModuleBase {
     }
 
     defer(minimum = 0, click = false) {
-        this.readyAt = Date.now() + minimum + this.randomDelay(click);
+        this.readyAt = Date.now() + minimum + this.randomDelay(click || this.menuClickDelay);
         this.deadline = this.readyAt + RESPONSE_TIMEOUT_MS;
     }
 
@@ -254,6 +256,7 @@ class AutoSlayer extends ModuleBase {
 
     stopCombat() {
         this.pendingBoss = null;
+        this.menuClickDelay = false;
         if (!this.ownsCombat) return;
         CombatBot.toggle(false, true);
         CombatBot.clearExternalTargets();
@@ -325,7 +328,7 @@ class AutoSlayer extends ModuleBase {
                 else if (guiReady) this.preparePhone();
                 break;
             case STATES.RESTART:
-                if (Date.now() >= this.restartReadyAt) this.beginMenu();
+                this.beginMenu(true);
                 break;
             default:
                 if (guiReady) this.handleMenu();
@@ -512,8 +515,9 @@ class AutoSlayer extends ModuleBase {
         if (clickSlot(entry.slot, false, button)) this.transition(nextState, 0, true);
     }
 
-    beginMenu() {
+    beginMenu(click = false) {
         this.stopCombat();
+        this.menuClickDelay = click;
         this.menuAttempts = 0;
         this.transition(STATES.CALL);
     }
@@ -713,7 +717,7 @@ class AutoSlayer extends ModuleBase {
                 break;
             case STATES.ACCEPT:
                 if (!Client.isInGui()) {
-                    this.startCombat(STATES.MOBS);
+                    this.startCombat(STATES.MOBS, true);
                     return;
                 }
                 break;
@@ -735,8 +739,7 @@ class AutoSlayer extends ModuleBase {
             if (!boss) return false;
             if (cleanLabel(boss) === this.questName) {
                 this.questVerified = true;
-                const phase = /slay the boss|kill the boss/i.test(lore) || this.scoreboardPhase() === STATES.BOSS ? STATES.BOSS : STATES.MOBS;
-                this.startCombat(phase);
+                this.startCombat(STATES.MOBS);
             } else {
                 this.questVerified = false;
                 this.click(ongoing, STATES.CANCEL);
@@ -750,16 +753,50 @@ class AutoSlayer extends ModuleBase {
         return true;
     }
 
-    startCombat(phase) {
+    startCombat(phase, newQuest = false) {
         const switchingToBoss = this.state === STATES.MOBS && phase === STATES.BOSS;
         if (switchingToBoss) {
             if (!this.pendingBoss) {
+                const turnToBoss = Math.random() < 0.5;
+                if (turnToBoss) this.stopCombat();
+                this.bossOrigin = { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
                 this.pendingBoss = {
-                    readyAt: Date.now() + this.randomDelay(),
-                    origin: { x: Player.getX(), y: Player.getY(), z: Player.getZ() },
+                    turnToBoss,
+                    rotating: false,
+                    readyAt: turnToBoss ? null : Date.now() + this.randomDelay(),
+                    deadline: Date.now() + NO_TARGET_TIMEOUT_MS,
+                    origin: this.bossOrigin,
                 };
             }
-            if (Date.now() < this.pendingBoss.readyAt) return;
+            const pending = this.pendingBoss;
+            if (pending.turnToBoss && pending.readyAt === null) {
+                if (Date.now() >= pending.deadline) {
+                    this.questVerified = false;
+                    this.message(`&eCould not locate or face the Slayer boss; returning to ${this.config.area}.`);
+                    this.pathTo([this.config.destination], STATES.CALL, this.config.area);
+                    return;
+                }
+                if (!pending.rotating) {
+                    const boss = this.getTargets(STATES.BOSS)[0];
+                    const aimPoint = boss ? Rotations.getAimPoint(boss) : null;
+                    const angles = aimPoint ? Rotations.getAnglesFromVector(aimPoint) : null;
+                    if (
+                        angles &&
+                        Rotations.lookAtAngles(
+                            angles.yaw + (Math.random() * 2 - 1) * BOSS_TURN_JITTER_DEGREES,
+                            angles.pitch + (Math.random() * 2 - 1) * BOSS_TURN_JITTER_DEGREES
+                        )
+                    ) {
+                        pending.rotating = true;
+                        Rotations.onComplete(() => {
+                            if (!this.enabled || this.state !== STATES.MOBS || this.pendingBoss !== pending) return;
+                            pending.readyAt = Date.now();
+                        });
+                    }
+                }
+                return;
+            }
+            if (Date.now() < pending.readyAt) return;
         }
         const bossOrigin = switchingToBoss ? this.pendingBoss.origin : { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
         this.stopCombat();
@@ -767,7 +804,7 @@ class AutoSlayer extends ModuleBase {
         this.menuAttempts = 0;
         this.restartSeen = false;
         this.bossOrigin = bossOrigin;
-        this.staleScoreboardPhase = this.scoreboardPhase();
+        this.staleScoreboardPhase = newQuest ? this.scoreboardPhase() : null;
         this.combatOptions = {
             roam: phase === STATES.MOBS,
             boundaryCheck: this.config.boundaryCheck,
@@ -778,7 +815,7 @@ class AutoSlayer extends ModuleBase {
         setItemSlot(this.combatSlot);
         this.transition(phase);
         if (switchingToBoss) {
-            // The switch delay already elapsed while the mob combat loop kept running.
+            // The selected delay or turn has already completed before entering boss combat.
             this.readyAt = Date.now();
             this.deadline = this.readyAt + RESPONSE_TIMEOUT_MS;
         }
@@ -787,9 +824,8 @@ class AutoSlayer extends ModuleBase {
 
     scoreboardPhase() {
         const lines = (Scoreboard.getLines() || []).map((line) => cleanLabel(line?.getName?.() ?? line));
-        if (!lines.includes(this.questName)) return null;
-        if (lines.some((line) => /^Boss slain!/i.test(line))) return STATES.RESTART;
-        if (lines.some((line) => /^Slay the boss!/i.test(line))) return STATES.BOSS;
+        if (lines.some((line) => /\bBoss slain\s*!/i.test(line))) return STATES.RESTART;
+        if (lines.some((line) => /\bSlay\s+the\s+boss\s*!/i.test(line))) return STATES.BOSS;
         return null;
     }
 
@@ -804,7 +840,7 @@ class AutoSlayer extends ModuleBase {
         }
         if (this.state === STATES.MOBS && (phase === STATES.BOSS || this.pendingBoss)) {
             this.startCombat(STATES.BOSS);
-            if (this.state === STATES.BOSS) return;
+            if (this.state !== STATES.MOBS || this.pendingBoss?.turnToBoss) return;
         }
         if (this.state === STATES.BOSS && Date.now() - this.bossStartedAt > 300000) {
             this.fail('The Slayer boss fight timed out.');
@@ -837,9 +873,9 @@ class AutoSlayer extends ModuleBase {
         }
     }
 
-    getTargets() {
-        if (this.state === STATES.MOBS) return CombatBot.findMob(this.config);
-        if (this.state !== STATES.BOSS) return [];
+    getTargets(phase = this.state) {
+        if (phase === STATES.MOBS) return CombatBot.findMob(this.config);
+        if (phase !== STATES.BOSS) return [];
         if (this.bossTarget) return CombatBot.isCombatTargetCandidate(this.bossTarget, true) ? [this.bossTarget] : [];
         let bosses = CombatBot.findMob({ names: [this.config.boss] });
         const otherBosses = new Set();
@@ -876,11 +912,11 @@ class AutoSlayer extends ModuleBase {
         this.lastCompletedAt = Date.now();
         this.completed++;
         if (this.restartSeen) {
-            this.startCombat(STATES.MOBS);
+            this.startCombat(STATES.MOBS, true);
             return;
         }
         this.stopCombat();
-        this.restartReadyAt = Date.now() + 5000;
+        this.menuClickDelay = true;
         this.transition(STATES.RESTART);
     }
 
@@ -892,10 +928,8 @@ class AutoSlayer extends ModuleBase {
         if (message === 'SLAYER QUEST STARTED!') {
             if (this.state === STATES.BOSS || this.pendingBoss) this.restartSeen = true;
             else if ([STATES.RESTART, STATES.ACCEPT, STATES.CALL, STATES.PHONE, STATES.SLAYER, STATES.MENU].includes(this.state)) {
-                this.startCombat(STATES.MOBS);
+                this.startCombat(STATES.MOBS, true);
             }
-        } else if (message === `SLAYER BOSS! The ${this.questName} spawned!` && (this.state === STATES.MOBS || this.state === STATES.ACCEPT)) {
-            this.startCombat(STATES.BOSS);
         } else if (message === 'NICE! SLAYER BOSS SLAIN!') {
             this.finishQuest();
         }

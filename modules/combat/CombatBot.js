@@ -120,7 +120,7 @@ class Combat extends ModuleBase {
         this.pathfindingThreshold = 15;
         this.attackCPS = 10;
         this.rightClickChance = 0;
-        this.targetLockJitter = 2;
+        this.targetLockJitter = 5;
         this.pathPitchJitter = 3;
         this.travelClickInterval = 4;
         this.overrideRotationSpeed = false;
@@ -160,8 +160,8 @@ class Combat extends ModuleBase {
         this.addSlider(
             'Target Lock Jitter',
             0,
-            10,
-            2,
+            20,
+            5,
             (value) => {
                 this.targetLockJitter = value;
                 this.refreshTargetRotation();
