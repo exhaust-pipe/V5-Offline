@@ -709,6 +709,7 @@ class AutoSlayer extends ModuleBase {
             roam: phase === STATES.MOBS,
             boundaryCheck: this.config.boundaryCheck,
             travelClicks: phase === STATES.MOBS,
+            rightClickChance: phase === STATES.BOSS ? 0 : null,
             blacklistOnPathFailure: true,
         };
         setItemSlot(this.combatSlot);

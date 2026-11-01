@@ -359,7 +359,8 @@ class Combat extends ModuleBase {
     }
 
     clickMouse(now) {
-        if (Math.random() * 100 < this.rightClickChance) Client.rightClick();
+        const rightClickChance = this.externalTargetOptions?.rightClickChance ?? this.rightClickChance;
+        if (Math.random() * 100 < rightClickChance) Client.rightClick();
         else Client.leftClick();
         const jitter = 0.82 + Math.random() * 0.36;
         this.nextAttackAt = Math.max(now - 50, this.nextAttackAt) + (1000 / this.attackCPS) * jitter;
