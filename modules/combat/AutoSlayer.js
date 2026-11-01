@@ -54,7 +54,7 @@ const HUB_SELECTOR = [-5.5, 69, -22.5];
 const MAX_ATTEMPTS = 4;
 const RESPONSE_TIMEOUT_MS = 15000;
 const NO_TARGET_TIMEOUT_MS = 10000;
-const BOSS_TURN_JITTER_DEGREES = 5;
+const BOSS_TURN_JITTER_DEGREES = 30;
 const clean = (value) => ChatLib.removeFormatting(String(value ?? '')).trim();
 const cleanLabel = (value) =>
     clean(value)
@@ -85,6 +85,8 @@ class AutoSlayer extends ModuleBase {
         this.phoneSwap = null;
         this.pendingBoss = null;
         this.menuClickDelay = false;
+        this.lastMobTarget = null;
+        this.lastKilledMobPosition = null;
         this.state = STATES.IDLE;
         this.revision = 0;
         this.guiStability = new GuiStability();
@@ -153,7 +155,7 @@ class AutoSlayer extends ModuleBase {
             10,
             this.actionDelay,
             (value) => (this.actionDelay = value),
-            'Random minimum/maximum delay in seconds for commands, travel, slot changes and state changes. Boss transitions randomly keep fighting mobs for this delay or stop and turn toward the boss. Returning to the Slayer menu after a kill uses Click Delay.'
+            'Random minimum/maximum delay in seconds for commands, travel, slot changes and state changes. Boss transitions randomly keep fighting mobs for this delay or stop and turn toward the last killed mob with a +/-30 degree offset. Returning to the Slayer menu after a kill uses Click Delay.'
         );
 
         this.createOverlay([
@@ -170,6 +172,10 @@ class AutoSlayer extends ModuleBase {
         ]);
 
         this.on('tick', () => this.tick());
+        this.on('entityDamage', (entity) => {
+            if (this.state === STATES.MOBS && !this.pendingBoss && CombatBot.sameTarget(entity, CombatBot.target)) this.lastMobTarget = entity;
+        });
+        this.on('entityDeath', (entity) => this.rememberMobKill(entity));
         this.on('chat', (event) => this.onChat(clean(event.message.getUnformattedText())));
         this.on('worldUnload', () => this.onWorldUnload());
         this.on('worldLoad', () => {
@@ -257,6 +263,8 @@ class AutoSlayer extends ModuleBase {
     stopCombat() {
         this.pendingBoss = null;
         this.menuClickDelay = false;
+        this.lastMobTarget = null;
+        this.lastKilledMobPosition = null;
         if (!this.ownsCombat) return;
         CombatBot.toggle(false, true);
         CombatBot.clearExternalTargets();
@@ -757,11 +765,13 @@ class AutoSlayer extends ModuleBase {
         const switchingToBoss = this.state === STATES.MOBS && phase === STATES.BOSS;
         if (switchingToBoss) {
             if (!this.pendingBoss) {
-                const turnToBoss = Math.random() < 0.5;
+                const spawnPoint = this.lastKilledMobPosition;
+                const turnToBoss = Math.random() < 0.5 && spawnPoint !== null;
                 if (turnToBoss) this.stopCombat();
-                this.bossOrigin = { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
+                this.bossOrigin = spawnPoint || { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
                 this.pendingBoss = {
                     turnToBoss,
+                    spawnPoint,
                     rotating: false,
                     readyAt: turnToBoss ? null : Date.now() + this.randomDelay(),
                     deadline: Date.now() + NO_TARGET_TIMEOUT_MS,
@@ -772,14 +782,13 @@ class AutoSlayer extends ModuleBase {
             if (pending.turnToBoss && pending.readyAt === null) {
                 if (Date.now() >= pending.deadline) {
                     this.questVerified = false;
-                    this.message(`&eCould not locate or face the Slayer boss; returning to ${this.config.area}.`);
+                    this.message(`&eCould not finish turning toward the last killed mob; returning to ${this.config.area}.`);
                     this.pathTo([this.config.destination], STATES.CALL, this.config.area);
                     return;
                 }
                 if (!pending.rotating) {
-                    const boss = this.getTargets(STATES.BOSS)[0];
-                    const aimPoint = boss ? Rotations.getAimPoint(boss) : null;
-                    const angles = aimPoint ? Rotations.getAnglesFromVector(aimPoint) : null;
+                    const { x, y, z } = pending.spawnPoint;
+                    const angles = Rotations.getAnglesFromVector([x, y + 1, z]);
                     if (
                         angles &&
                         Rotations.lookAtAngles(
@@ -829,7 +838,22 @@ class AutoSlayer extends ModuleBase {
         return null;
     }
 
+    rememberMobKill(entity) {
+        if (this.state !== STATES.MOBS || this.pendingBoss) return;
+        if (!CombatBot.sameTarget(entity, this.lastMobTarget) && !CombatBot.sameTarget(entity, CombatBot.target)) return;
+        const position = CombatBot.getTargetPosition(entity);
+        if (position) this.lastKilledMobPosition = position;
+        if (CombatBot.sameTarget(entity, this.lastMobTarget)) this.lastMobTarget = null;
+    }
+
     tickCombat(guiReady) {
+        if (this.state === STATES.MOBS && !this.pendingBoss) {
+            for (const target of [this.lastMobTarget, CombatBot.target]) {
+                const entity = target?.toMC ? target.toMC() : target;
+                if (entity && (entity.isDeadOrDying?.() || target.isDead?.())) this.rememberMobKill(target);
+            }
+            if (CombatBot.isCombatTargetCandidate(CombatBot.target, true)) this.lastMobTarget = CombatBot.target;
+        }
         let phase = this.scoreboardPhase();
         // Auto-restart chat can arrive before the previous quest disappears from the scoreboard.
         if (phase === this.staleScoreboardPhase) phase = null;
@@ -873,9 +897,9 @@ class AutoSlayer extends ModuleBase {
         }
     }
 
-    getTargets(phase = this.state) {
-        if (phase === STATES.MOBS) return CombatBot.findMob(this.config);
-        if (phase !== STATES.BOSS) return [];
+    getTargets() {
+        if (this.state === STATES.MOBS) return CombatBot.findMob(this.config);
+        if (this.state !== STATES.BOSS) return [];
         if (this.bossTarget) return CombatBot.isCombatTargetCandidate(this.bossTarget, true) ? [this.bossTarget] : [];
         let bosses = CombatBot.findMob({ names: [this.config.boss] });
         const otherBosses = new Set();
