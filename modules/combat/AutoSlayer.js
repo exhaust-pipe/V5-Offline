@@ -39,20 +39,21 @@ const SLAYERS = {
         area: 'Crypts',
         destination: [-146, 56, -100],
         names: ['Crypt Ghoul', 'Golden Ghoul', 'Revenant Sycophant', 'Revenant Champion', 'Deformed Revenant'],
-        boundaryCheck: (x, y, z) => x >= -240 && x <= -65 && y >= 30 && y <= 67 && z >= -220 && z <= -55,
+        boundaryCheck: (x, y, z) => x >= -180 && x <= -30 && y >= 30 && y <= 67 && z >= -160 && z <= -55,
     },
     Wolf: {
         boss: 'Sven Packmaster',
         area: 'Ruins',
         destination: [-225, 91, 63],
         names: ['Wolf', 'Old Wolf', 'Pack Enforcer', 'Sven Follower', 'Sven Alpha'],
-        boundaryCheck: (x, y, z) => x >= -300 && x <= -100 && y >= 55 && y <= 155 && z >= -65 && z <= 180,
+        boundaryCheck: (x, y, z) => x >= -300 && x <= -150 && y >= 55 && y <= 155 && z >= 25 && z <= 150,
     },
 };
 const TIERS = ['I', 'II', 'III', 'IV'];
 const HUB_SELECTOR = [-5.5, 69, -22.5];
 const MAX_ATTEMPTS = 4;
 const RESPONSE_TIMEOUT_MS = 15000;
+const NO_TARGET_TIMEOUT_MS = 10000;
 const clean = (value) => ChatLib.removeFormatting(String(value ?? '')).trim();
 const cleanLabel = (value) =>
     clean(value)
@@ -76,8 +77,10 @@ class AutoSlayer extends ModuleBase {
         this.tier = 1;
         this.phone = 'Maddox Batphone';
         this.maxPlayers = 1;
+        this.populationCheckInterval = 5;
         this.weaponSlot = 1;
-        this.actionDelay = { low: 200, high: 400 };
+        this.clickDelay = { low: 200, high: 400 };
+        this.actionDelay = { low: 1, high: 3 };
         this.phoneSwap = null;
         this.state = STATES.IDLE;
         this.revision = 0;
@@ -118,6 +121,14 @@ class AutoSlayer extends ModuleBase {
             'Maximum Hub population, including yourself. Uses the Hub Selector to find a small random Hub.'
         );
         this.addSlider(
+            'Slayer Player Check Interval (min)',
+            0,
+            20,
+            5,
+            (value) => (this.populationCheckInterval = Math.max(0, Math.min(20, finiteNumber(value, 5)))),
+            'Recheck the Hub population during Slayer quests and switch Hubs if the player limit is exceeded. 0 disables periodic checks; each new Hub is still checked.'
+        );
+        this.addSlider(
             'Slayer Weapon Slot',
             1,
             8,
@@ -126,12 +137,20 @@ class AutoSlayer extends ModuleBase {
             'Hotbar slot to restore after calling Maddox. Applies on the next start.'
         );
         this.addRangeSlider(
-            'Slayer Action Delay (ms)',
+            'Slayer Click Delay (ms)',
             100,
             2000,
+            this.clickDelay,
+            (value) => (this.clickDelay = value),
+            'Random minimum/maximum delay in milliseconds for menu clicks, inventory interactions and phone use. Attacks use Combat Bot CPS.'
+        );
+        this.addRangeSlider(
+            'Slayer Action Delay (s)',
+            0,
+            10,
             this.actionDelay,
             (value) => (this.actionDelay = value),
-            'Random minimum/maximum delay in milliseconds for travel, phone use and menu clicks. Combat phase changes are immediate; attacks use Combat Bot CPS.'
+            'Random minimum/maximum delay in seconds for commands, travel, slot changes and state changes, including switching between mobs and the boss.'
         );
 
         this.createOverlay([
@@ -178,6 +197,7 @@ class AutoSlayer extends ModuleBase {
         this.lastCompletedAt = 0;
         this.players = null;
         this.populationStableAt = 0;
+        this.lastPopulationCheckAt = 0;
         this.questVerified = false;
         this.restartSeen = false;
         Mouse.ungrab();
@@ -209,24 +229,25 @@ class AutoSlayer extends ModuleBase {
         this.toggle(false);
     }
 
-    randomDelay() {
-        const first = Math.max(100, Math.min(2000, finiteNumber(this.actionDelay?.low, 200)));
-        const second = Math.max(100, Math.min(2000, finiteNumber(this.actionDelay?.high, 400)));
-        return Math.min(first, second) + Math.random() * Math.abs(first - second);
+    randomDelay(click = false) {
+        const delay = click ? this.clickDelay : this.actionDelay;
+        const minimum = click ? 100 : 0;
+        const maximum = click ? 2000 : 10;
+        const first = Math.max(minimum, Math.min(maximum, finiteNumber(delay?.low, click ? 200 : 1)));
+        const second = Math.max(minimum, Math.min(maximum, finiteNumber(delay?.high, click ? 400 : 3)));
+        return (Math.min(first, second) + Math.random() * Math.abs(first - second)) * (click ? 1 : 1000);
     }
 
-    defer(minimum = 0) {
-        this.readyAt = Date.now() + minimum + this.randomDelay();
+    defer(minimum = 0, click = false) {
+        this.readyAt = Date.now() + minimum + this.randomDelay(click);
         this.deadline = this.readyAt + RESPONSE_TIMEOUT_MS;
     }
 
-    transition(state, minimum = 0) {
+    transition(state, minimum = 0, click = false) {
         this.revision++;
         this.state = state;
-        if (state === STATES.MOBS || state === STATES.BOSS || state === STATES.RESTART) {
-            this.readyAt = Date.now();
-            this.deadline = this.readyAt + RESPONSE_TIMEOUT_MS;
-        } else this.defer(minimum);
+        this.noTargetSince = null;
+        this.defer(minimum, click);
         this.guiStability.reset();
     }
 
@@ -246,6 +267,7 @@ class AutoSlayer extends ModuleBase {
         if (!this.enabled) return;
         if (!Player.getPlayer() || !World.getWorld()) return this.stopCombat();
         const guiReady = this.guiStability.update();
+        if (this.checkPopulation()) return;
         if (Date.now() < this.readyAt) return;
 
         if (this.state === STATES.MOBS || this.state === STATES.BOSS) return this.tickCombat(guiReady);
@@ -264,7 +286,7 @@ class AutoSlayer extends ModuleBase {
             case STATES.WARP:
                 if (Client.isInGui()) {
                     closeInventory();
-                    this.defer(150);
+                    this.defer(150, true);
                     break;
                 }
                 if (getArea() === 'Hub') {
@@ -321,6 +343,24 @@ class AutoSlayer extends ModuleBase {
         return null;
     }
 
+    checkPopulation() {
+        if (
+            this.populationCheckInterval <= 0 ||
+            Date.now() - this.lastPopulationCheckAt < this.populationCheckInterval * 60000 ||
+            this.phoneSwap ||
+            [STATES.STARTING, STATES.WARP, STATES.HUB, STATES.SELECTOR, STATES.HOP].includes(this.state) ||
+            (this.state === STATES.TRAVEL && this.afterTravel === STATES.SELECTOR) ||
+            getArea() !== 'Hub'
+        )
+            return false;
+
+        this.lastPopulationCheckAt = Date.now();
+        this.players = this.readPopulation();
+        if (this.players === null || this.players <= this.maxPlayers) return false;
+        this.switchHub();
+        return true;
+    }
+
     checkHub() {
         if (getArea() !== 'Hub') {
             if (Date.now() >= this.deadline) this.transition(STATES.WARP);
@@ -338,18 +378,29 @@ class AutoSlayer extends ModuleBase {
         }
         if (Date.now() < this.populationStableAt) return;
         this.warpAttempts = 0;
+        this.lastPopulationCheckAt = Date.now();
         if (count > this.maxPlayers) {
-            this.message(`Hub has ${count} players (limit ${this.maxPlayers}). Finding another Hub.`);
-            this.selectorClicks = 0;
-            this.selectorAimed = false;
-            const npc = this.findSelector();
-            const position = npc ? CombatBot.getTargetPosition(npc) : { x: HUB_SELECTOR[0], y: HUB_SELECTOR[1], z: HUB_SELECTOR[2] };
-            this.pathTo(CombatBot.buildPathGoals(position), STATES.SELECTOR, 'Hub Selector');
+            this.switchHub();
+        } else if (this.config.boundaryCheck(Player.getX(), Player.getY(), Player.getZ())) {
+            this.message(`&aHub has ${count} player(s). Already in ${this.config.area}; calling Maddox.`);
+            this.beginMenu();
         } else {
             this.message(`&aHub has ${count} player(s). Traveling to ${this.config.area}.`);
             this.menuAttempts = 0;
             this.pathTo([this.config.destination], STATES.CALL, this.config.area);
         }
+    }
+
+    switchHub() {
+        this.message(`Hub has ${this.players} players (limit ${this.maxPlayers}). Finding another Hub.`);
+        this.questVerified = false;
+        this.restartSeen = false;
+        this.selectorClicks = 0;
+        this.selectorAimed = false;
+        if (Client.isInGui()) closeInventory();
+        const npc = this.findSelector();
+        const position = npc ? CombatBot.getTargetPosition(npc) : { x: HUB_SELECTOR[0], y: HUB_SELECTOR[1], z: HUB_SELECTOR[2] };
+        this.pathTo(CombatBot.buildPathGoals(position), STATES.SELECTOR, 'Hub Selector');
     }
 
     pathTo(goals, nextState, destination) {
@@ -403,7 +454,7 @@ class AutoSlayer extends ModuleBase {
         }
         if (Client.isInGui()) {
             closeInventory();
-            this.defer(250);
+            this.defer(250, true);
             return;
         }
         const npc = this.findSelector();
@@ -420,7 +471,7 @@ class AutoSlayer extends ModuleBase {
             this.selectorAimed = false;
             if (Raytrace.isLookingAtEntity(npc, 4.5)) {
                 Client.leftClick();
-                this.defer(4000);
+                this.defer(4000, true);
             }
             return;
         }
@@ -456,7 +507,7 @@ class AutoSlayer extends ModuleBase {
     }
 
     click(entry, nextState, button = 'LEFT') {
-        if (clickSlot(entry.slot, false, button)) this.transition(nextState);
+        if (clickSlot(entry.slot, false, button)) this.transition(nextState, 0, true);
     }
 
     beginMenu() {
@@ -515,7 +566,7 @@ class AutoSlayer extends ModuleBase {
                 mc.setScreen(new InventoryScreen(mc.player));
             }
             this.guiStability.reset();
-            this.defer();
+            this.defer(0, true);
             return;
         }
 
@@ -526,7 +577,7 @@ class AutoSlayer extends ModuleBase {
             if (!this.isPhone(container.getStackInSlot(swap.source))) return this.fail('The phone moved out of its inventory slot.');
             if (clickSlot(swap.source)) {
                 swap.step = 1;
-                this.defer();
+                this.defer(0, true);
             }
             return;
         }
@@ -534,7 +585,7 @@ class AutoSlayer extends ModuleBase {
             if (!this.isPhone(Item.fromMC(carried))) return;
             if (clickSlot(36 + swap.target)) {
                 swap.step = 2;
-                this.defer();
+                this.defer(0, true);
             }
             return;
         }
@@ -544,7 +595,7 @@ class AutoSlayer extends ModuleBase {
             if (container.getStackInSlot(swap.source)) return this.fail('The original phone slot is occupied; cannot finish the swap.');
             if (clickSlot(swap.source)) {
                 swap.step = 3;
-                this.defer();
+                this.defer(0, true);
             }
             return;
         }
@@ -574,7 +625,7 @@ class AutoSlayer extends ModuleBase {
         }
         if (Client.isInGui()) {
             closeInventory();
-            this.defer(150);
+            this.defer(150, true);
             return;
         }
         const slot = findItemInHotbar(this.callMethod);
@@ -590,7 +641,7 @@ class AutoSlayer extends ModuleBase {
             return;
         }
         Client.rightClick();
-        this.transition(this.callMethod === 'Abiphone' ? STATES.PHONE : STATES.SLAYER);
+        this.transition(this.callMethod === 'Abiphone' ? STATES.PHONE : STATES.SLAYER, 0, true);
     }
 
     handleMenu() {
@@ -703,7 +754,6 @@ class AutoSlayer extends ModuleBase {
         this.menuAttempts = 0;
         this.restartSeen = false;
         this.bossOrigin = { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
-        this.bossStartedAt = Date.now();
         this.staleScoreboardPhase = this.scoreboardPhase();
         this.combatOptions = {
             roam: phase === STATES.MOBS,
@@ -714,6 +764,7 @@ class AutoSlayer extends ModuleBase {
         };
         setItemSlot(this.combatSlot);
         this.transition(phase);
+        this.bossStartedAt = this.readyAt;
     }
 
     scoreboardPhase() {
@@ -743,34 +794,29 @@ class AutoSlayer extends ModuleBase {
         }
         if (Client.isInGui()) {
             CombatBot.toggle(false, true);
+            this.noTargetSince = null;
             if (guiReady && this.isSlayerGui(getGuiName())) {
                 closeInventory();
+                this.defer(0, true);
             }
-            return;
-        }
-        if (
-            this.state === STATES.MOBS &&
-            getArea() === 'Hub' &&
-            !Pathfinder.isPathing() &&
-            !this.config.boundaryCheck(Player.getX(), Player.getY(), Player.getZ())
-        ) {
-            if (!Player.getPlayer().onGround()) {
-                this.stopCombat();
-                return;
-            }
-            this.questVerified = false;
-            this.message(`&eOutside ${this.config.area}; returning to the Slayer area.`);
-            this.pathTo([this.config.destination], STATES.CALL, this.config.area);
             return;
         }
         if (!Pathfinder.isPathing() && Player.getHeldItemIndex() !== this.combatSlot) {
             CombatBot.toggle(false, true);
             setItemSlot(this.combatSlot);
+            this.defer();
             return;
         }
         if (CombatBot.enabled && !CombatBot.isParentManaged) CombatBot.toggle(false);
         CombatBot.setExternalTargets(this.getTargets(), this.combatOptions);
         CombatBot.toggle(true, true);
+        if (CombatBot.isTargetUsable(CombatBot.target)) this.noTargetSince = null;
+        else if (this.noTargetSince === null) this.noTargetSince = Date.now();
+        else if (Date.now() - this.noTargetSince >= NO_TARGET_TIMEOUT_MS) {
+            this.questVerified = false;
+            this.message(`&eNo Slayer target for 10 seconds; returning to ${this.config.area}.`);
+            this.pathTo([this.config.destination], STATES.CALL, this.config.area);
+        }
     }
 
     getTargets() {

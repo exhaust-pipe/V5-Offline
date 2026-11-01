@@ -134,6 +134,10 @@ export const loadSettings = () => {
     }
 
     try {
+        const slayer = settings['Auto Slayer'];
+        if (slayer && slayer['Slayer Click Delay (ms)'] === undefined && slayer['Slayer Action Delay (ms)'] !== undefined) {
+            slayer['Slayer Click Delay (ms)'] = slayer['Slayer Action Delay (ms)'];
+        }
         Categories.categories.forEach((category) => {
             getCategoryItems(category).forEach((item) => {
                 const savedItemSettings = settings[item.title];

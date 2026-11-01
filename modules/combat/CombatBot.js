@@ -917,7 +917,15 @@ class Combat extends ModuleBase {
     getTargetDisplayName(target) {
         if (!target) return 'None';
         try {
-            return ChatLib.removeFormatting(String(target.getName?.()?.getString?.() ?? target.getName?.() ?? target.name ?? 'Unknown'));
+            const name = ChatLib.removeFormatting(String(target.getName?.()?.getString?.() ?? target.getName?.() ?? target.name ?? '')).trim();
+            if (/^[\x20-\x7e]+$/.test(name)) return name;
+            // The overlay font does not cover every language used by localized entity names.
+            const entity = target.toMC ? target.toMC() : target;
+            return String(entity.getType().getDescriptionId())
+                .split('.')
+                .pop()
+                .replace(/_/g, ' ')
+                .replace(/\b\w/g, (letter) => letter.toUpperCase());
         } catch (e) {
             return 'Unknown';
         }
