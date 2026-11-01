@@ -96,6 +96,10 @@ class RotationController {
         return this.start({ type: 'entity', value: entity }, options);
     }
 
+    isTrackingEntity(entity) {
+        return this.request?.type === 'entity' && this.request.value === entity;
+    }
+
     onComplete(callback, name = null) {
         if (typeof callback === 'function') {
             this.callbacks.push({ callback, name });
@@ -215,11 +219,14 @@ class RotationController {
             syncFromPlayer();
         }
 
+        nextRequest.jitterStartedAt = sameSource ? this.request.jitterStartedAt : Date.now();
+        nextRequest.jitterPhase = sameSource ? this.request.jitterPhase : Math.random() * Math.PI * 2;
         this.request = nextRequest;
         if (!this.renderRegister.isRegistered()) this.renderRegister.register();
         this.request.speedMultiplier = speedMultiplier;
         this.request.rotationSpeed = rotationSpeed;
         this.request.precision = precision;
+        this.request.entityJitter = Number.isFinite(options?.entityJitter) ? Math.max(0, options.entityJitter) : 0;
         this.targetAngles = nextTarget;
 
         if (shouldReset) {
@@ -253,7 +260,13 @@ class RotationController {
         if (request.type === 'vector') return this.getAnglesFromVector(request.value);
         if (request.type === 'entity') {
             const aimPoint = this.getAimPoint(request.value);
-            return aimPoint ? this.getAnglesFromVector(aimPoint) : null;
+            const angles = aimPoint ? this.getAnglesFromVector(aimPoint) : null;
+            if (angles && request.entityJitter > 0) {
+                const time = (Date.now() - request.jitterStartedAt) / 1000;
+                angles.yaw += Math.sin(time * 3.1 + request.jitterPhase) * request.entityJitter;
+                angles.pitch = clampPitch(angles.pitch + Math.sin(time * 2.3 + request.jitterPhase + Math.PI / 2) * request.entityJitter);
+            }
+            return angles;
         }
         return null;
     }

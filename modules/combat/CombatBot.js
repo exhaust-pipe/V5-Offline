@@ -120,6 +120,7 @@ class Combat extends ModuleBase {
         this.pathfindingThreshold = 15;
         this.attackCPS = 10;
         this.rightClickChance = 0;
+        this.targetLockJitter = 1;
         this.pathPitchJitter = 3;
         this.travelClickInterval = 4;
         this.overrideRotationSpeed = false;
@@ -154,6 +155,18 @@ class Combat extends ModuleBase {
             0,
             (value) => (this.rightClickChance = value),
             'Chance per click: 0% always left, 100% always right. Applies to combat and travel clicks.'
+        );
+
+        this.addSlider(
+            'Target Lock Jitter',
+            1,
+            5,
+            1,
+            (value) => {
+                this.targetLockJitter = value;
+                this.refreshTargetRotation();
+            },
+            'Maximum extra yaw and pitch movement in degrees while tracking a combat target.'
         );
 
         this.addSlider(
@@ -284,6 +297,16 @@ class Combat extends ModuleBase {
         const distance = this.getDistanceToPlayer(position);
 
         if (this.state === STATES.PATHING) {
+            if (distance.distanceFlat <= PATH_HANDOFF_DISTANCE && Math.abs(distance.distanceY) <= 2.5 && this.canSeeTarget(this.target)) {
+                this.cancelPath();
+                this.setState(STATES.FIGHTING);
+                this.trackTarget();
+                return;
+            }
+            if (!Pathfinder.isPathing()) {
+                this.startPath(position);
+                return;
+            }
             this.tryTravelClicks(distance.distance);
             if (
                 Date.now() - this.pathStartedAt >= REPATH_DELAY_MS &&
@@ -296,7 +319,10 @@ class Combat extends ModuleBase {
         }
 
         const pathThreshold = this.state === STATES.FIGHTING ? this.pathfindingThreshold + 2 : this.pathfindingThreshold;
-        if (distance.distanceFlat > pathThreshold || (distance.distance > this.attackRange && !this.canSeeTarget(this.target))) {
+        if (
+            distance.distanceFlat > pathThreshold ||
+            (distance.distance > this.attackRange && (Math.abs(distance.distanceY) > 2.5 || !this.canSeeTarget(this.target)))
+        ) {
             this.startPath(position);
             return;
         }
@@ -320,8 +346,9 @@ class Combat extends ModuleBase {
     }
 
     trackTarget() {
-        if (!this.target || this.trackedTarget === this.target) return;
+        if (!this.target || (this.trackedTarget === this.target && Rotations.isTrackingEntity(this.target))) return;
         const options = this.overrideRotationSpeed ? { rotationSpeed: this.combatRotationSpeed } : { speedMultiplier: 0.9 };
+        options.entityJitter = this.targetLockJitter;
         if (Rotations.trackEntity(this.target, options)) this.trackedTarget = this.target;
     }
 

@@ -34,6 +34,7 @@ class Finder {
         this.silent = false;
         this.recalculateAttempts = 0;
         this.recalculateRetryQueued = false;
+        this.pathRetryPending = false;
         this.MAX_RECALCULATE_ATTEMPTS = 9;
         this.recalculateScheduleId = 0;
         this.searchStartedAt = 0;
@@ -117,6 +118,7 @@ class Finder {
     }
 
     findPath(end, onComplete, isFly = false, startPoints = null, preserveRecalculateAttempts = false, walkArrivalRadius = 2) {
+        this.pathRetryPending = false;
         const options = typeof isFly === 'object' && isFly !== null ? isFly : null;
         if (options) {
             isFly = options.isFly === true;
@@ -259,7 +261,10 @@ class Finder {
                     return;
                 }
 
-                if (!splinePath?.length) return;
+                if (!splinePath || splinePath.length < 2) {
+                    this.recalculate('empty_walk_path');
+                    return;
+                }
 
                 if (Rotations.boxPositions && Rotations.boxPositions.length && Rotations.complete) {
                     this.checkIfReachedDestination() ? this.finishSuccess() : this.recalculate('rotation_complete_not_at_goal');
@@ -267,6 +272,10 @@ class Finder {
                 }
 
                 Rotations.pathRotations(splinePath, this.entityTarget, this.entityTrackDistance, this.pitchJitter);
+                if (!Rotations.rotationActive) {
+                    this.recalculate('invalid_walk_look_points');
+                    return;
+                }
                 this.applyPathRuntimeHints(result);
                 Aote.onPathTick(Rotations);
                 Jump.detectJump(result.path_between_key_nodes, result.path_flags, result.path_flag_bits);
@@ -540,6 +549,7 @@ class Finder {
 
         this.resetPath(false);
 
+        this.pathRetryPending = true;
         this.saidInfo = false;
 
         ScheduleTask(delay, () => {
@@ -1020,6 +1030,7 @@ class Finder {
             this.silent = false;
             this.recalculateAttempts = 0;
             this.recalculateRetryQueued = false;
+            this.pathRetryPending = false;
             this.pathVariantSeed = 0;
             this.lastPathSignature = '';
             this.samePathSignatureCount = 0;
@@ -1029,7 +1040,7 @@ class Finder {
     }
 
     isPathing() {
-        return !!this.tick;
+        return !!this.tick || this.pathRetryPending;
     }
 
     getResult() {
