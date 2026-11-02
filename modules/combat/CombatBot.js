@@ -321,7 +321,8 @@ class Combat extends ModuleBase {
         const pathThreshold = this.state === STATES.FIGHTING ? this.pathfindingThreshold + 2 : this.pathfindingThreshold;
         if (
             distance.distanceFlat > pathThreshold ||
-            (distance.distance > this.attackRange && (Math.abs(distance.distanceY) > 2.5 || !this.canSeeTarget(this.target)))
+            !this.canSeeTarget(this.target) ||
+            (distance.distance > this.attackRange && Math.abs(distance.distanceY) > 2.5)
         ) {
             this.startPath(position);
             return;
