@@ -80,8 +80,8 @@ class AutoSlayer extends ModuleBase {
         this.type = 'Zombie';
         this.tier = 1;
         this.phone = 'Maddox Batphone';
-        this.maxPlayers = 1;
-        this.populationCheckInterval = 5;
+        this.maxPlayers = 5;
+        this.maxAreaPlayers = 1;
         this.noTargetReturnLimit = 3;
         this.weaponSlot = 1;
         this.clickDelay = { low: 200, high: 400 };
@@ -96,6 +96,7 @@ class AutoSlayer extends ModuleBase {
         this.revision = 0;
         this.guiStability = new GuiStability();
         this.players = null;
+        this.areaPlayers = null;
         this.completed = 0;
         this.noTargetReturns = 0;
 
@@ -125,19 +126,19 @@ class AutoSlayer extends ModuleBase {
         );
         this.addSlider(
             'Slayer Hub Player Limit',
-            1,
-            80,
-            1,
-            (value) => (this.maxPlayers = Math.max(1, Math.min(80, Math.round(finiteNumber(value, 1))))),
-            'Maximum Hub population, including yourself. Uses the Hub Selector to find a small random Hub.'
+            0,
+            60,
+            5,
+            (value) => (this.maxPlayers = Math.max(0, Math.min(60, Math.round(finiteNumber(value, 5))))),
+            'Maximum Hub population, including yourself. Checked on entering a Hub and after each completed quest. Uses the Hub Selector to find a small random Hub. 0 disables this check.'
         );
         this.addSlider(
-            'Slayer Player Check Interval (min)',
+            'Slayer Area Player Limit',
             0,
-            20,
             5,
-            (value) => (this.populationCheckInterval = Math.max(0, Math.min(20, finiteNumber(value, 5)))),
-            'Recheck the Hub population during Slayer quests and switch Hubs if the player limit is exceeded. 0 disables periodic checks; each new Hub is still checked.'
+            1,
+            (value) => (this.maxAreaPlayers = Math.max(0, Math.min(5, Math.round(finiteNumber(value, 1))))),
+            'Maximum loaded players in the Slayer area, including yourself and excluding NPCs. Checked on arrival and after each completed quest. 0 disables this check.'
         );
         this.addSlider(
             'Slayer No-Target Return Limit',
@@ -180,6 +181,7 @@ class AutoSlayer extends ModuleBase {
                     Quest: () => this.questName || 'None',
                     Target: () => (CombatBot.enabled ? CombatBot.getTargetDisplayName(CombatBot.target) : 'None'),
                     'Hub Players': () => this.players ?? 'Unknown',
+                    'Area Players': () => this.areaPlayers ?? 'Unknown',
                     'Bosses Slain': () => this.completed,
                     'No-Target Returns': () => `${this.noTargetReturns}/${this.noTargetReturnLimit}`,
                 },
@@ -199,6 +201,7 @@ class AutoSlayer extends ModuleBase {
             this.phoneSwap = null;
             resetAreaCache();
             this.players = null;
+            this.areaPlayers = null;
             this.populationStableAt = 0;
             this.transition(this.state === STATES.STARTING ? STATES.STARTING : STATES.HUB, 5000);
         });
@@ -221,8 +224,8 @@ class AutoSlayer extends ModuleBase {
         this.noTargetReturns = 0;
         this.lastCompletedAt = 0;
         this.players = null;
+        this.areaPlayers = null;
         this.populationStableAt = 0;
-        this.lastPopulationCheckAt = 0;
         this.questVerified = false;
         this.restartSeen = false;
         this.recoveringSlayer = false;
@@ -318,7 +321,6 @@ class AutoSlayer extends ModuleBase {
             return;
         }
         const guiReady = this.guiStability.update();
-        if (this.checkPopulation()) return;
         if (Date.now() < this.readyAt) return;
 
         if (this.recoveringSlayer && this.state === STATES.TRAVEL && this.afterTravel === STATES.CALL) {
@@ -376,10 +378,11 @@ class AutoSlayer extends ModuleBase {
                 if (Date.now() >= this.deadline) {
                     if (this.hopAttempts >= MAX_ATTEMPTS) return this.fail('Random Hub did not transfer you. Check small-Hub access.');
                     this.selectorClicks = 0;
-                    this.transition(STATES.SELECTOR);
+                    this.transition(STATES.SELECTOR, 0, true);
                 }
                 break;
             case STATES.CALL:
+                if (this.areaPlayers === null && this.checkAreaPopulation()) break;
                 if (guiReady) this.callMaddox();
                 else if (Date.now() >= this.deadline) this.retryMenu();
                 break;
@@ -409,20 +412,21 @@ class AutoSlayer extends ModuleBase {
     }
 
     checkPopulation() {
-        if (
-            this.populationCheckInterval <= 0 ||
-            Date.now() - this.lastPopulationCheckAt < this.populationCheckInterval * 60000 ||
-            this.phoneSwap ||
-            [STATES.STARTING, STATES.WARP, STATES.HUB, STATES.SELECTOR, STATES.HOP].includes(this.state) ||
-            (this.state === STATES.TRAVEL && this.afterTravel === STATES.SELECTOR) ||
-            getArea() !== 'Hub'
-        )
-            return false;
-
-        this.lastPopulationCheckAt = Date.now();
+        if (getArea() !== 'Hub') return false;
         this.players = this.readPopulation();
-        if (this.players === null || this.players <= this.maxPlayers) return false;
-        this.switchHub();
+        if (this.maxPlayers > 0 && this.players !== null && this.players > this.maxPlayers) {
+            this.switchHub();
+            return true;
+        }
+        return this.checkAreaPopulation();
+    }
+
+    checkAreaPopulation() {
+        this.areaPlayers = World.getAllPlayers().filter(
+            (player) => player.getUUID().version() === 4 && this.config.boundaryCheck(player.getX(), player.getY(), player.getZ())
+        ).length;
+        if (this.maxAreaPlayers <= 0 || this.areaPlayers <= this.maxAreaPlayers) return false;
+        this.switchHub(`${this.config.area} has ${this.areaPlayers} players (limit ${this.maxAreaPlayers}).`);
         return true;
     }
 
@@ -432,32 +436,35 @@ class AutoSlayer extends ModuleBase {
             return;
         }
         const count = this.readPopulation();
-        if (count === null) {
-            if (Date.now() >= this.deadline) this.fail('Cannot read the Hub player count from Tab. Enable the Players widget.');
-            return;
+        if (this.maxPlayers > 0) {
+            if (count === null) {
+                if (Date.now() >= this.deadline) this.fail('Cannot read the Hub player count from Tab. Enable the Players widget.');
+                return;
+            }
+            if (this.players !== count || !this.populationStableAt) {
+                this.players = count;
+                this.populationStableAt = Date.now() + 1000;
+                return;
+            }
+            if (Date.now() < this.populationStableAt) return;
         }
-        if (this.players !== count || !this.populationStableAt) {
-            this.players = count;
-            this.populationStableAt = Date.now() + 1000;
-            return;
-        }
-        if (Date.now() < this.populationStableAt) return;
+        this.players = count;
         this.warpAttempts = 0;
-        this.lastPopulationCheckAt = Date.now();
-        if (count > this.maxPlayers) {
+        const population = count === null ? 'Hub population check disabled.' : `Hub has ${count} player(s).`;
+        if (this.maxPlayers > 0 && count > this.maxPlayers) {
             this.switchHub();
         } else if (!this.recoveringSlayer && this.config.boundaryCheck(Player.getX(), Player.getY(), Player.getZ())) {
-            this.message(`&aHub has ${count} player(s). Already in ${this.config.area}; calling Maddox.`);
+            this.message(`&a${population} Already in ${this.config.area}; calling Maddox.`);
             this.beginMenu();
         } else {
-            this.message(`&aHub has ${count} player(s). Traveling to ${this.config.area}.`);
+            this.message(`&a${population} Traveling to ${this.config.area}.`);
             this.menuAttempts = 0;
             this.pathTo([this.config.destination], STATES.CALL, this.config.area);
         }
     }
 
-    switchHub() {
-        this.message(`Hub has ${this.players} players (limit ${this.maxPlayers}). Finding another Hub.`);
+    switchHub(reason = `Hub has ${this.players} players (limit ${this.maxPlayers}).`) {
+        this.message(`${reason} Finding another Hub.`);
         this.questVerified = false;
         this.restartSeen = false;
         this.selectorClicks = 0;
@@ -492,7 +499,7 @@ class AutoSlayer extends ModuleBase {
             (success) => {
                 if (!this.enabled || this.state !== STATES.TRAVEL || this.revision !== revision) return;
                 this.pathPending = false;
-                if (success) this.transition(this.afterTravel);
+                if (success) this.transition(this.afterTravel, 0, this.afterTravel === STATES.SELECTOR);
                 else if (this.pathAttempts >= MAX_ATTEMPTS) this.fail(`No path to ${this.destination}.`);
                 else this.defer(1000);
             },
@@ -548,7 +555,7 @@ class AutoSlayer extends ModuleBase {
         Rotations.onComplete(() => {
             if (!this.enabled || this.state !== STATES.SELECTOR || revision !== this.revision) return;
             this.selectorAimed = true;
-            this.defer();
+            this.defer(0, true);
         });
     }
 
@@ -995,6 +1002,7 @@ class AutoSlayer extends ModuleBase {
         if (this.state === STATES.MOBS && !this.pendingBoss && Date.now() - this.lastCompletedAt < 5000) return;
         this.lastCompletedAt = Date.now();
         this.completed++;
+        if (this.checkPopulation()) return;
         if (this.restartSeen) {
             this.startCombat(STATES.MOBS, true);
             return;
@@ -1028,6 +1036,7 @@ class AutoSlayer extends ModuleBase {
         this.restartSeen = false;
         this.hopAttempts = 0;
         this.players = null;
+        this.areaPlayers = null;
         this.populationStableAt = 0;
         resetAreaCache();
         this.transition(starting ? STATES.STARTING : STATES.HUB, 5000);
