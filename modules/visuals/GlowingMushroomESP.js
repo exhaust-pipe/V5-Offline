@@ -1,6 +1,6 @@
 import { ParticleTypes, Vec3d } from '../../utils/Constants';
 import { ModuleBase } from '../../utils/ModuleBase';
-import { ClientboundLevelParticlesPacket } from '../../utils/Packets';
+import { ClientboundLevelParticlesPacket, getLevelParticleData } from '../../utils/Packets';
 
 const ENTITY_EFFECT = ParticleTypes.ENTITY_EFFECT;
 const MUSHROOM_IDS = new Set(['minecraft:red_mushroom', 'minecraft:brown_mushroom']);
@@ -36,12 +36,11 @@ class GlowingMushroomESP extends ModuleBase {
     }
 
     onParticlePacket(packet) {
-        const particle = packet.getParticle?.();
+        const data = getLevelParticleData(packet);
+        const particle = data.particle;
         if ((particle?.getType?.() ?? particle) !== ENTITY_EFFECT) return;
 
-        const x = packet.getX();
-        const y = packet.getY();
-        const z = packet.getZ();
+        const { x, y, z } = data;
 
         const bx = Math.floor(x);
         const by = Math.floor(y);

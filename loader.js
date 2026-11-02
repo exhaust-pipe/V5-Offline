@@ -9,10 +9,11 @@ import './gui/GUI';
 
 /* CORE */
 import './utils/Config';
+import { IS_MC_26_3 } from './utils/Constants';
 import { ServerboundCommandSuggestionPacket } from './utils/Packets';
 
 register('packetSent', (packet, event) => {
-    if (packet.getCommand().toLowerCase().startsWith('/v5')) cancel(event);
+    if ((IS_MC_26_3 ? packet.command() : packet.getCommand()).toLowerCase().startsWith('/v5')) cancel(event);
 }).setFilteredClass(ServerboundCommandSuggestionPacket);
 
 /* Utils */

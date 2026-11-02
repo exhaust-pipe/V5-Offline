@@ -1,6 +1,6 @@
-import { BP, Direction, MCHand, Vec3d } from './Constants';
+import { BP, Direction, Vec3d } from './Constants';
 import { setGhostBlock } from './MiningUtils';
-import { ServerboundSwingPacket, ServerboundPlayerActionPacket, ServerboundPlayerActionPacket$Action } from './Packets';
+import { createSwingPacket, ServerboundPlayerActionPacket, ServerboundPlayerActionPacket$Action } from './Packets';
 
 const MAX_REACH_DISTANCE = 6;
 const MIN_NUKE_INTERVAL = 50;
@@ -53,7 +53,7 @@ export function sendBreakPackets(blockPos, facing) {
     Client.sendSequencedPacket(
         (sequence) => new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket$Action.START_DESTROY_BLOCK, blockPos, facing, sequence)
     );
-    Client.sendPacket(new ServerboundSwingPacket(MCHand.MAIN_HAND));
+    Client.sendPacket(createSwingPacket());
 }
 
 export const queueNuke = (blockPos, ticks) => {
@@ -146,7 +146,7 @@ nukeTick = register('tick', () => {
                 stopVanillaBreak(vanillaBreak);
                 vanillaBreak = null;
             }
-            Client.sendPacket(new ServerboundSwingPacket(MCHand.MAIN_HAND));
+            Client.sendPacket(createSwingPacket());
         }
     } else if (nukeQueue.length) {
         const action = nukeQueue.pop();
@@ -165,7 +165,7 @@ nukeTick = register('tick', () => {
         }
     } else if (tickCounter > 0) {
         tickCounter--;
-        Client.sendPacket(new ServerboundSwingPacket(MCHand.MAIN_HAND));
+        Client.sendPacket(createSwingPacket());
     }
     syncNukeTick();
 }).unregister();

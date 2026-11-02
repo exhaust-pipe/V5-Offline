@@ -1,6 +1,6 @@
 import { drawRect, drawText } from '../gui/Utils';
 import { chatFailsafe } from '../utils/Chat';
-import { AudioSystem, File, FloatControl, GLFW, globalAssetsDir } from '../utils/Constants';
+import { AudioSystem, File, FloatControl, GLFW, globalAssetsDir, IS_MC_26_3, SDLVideo } from '../utils/Constants';
 import { getConfigFile, writeConfigFile } from '../utils/Utils';
 import FailsafeUtils from './FailsafeUtils';
 
@@ -201,10 +201,10 @@ class AlertUtilsClass {
         const existingKeybinds = getConfigFile('keybinds.json') || {};
         let savedKeycode = existingKeybinds[keyName];
 
-        if (savedKeycode === undefined || savedKeycode === 0 || savedKeycode === -1 || savedKeycode === 75) savedKeycode = Keyboard.KEY_K;
+        if (savedKeycode === undefined || savedKeycode === 0 || savedKeycode === -1) savedKeycode = Keyboard.KEY_K;
 
-        this.cancelKey = Keyboard.getKeyName(savedKeycode);
         this.cancelKeyBind = new KeyBind(keyName, savedKeycode, 'v5_core');
+        this.cancelKey = this.cancelKeyBind.getKeyName();
 
         this.cancelKeyBind.registerKeyPress(() => {
             if (!this.isAlerting) return;
@@ -221,12 +221,22 @@ class AlertUtilsClass {
         });
     }
 
-    /**
-     * Uses GLFW to grab the window on a failsafe if they have the setting toggled (WIP)
-     */
     _grabWindowOnFailsafe() {
         try {
             const windowHandle = Client.getMinecraft().getWindow().handle();
+
+            if (IS_MC_26_3) {
+                const flags = SDLVideo.SDL_GetWindowFlags(windowHandle);
+                const wasIconified = (flags & SDLVideo.SDL_WINDOW_MINIMIZED) !== 0;
+                const wasMaximized = (flags & SDLVideo.SDL_WINDOW_MAXIMIZED) !== 0;
+
+                SDLVideo.SDL_ShowWindow(windowHandle);
+                if (wasIconified) SDLVideo.SDL_RestoreWindow(windowHandle);
+                if (wasMaximized) SDLVideo.SDL_MaximizeWindow(windowHandle);
+                SDLVideo.SDL_RaiseWindow(windowHandle);
+                SDLVideo.SDL_FlashWindow(windowHandle, SDLVideo.SDL_FLASH_UNTIL_FOCUSED);
+                return;
+            }
 
             const wasIconified = GLFW.glfwGetWindowAttrib(windowHandle, GLFW.GLFW_ICONIFIED) === GLFW.GLFW_TRUE;
             const wasMaximized = GLFW.glfwGetWindowAttrib(windowHandle, GLFW.GLFW_MAXIMIZED) === GLFW.GLFW_TRUE;
@@ -245,7 +255,7 @@ class AlertUtilsClass {
             GLFW.glfwFocusWindow(windowHandle);
             GLFW.glfwRequestWindowAttention(windowHandle);
         } catch (e) {
-            chatFailsafe('GLFW error occured! report this. ' + e);
+            chatFailsafe('Window error occurred! Report this. ' + e);
             console.error(e);
         }
     }

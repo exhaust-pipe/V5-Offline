@@ -1,5 +1,6 @@
 import { OverlayManager } from '../../gui/OverlayUtils';
 import { GuiState } from '../../gui/core/GuiState';
+import { GameState } from '../../utils/GameState';
 import { MacroState } from '../../utils/MacroState';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { Afk } from '../other/AfkMacro';
@@ -31,6 +32,8 @@ class SkydiaoAutoAfk extends ModuleBase {
         this.pendingTotals = [];
         this.lastTotal = null;
         this.resumePending = false;
+        this.worldReadyAt = 0;
+        this.skyblockRetryAt = 0;
         this.addSlider(
             'Ban Threshold',
             0,
@@ -59,6 +62,9 @@ class SkydiaoAutoAfk extends ModuleBase {
             if (total !== null) this.pendingTotals.push(total);
         });
         this.on('tick', () => this.tick());
+        this.on('worldLoad', () => {
+            this.worldReadyAt = Date.now() + 5000;
+        });
         this.on('guiOpened', () => {
             if (GuiState.macroToggleOpen) this.clearSession();
         });
@@ -116,17 +122,13 @@ class SkydiaoAutoAfk extends ModuleBase {
         this.pendingTotals = [];
         totals.forEach((total) => {
             this.lastTotal = total;
-            if (!World.isLoaded() || !Player.getPlayer()) return;
             if (total > this.threshold) {
                 this.resumePending = false;
-                this.pauseMacros();
+                if (World.isLoaded() && Player.getPlayer()) this.pauseMacros();
             } else if (total < this.threshold) this.resumePending = this.ownsAfk();
             else this.resumePending = false;
         });
-        if (this.resumePending && this.canResumeMacros()) {
-            this.resumePending = false;
-            this.resumeMacros();
-        }
+        if (this.resumePending) this.resumeMacros();
     }
 
     pauseMacros() {
@@ -152,11 +154,29 @@ class SkydiaoAutoAfk extends ModuleBase {
 
     canResumeMacros() {
         const mc = Client.getMinecraft();
-        return this.ownsAfk() && World.isLoaded() && !!Player.getPlayer() && mc.screen == null;
+        return (
+            this.ownsAfk() &&
+            GameState.current.state === 'PLAYING' &&
+            World.isLoaded() &&
+            !!Player.getPlayer() &&
+            mc.screen == null &&
+            Date.now() >= this.worldReadyAt
+        );
     }
 
     resumeMacros() {
         if (!this.canResumeMacros()) return;
+        const title = ChatLib.removeFormatting(String(Scoreboard.getTitle() ?? '')).trim();
+        if (!title.includes('SKYBLOCK')) {
+            const now = Date.now();
+            if (now >= this.skyblockRetryAt) {
+                this.skyblockRetryAt = now + 15000;
+                this.message('&eReturning to SkyBlock before resuming previous macros.');
+                ChatLib.command(title ? 'play skyblock' : 'lobby');
+            }
+            return;
+        }
+        this.resumePending = false;
         const previous = this.previousMacros;
         Afk.toggle(false, false, TOGGLE_CONTEXT);
         previous.forEach(({ module, disableMeta }) => {
@@ -173,6 +193,7 @@ class SkydiaoAutoAfk extends ModuleBase {
         this.recoveryToken = null;
         this.pendingTotals = [];
         this.resumePending = false;
+        this.skyblockRetryAt = 0;
         OverlayManager.resetTime(this.oid);
     }
 
@@ -187,6 +208,7 @@ class SkydiaoAutoAfk extends ModuleBase {
     onEnable() {
         this.lastTotal = null;
         this.clearSession();
+        this.worldReadyAt = Date.now() + 5000;
         this.message('&aListening for Skydiao 10-minute ban reports.');
     }
 

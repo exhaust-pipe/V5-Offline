@@ -1,4 +1,4 @@
-import { DataFlavor, Toolkit, globalAssetsDir } from '../../utils/Constants';
+import { DataFlavor, IS_MC_26_3, ScriptKey, Toolkit, globalAssetsDir } from '../../utils/Constants';
 import {
     colorWithAlpha,
     drawImage,
@@ -12,9 +12,13 @@ import {
     isInside,
     PADDING,
     playClickSound,
+    setTextInputArea,
+    startTextInput,
+    stopTextInput,
     THEME,
     TypingState,
 } from '../Utils';
+import { GuiState } from '../core/GuiState';
 
 const SEARCH_ICON = globalAssetsDir.getPath() + '/search.svg';
 
@@ -87,6 +91,7 @@ export const SearchBar = {
         const x = this.getX(panel, currentWidth);
 
         const barRect = { x, y, width: currentWidth, height: this.height };
+        if (this.isFocused) setTextInputArea(barRect);
         const hovered = isInside(mouseX, mouseY, barRect);
         this.hoverBlockRect = barRect;
 
@@ -177,6 +182,9 @@ export const SearchBar = {
 
             if (this.isFocused) {
                 this.cursorIndex = this.query.length;
+                startTextInput(GuiState.myGui, iconRect);
+            } else {
+                stopTextInput(GuiState.myGui);
             }
 
             playClickSound();
@@ -192,6 +200,7 @@ export const SearchBar = {
                 if (!this.isFocused) {
                     this.isFocused = true;
                     TypingState.isTyping = true;
+                    startTextInput(GuiState.myGui, barRect);
                     playClickSound();
                 }
                 this.cursorIndex = this.getCursorIndexFromMouseX(mouseX);
@@ -203,6 +212,7 @@ export const SearchBar = {
             this.isExpanded = this.query !== '';
             this.isFocused = false;
             TypingState.isTyping = false;
+            stopTextInput(GuiState.myGui);
         }
 
         return false;
@@ -211,32 +221,25 @@ export const SearchBar = {
     handleKeyType(char, keyCode) {
         if (!this.isFocused) return false;
 
-        const BACKSPACE = 259;
-        const ESCAPE = 256;
-        const ENTER = 257;
-        const LEFT_ARROW = 263;
-        const RIGHT_ARROW = 262;
-        const SPACE = 32;
-        const KEY_V = 86;
-
-        if (keyCode === ESCAPE || keyCode === ENTER) {
+        if (keyCode === ScriptKey.ESCAPE || keyCode === ScriptKey.ENTER) {
             this.isExpanded = this.query !== '';
             this.isFocused = false;
             TypingState.isTyping = false;
+            stopTextInput(GuiState.myGui);
             playClickSound();
             return true;
         }
 
-        if (keyCode === LEFT_ARROW) {
+        if (keyCode === ScriptKey.LEFT) {
             if (this.cursorIndex > 0) this.cursorIndex--;
             return true;
         }
-        if (keyCode === RIGHT_ARROW) {
+        if (keyCode === ScriptKey.RIGHT) {
             if (this.cursorIndex < this.query.length) this.cursorIndex++;
             return true;
         }
 
-        if (keyCode === BACKSPACE) {
+        if (keyCode === ScriptKey.BACKSPACE) {
             if (this.cursorIndex > 0) {
                 this.query = this.query.slice(0, this.cursorIndex - 1) + this.query.slice(this.cursorIndex);
                 this.cursorIndex--;
@@ -245,7 +248,7 @@ export const SearchBar = {
         }
 
         const ctrlDown = Keyboard.isKeyDown(Keyboard.KEY_LCONTROL) || Keyboard.isKeyDown(Keyboard.KEY_RCONTROL);
-        if (ctrlDown && keyCode === KEY_V) {
+        if (ctrlDown && keyCode === ScriptKey.V) {
             try {
                 const clipboard = Toolkit.getDefaultToolkit().getSystemClipboard().getData(DataFlavor.stringFlavor);
                 if (clipboard !== null && clipboard !== undefined) {
@@ -260,15 +263,15 @@ export const SearchBar = {
             return true;
         }
 
-        if (keyCode === SPACE) {
+        if (!IS_MC_26_3 && keyCode === ScriptKey.SPACE) {
             this.insertText(' ');
             return true;
         }
 
         const charStr = char?.toString();
-        if (charStr && charStr.length === 1) {
+        if (charStr) {
             const code = charStr.codePointAt(0);
-            if (code >= 33 && code <= 126) {
+            if (code >= ScriptKey.SPACE) {
                 this.insertText(getTypedCharacter(charStr));
                 return true;
             }
@@ -315,6 +318,7 @@ export const SearchBar = {
     },
 
     resetSearch() {
+        stopTextInput(GuiState.myGui);
         this.isExpanded = false;
         this.isFocused = false;
         TypingState.isTyping = false;

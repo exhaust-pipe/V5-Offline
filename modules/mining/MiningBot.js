@@ -4,7 +4,7 @@ import { MiningUtils } from '../../utils/MiningUtils';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { finiteNumber } from '../../utils/NumberUtils';
 import { NukerUtils } from '../../utils/NukerUtils';
-import { ClientboundLevelParticlesPacket } from '../../utils/Packets';
+import { getLevelParticleData, ClientboundLevelParticlesPacket } from '../../utils/Packets';
 import { Raytrace, visibilityChecker } from '../../utils/Raytrace';
 import { manager } from '../../utils/SkyblockEvents';
 import { Utils } from '../../utils/Utils';
@@ -1016,24 +1016,27 @@ class Bot extends ModuleBase {
 
     onPrecisionMinerParticle(packet) {
         if (!this.PRECISION_MINER) return;
-        const particle = packet.getParticle();
+        const data = getLevelParticleData(packet);
+        const particle = data.particle;
         const type = particle?.getType?.() ?? particle;
         if (
             (type !== CritParticle && type !== HappyVillagerParticle) ||
-            packet.getCount() !== 1 ||
-            packet.getXDist() !== 0 ||
-            packet.getYDist() !== 0 ||
-            packet.getZDist() !== 0 ||
-            packet.getMaxSpeed() !== 0
+            data.count !== 1 ||
+            data.xDist !== 0 ||
+            data.yDist !== 0 ||
+            data.zDist !== 0 ||
+            data.xSpeed !== 0 ||
+            data.ySpeed !== 0 ||
+            data.zSpeed !== 0
         )
             return;
 
         const target = this.currentTarget;
         if (!target) return;
         const aim = {
-            x: packet.getX(),
-            y: packet.getY(),
-            z: packet.getZ(),
+            x: data.x,
+            y: data.y,
+            z: data.z,
             targetX: target.x,
             targetY: target.y,
             targetZ: target.z,

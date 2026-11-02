@@ -1,4 +1,4 @@
-import { ClipContext, InputConstants, Vec3d } from '../../utils/Constants';
+import { ClipContext, Vec3d } from '../../utils/Constants';
 import { clearCameraPosition, setCameraPosition } from '../../utils/Camera';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { wrapTo180 } from '../../utils/Math';
@@ -250,7 +250,7 @@ class Freecam extends ModuleBase {
     }
 
     isKeyDown(keybind) {
-        return Client.getCurrentScreen() == null && InputConstants.isKeyDown(mc.getWindow(), keybind.getKeyCode());
+        return Client.getCurrentScreen() == null && keybind.isPhysicalKeyDown();
     }
 
     getInitialCameraPos(player, yaw, pitch) {

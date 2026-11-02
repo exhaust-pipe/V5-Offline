@@ -1,3 +1,7 @@
+/* COMBAT */
+import './combat/CombatBot';
+import './combat/AutoSlayer';
+
 /* MINING */
 import './mining/CommissionMacro';
 import './mining/ExcavatorMacro';

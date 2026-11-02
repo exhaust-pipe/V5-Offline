@@ -11,7 +11,11 @@ import {
     getTextWidth,
     isInside,
     playClickSound,
+    setTextInputArea,
+    startTextInput,
+    stopTextInput,
 } from '../Utils';
+import { ScriptKey } from '../../utils/Constants';
 import { setTooltip } from '../core/GuiTooltip';
 import { GuiState } from '../core/GuiState';
 
@@ -228,6 +232,7 @@ export class Slider {
                 width: valueBoxWidth,
                 height: valueBoxHeight,
             };
+            if (isActive) setTextInputArea(this.valueRects[key]);
 
             drawRoundedRectangle({
                 x: currentValueX,
@@ -273,6 +278,7 @@ export class Slider {
                 this.typingHandle = inputHandle;
                 TypingState.isTyping = true;
                 this.inputValue = '';
+                startTextInput(GuiState.myGui, this.valueRects[inputHandle]);
             }
             return true;
         }
@@ -321,21 +327,18 @@ export class Slider {
     handleKeyType(char, keyCode) {
         if (!this.isTyping) return false;
 
-        const DELETE_KEY = 259;
-        const ENTER_KEY = 257;
-        const ESCAPE_KEY = 256;
-
-        if (keyCode === ENTER_KEY || keyCode === ESCAPE_KEY) {
+        if (keyCode === ScriptKey.ENTER || keyCode === ScriptKey.ESCAPE) {
             this.handleInputFinish();
             return true;
         }
 
-        if (keyCode === DELETE_KEY) {
+        if (keyCode === ScriptKey.BACKSPACE) {
             this.inputValue = this.inputValue.slice(0, -1);
             return true;
         }
 
-        const typedChar = char ? getTypedCharacter(char) : char;
+        const charString = String(char || '');
+        const typedChar = charString && charString.codePointAt(0) >= ScriptKey.SPACE ? getTypedCharacter(charString) : '';
         if (/[0-9.\-]/.test(typedChar)) {
             let nextInputValue = this.inputValue + typedChar;
 
@@ -365,6 +368,7 @@ export class Slider {
 
     handleInputFinish({ playSound = true } = {}) {
         if (!this.isTyping) return;
+        stopTextInput(GuiState.myGui);
 
         let typedValue = Number.parseFloat(this.inputValue);
 

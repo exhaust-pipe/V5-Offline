@@ -3,7 +3,7 @@ import { offsetPitch } from '../../utils/Math';
 import { hasMaxGreatExplorer } from '../../utils/MiningUtils';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { cancelVanillaNuke, isVanillaNukeActive, nukeQueue, queueNuke, queueVanillaNuke } from '../../utils/NukerUtils';
-import { ClientboundLevelParticlesPacket, ServerboundUseItemOnPacket } from '../../utils/Packets';
+import { getLevelParticleData, ClientboundLevelParticlesPacket, ServerboundUseItemOnPacket } from '../../utils/Packets';
 import { Rotations } from '../../utils/player/Rotations';
 import { registerSkyblockEvent } from '../../utils/SkyblockEvents';
 import { executeAsync } from '../../utils/ThreadExecutor';
@@ -204,8 +204,9 @@ class NukerClass extends ModuleBase {
 
         this.on('packetReceived', (packet) => {
             if (!this.autoChest || Client.isInGui()) return;
-            if (packet.getParticle()?.getType() !== net.minecraft.core.particles.ParticleTypes.CRIT) return;
-            const particle = { x: packet.getX(), y: packet.getY(), z: packet.getZ() };
+            const data = getLevelParticleData(packet);
+            if (data.particle?.getType() !== net.minecraft.core.particles.ParticleTypes.CRIT) return;
+            const particle = { x: data.x, y: data.y, z: data.z };
             const player = Player.getPlayer();
             const distance = player ? Math.hypot(particle.x - player.getX(), particle.z - player.getZ()) : 0;
             const aim = offsetPitch(particle, 5 / Math.max(1, distance));
