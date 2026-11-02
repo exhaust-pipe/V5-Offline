@@ -6,8 +6,6 @@ V5的离线版本，删除了所有包含联网的功能，并添加/完善了�
 
 安装方法见[V5Loader-Offline](https://github.com/exhaust-pipe/V5Loader-Offline)
 
-2.3.0 版本支持 Minecraft 26.1.2、26.2 和 26.3。请同时更新配套的 [V5Loader-Offline v2.3.0](https://github.com/exhaust-pipe/V5Loader-Offline/releases/tag/v2.3.0) 和脚本。Minecraft 26.3 需要使用 OpenGL 渲染后端。
-
 ## 原项目链接
 
 - [原项目文档](https://rdbt.top/docs/getting-started)
