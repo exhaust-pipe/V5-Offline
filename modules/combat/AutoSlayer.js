@@ -93,6 +93,7 @@ class AutoSlayer extends ModuleBase {
         this.lastMobTarget = null;
         this.lastKilledMobPosition = null;
         this.recoveringSlayer = false;
+        this.questPhase = null;
         this.state = STATES.IDLE;
         this.revision = 0;
         this.guiStability = new GuiStability();
@@ -224,6 +225,7 @@ class AutoSlayer extends ModuleBase {
         this.areaPlayers = null;
         this.populationStableAt = 0;
         this.questVerified = false;
+        this.questPhase = null;
         this.restartSeen = false;
         this.recoveringSlayer = false;
         Mouse.ungrab();
@@ -236,6 +238,7 @@ class AutoSlayer extends ModuleBase {
         this.revision++;
         this.state = STATES.IDLE;
         this.questVerified = false;
+        this.questPhase = null;
         this.recoveringSlayer = false;
         if (!this.ownsCombat) return;
         try {
@@ -266,6 +269,7 @@ class AutoSlayer extends ModuleBase {
         if (this.recoveringSlayer && !this.pathPending) return;
         this.recoveringSlayer = true;
         this.questVerified = false;
+        this.questPhase = null;
         this.restartSeen = false;
         this.staleScoreboardPhase = null;
         this.menuAttempts = 0;
@@ -739,6 +743,7 @@ class AutoSlayer extends ModuleBase {
         const completed = name === 'Slayer' ? this.findMenuItem('Slayer Quest Complete!') : null;
         if (completed && this.state !== STATES.CLAIM) {
             this.questVerified = false;
+            this.questPhase = null;
             this.click(completed, STATES.CLAIM);
             return;
         }
@@ -822,8 +827,12 @@ class AutoSlayer extends ModuleBase {
             const boss = lore.match(/^Boss:\s*(.+?)\s*$/m)?.[1];
             if (!boss) return false;
             if (cleanLabel(boss) === this.questName && !this.restartQuestPending) {
+                const detectedPhase = this.scoreboardPhase();
+                if (detectedPhase === STATES.RESTART) return false;
+                const phase = detectedPhase || this.questPhase;
+                if (!phase) return false;
                 this.questVerified = true;
-                this.startCombat(STATES.MOBS);
+                this.startCombat(phase);
             } else {
                 this.questVerified = false;
                 this.click(ongoing, STATES.CANCEL);
@@ -832,6 +841,7 @@ class AutoSlayer extends ModuleBase {
         }
         const category = this.findMenuItem(this.config.boss);
         if (!category) return false;
+        this.questPhase = null;
         if (this.restartQuestPending) {
             this.stopCombat();
             this.restartQuestPending = false;
@@ -852,6 +862,7 @@ class AutoSlayer extends ModuleBase {
     }
 
     startCombat(phase, newQuest = false) {
+        this.questPhase = phase;
         const switchingToBoss = this.state === STATES.MOBS && phase === STATES.BOSS;
         if (switchingToBoss) {
             if (!this.pendingBoss) {
@@ -925,6 +936,7 @@ class AutoSlayer extends ModuleBase {
         const lines = (Scoreboard.getLines() || []).map((line) => cleanLabel(line?.getName?.() ?? line));
         if (lines.some((line) => /\bBoss slain\s*!/i.test(line))) return STATES.RESTART;
         if (lines.some((line) => /\bSlay\s+the\s+boss\s*!/i.test(line))) return STATES.BOSS;
+        if (lines.some((line) => /\b[\d,.]+[kmb]?\s*\/\s*[\d,.]+[kmb]?\s+Combat XP\b/i.test(line))) return STATES.MOBS;
         return null;
     }
 
@@ -979,11 +991,11 @@ class AutoSlayer extends ModuleBase {
         CombatBot.setExternalTargets(this.getTargets(), this.combatOptions);
         CombatBot.toggle(true, true);
         const targets = CombatBot.getTargets();
-        if (targets.some((target) => CombatBot.isTargetUsable(target, targets))) {
+        if (this.pendingBoss) this.noTargetSince = null;
+        else if (targets.some((target) => CombatBot.isTargetUsable(target, targets))) {
             this.noTargetSince = null;
             this.noTargetAttempts = 0;
-        } else if (this.pendingBoss) this.noTargetSince = null;
-        else if (this.noTargetSince === null) this.noTargetSince = Date.now();
+        } else if (this.noTargetSince === null) this.noTargetSince = Date.now();
         else {
             const timeout = this.state === STATES.BOSS ? BOSS_NO_TARGET_TIMEOUT_MS : NO_TARGET_TIMEOUT_MS;
             if (Date.now() - this.noTargetSince >= timeout) this.retryNoTarget(timeout);
@@ -1053,6 +1065,7 @@ class AutoSlayer extends ModuleBase {
         if (this.state === STATES.MOBS && !this.pendingBoss && Date.now() - this.lastCompletedAt < 5000) return;
         this.lastCompletedAt = Date.now();
         this.completed++;
+        this.questPhase = null;
         if (this.checkPopulation()) return;
         if (this.restartSeen) {
             this.startCombat(STATES.MOBS, true);
