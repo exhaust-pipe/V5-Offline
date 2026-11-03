@@ -54,8 +54,10 @@ const SLAYERS = {
 const TIERS = ['I', 'II', 'III', 'IV'];
 const HUB_SELECTOR = [-5.5, 69, -22.5];
 const MAX_ATTEMPTS = 4;
+const MAX_NO_TARGET_ATTEMPTS = 3;
 const RESPONSE_TIMEOUT_MS = 15000;
 const NO_TARGET_TIMEOUT_MS = 10000;
+const BOSS_NO_TARGET_TIMEOUT_MS = 20000;
 const RESPAWN_SETTLE_MS = 1000;
 const BOSS_TURN_JITTER_DEGREES = 30;
 const clean = (value) => ChatLib.removeFormatting(String(value ?? '')).trim();
@@ -82,7 +84,6 @@ class AutoSlayer extends ModuleBase {
         this.phone = 'Maddox Batphone';
         this.maxPlayers = 5;
         this.maxAreaPlayers = 1;
-        this.noTargetReturnLimit = 3;
         this.weaponSlot = 1;
         this.clickDelay = { low: 200, high: 400 };
         this.actionDelay = { low: 1, high: 3 };
@@ -98,7 +99,9 @@ class AutoSlayer extends ModuleBase {
         this.players = null;
         this.areaPlayers = null;
         this.completed = 0;
-        this.noTargetReturns = 0;
+        this.noTargetAttempts = 0;
+        this.restartQuestPending = false;
+        this.forceHubWarp = false;
 
         this.addMultiToggle(
             'Slayer Type',
@@ -141,14 +144,6 @@ class AutoSlayer extends ModuleBase {
             'Maximum loaded players in the Slayer area, including yourself and excluding NPCs. Checked on arrival and after each completed quest. 0 disables this check.'
         );
         this.addSlider(
-            'Slayer No-Target Return Limit',
-            1,
-            10,
-            3,
-            (value) => (this.noTargetReturnLimit = Math.max(1, Math.min(10, Math.round(finiteNumber(value, 3))))),
-            'Maximum returns to the Slayer area after 10 seconds without a target per quest. Exceeding this limit cancels the quest and starts a new one.'
-        );
-        this.addSlider(
             'Slayer Weapon Slot',
             1,
             8,
@@ -183,7 +178,7 @@ class AutoSlayer extends ModuleBase {
                     'Hub Players': () => this.players ?? 'Unknown',
                     'Area Players': () => this.areaPlayers ?? 'Unknown',
                     'Bosses Slain': () => this.completed,
-                    'No-Target Returns': () => `${this.noTargetReturns}/${this.noTargetReturnLimit}`,
+                    'No-Target Attempts': () => `${this.noTargetAttempts}/${MAX_NO_TARGET_ATTEMPTS}`,
                 },
             },
         ]);
@@ -221,7 +216,9 @@ class AutoSlayer extends ModuleBase {
         this.warpAttempts = 0;
         this.hopAttempts = 0;
         this.completed = 0;
-        this.noTargetReturns = 0;
+        this.noTargetAttempts = 0;
+        this.restartQuestPending = false;
+        this.forceHubWarp = false;
         this.lastCompletedAt = 0;
         this.players = null;
         this.areaPlayers = null;
@@ -257,6 +254,11 @@ class AutoSlayer extends ModuleBase {
     fail(reason) {
         this.message(`&c${reason} Stopping macro.`);
         this.toggle(false);
+    }
+
+    locationDetails(goals = [this.config.destination]) {
+        const position = [Player.getX(), Player.getY(), Player.getZ()].map((value) => value.toFixed(1)).join(', ');
+        return `Player XYZ: (${position}); destination XYZ: ${goals.map((point) => `(${point.join(', ')})`).join(' / ')}.`;
     }
 
     recoverSlayer(reason) {
@@ -350,20 +352,23 @@ class AutoSlayer extends ModuleBase {
                 this.transition(STATES.WARP);
                 break;
             }
-            case STATES.WARP:
+            case STATES.WARP: {
                 if (Client.isInGui()) {
                     closeInventory();
                     this.defer(150, true);
                     break;
                 }
-                if (getArea() === 'Hub') {
+                if (!this.forceHubWarp && getArea() === 'Hub') {
                     this.transition(STATES.HUB);
                     break;
                 }
                 if (++this.warpAttempts > MAX_ATTEMPTS) return this.fail('Could not travel to the Hub.');
-                ChatLib.command('hub');
+                const command = this.forceHubWarp ? 'warp hub' : 'hub';
+                this.forceHubWarp = false;
+                ChatLib.command(command);
                 this.transition(STATES.HUB, 3000);
                 break;
+            }
             case STATES.HUB:
                 this.checkHub();
                 break;
@@ -382,7 +387,7 @@ class AutoSlayer extends ModuleBase {
                 }
                 break;
             case STATES.CALL:
-                if (this.areaPlayers === null && this.checkAreaPopulation()) break;
+                if (!this.restartQuestPending && this.areaPlayers === null && this.checkAreaPopulation()) break;
                 if (guiReady) this.callMaddox();
                 else if (Date.now() >= this.deadline) this.retryMenu();
                 break;
@@ -435,6 +440,10 @@ class AutoSlayer extends ModuleBase {
             if (Date.now() >= this.deadline) this.transition(STATES.WARP);
             return;
         }
+        if (this.restartQuestPending) {
+            this.beginMenu(true);
+            return;
+        }
         const count = this.readPopulation();
         if (this.maxPlayers > 0) {
             if (count === null) {
@@ -459,7 +468,7 @@ class AutoSlayer extends ModuleBase {
         } else {
             this.message(`&a${population} Traveling to ${this.config.area}.`);
             this.menuAttempts = 0;
-            this.pathTo([this.config.destination], STATES.CALL, this.config.area);
+            this.pathTo([this.config.destination], STATES.CALL, this.config.area, 0, this.noTargetAttempts === 2);
         }
     }
 
@@ -475,19 +484,20 @@ class AutoSlayer extends ModuleBase {
         this.pathTo(CombatBot.buildPathGoals(position), STATES.SELECTOR, 'Hub Selector');
     }
 
-    pathTo(goals, nextState, destination, minimum = 0) {
+    pathTo(goals, nextState, destination, minimum = 0, fromPlayer = false) {
         this.stopCombat();
         this.pathGoals = goals;
         this.afterTravel = nextState;
         this.destination = destination;
         this.pathPending = false;
         this.pathAttempts = 0;
+        this.pathFromPlayer = fromPlayer;
         this.transition(STATES.TRAVEL, minimum);
     }
 
     travel() {
         if (this.pathPending) {
-            if (Date.now() >= this.deadline) this.fail(`Travel to ${this.destination} timed out.`);
+            if (Date.now() >= this.deadline) this.fail(`Travel to ${this.destination} timed out. ${this.locationDetails(this.pathGoals)}`);
             return;
         }
         this.pathPending = true;
@@ -500,10 +510,16 @@ class AutoSlayer extends ModuleBase {
                 if (!this.enabled || this.state !== STATES.TRAVEL || this.revision !== revision) return;
                 this.pathPending = false;
                 if (success) this.transition(this.afterTravel, 0, this.afterTravel === STATES.SELECTOR);
-                else if (this.pathAttempts >= MAX_ATTEMPTS) this.fail(`No path to ${this.destination}.`);
-                else this.defer(1000);
+                else {
+                    const reason = `No path to ${this.destination} (${this.pathAttempts}/${MAX_ATTEMPTS}). ${this.locationDetails(this.pathGoals)}`;
+                    if (this.pathAttempts >= MAX_ATTEMPTS) this.fail(reason);
+                    else {
+                        this.message(`&e${reason} Retrying.`);
+                        this.defer(1000);
+                    }
+                }
             },
-            { walkArrivalRadius: 2 }
+            { walkArrivalRadius: 2, allowWarpStarts: !this.pathFromPlayer }
         );
     }
 
@@ -804,7 +820,7 @@ class AutoSlayer extends ModuleBase {
             const lore = this.lore(ongoing);
             const boss = lore.match(/^Boss:\s*(.+?)\s*$/m)?.[1];
             if (!boss) return false;
-            if (cleanLabel(boss) === this.questName && this.noTargetReturns <= this.noTargetReturnLimit) {
+            if (cleanLabel(boss) === this.questName && !this.restartQuestPending) {
                 this.questVerified = true;
                 this.startCombat(STATES.MOBS);
             } else {
@@ -815,8 +831,21 @@ class AutoSlayer extends ModuleBase {
         }
         const category = this.findMenuItem(this.config.boss);
         if (!category) return false;
+        if (this.restartQuestPending) {
+            this.stopCombat();
+            this.restartQuestPending = false;
+            this.recoveringSlayer = false;
+            this.forceHubWarp = false;
+            this.warpAttempts = 0;
+            this.hopAttempts = 0;
+            this.players = null;
+            this.areaPlayers = null;
+            this.populationStableAt = 0;
+            closeInventory();
+            this.transition(STATES.STARTING, 5000);
+            return true;
+        }
         this.questVerified = false;
-        this.noTargetReturns = 0;
         this.click(category, STATES.TIERS);
         return true;
     }
@@ -872,7 +901,6 @@ class AutoSlayer extends ModuleBase {
         if (Client.isInGui()) closeInventory();
         this.menuAttempts = 0;
         this.restartSeen = false;
-        if (newQuest) this.noTargetReturns = 0;
         this.bossOrigin = bossOrigin;
         this.staleScoreboardPhase = newQuest ? this.scoreboardPhase() : null;
         this.combatOptions = {
@@ -880,7 +908,7 @@ class AutoSlayer extends ModuleBase {
             boundaryCheck: this.config.boundaryCheck,
             travelClicks: phase === STATES.MOBS,
             rightClickChance: phase === STATES.BOSS ? 0 : null,
-            blacklistOnPathFailure: true,
+            blacklistOnPathFailure: phase === STATES.MOBS,
         };
         setItemSlot(this.combatSlot);
         this.transition(phase);
@@ -949,16 +977,37 @@ class AutoSlayer extends ModuleBase {
         if (CombatBot.enabled && !CombatBot.isParentManaged) CombatBot.toggle(false);
         CombatBot.setExternalTargets(this.getTargets(), this.combatOptions);
         CombatBot.toggle(true, true);
-        if (this.pendingBoss || CombatBot.isTargetUsable(CombatBot.target)) this.noTargetSince = null;
+        const targets = CombatBot.getTargets();
+        if (targets.some((target) => CombatBot.isTargetUsable(target, targets))) {
+            this.noTargetSince = null;
+            this.noTargetAttempts = 0;
+        } else if (this.pendingBoss) this.noTargetSince = null;
         else if (this.noTargetSince === null) this.noTargetSince = Date.now();
-        else if (Date.now() - this.noTargetSince >= NO_TARGET_TIMEOUT_MS) {
-            this.questVerified = false;
-            this.noTargetReturns++;
-            const action = this.noTargetReturns > this.noTargetReturnLimit ? 'cancel and restart the quest' : 'resume the quest';
-            this.message(
-                `&eNo Slayer target for 10 seconds (${this.noTargetReturns}/${this.noTargetReturnLimit} returns); returning to ${this.config.area} to ${action}.`
-            );
-            this.pathTo([this.config.destination], STATES.CALL, this.config.area);
+        else {
+            const timeout = this.state === STATES.BOSS ? BOSS_NO_TARGET_TIMEOUT_MS : NO_TARGET_TIMEOUT_MS;
+            if (Date.now() - this.noTargetSince >= timeout) this.retryNoTarget(timeout);
+        }
+    }
+
+    retryNoTarget(timeout) {
+        this.questVerified = false;
+        this.restartSeen = false;
+        this.noTargetAttempts = Math.min(this.noTargetAttempts + 1, MAX_NO_TARGET_ATTEMPTS);
+        const reason = `No Slayer target for ${timeout / 1000} seconds (${this.noTargetAttempts}/${MAX_NO_TARGET_ATTEMPTS}). ${this.locationDetails()}`;
+        if (this.noTargetAttempts === 1) {
+            this.message(`&e${reason} Returning to ${this.config.area} to retry.`);
+            this.pathTo([this.config.destination], STATES.CALL, this.config.area, 0, true);
+        } else if (this.noTargetAttempts === 2) {
+            this.message(`&e${reason} Warping to Hub, then returning to ${this.config.area} to retry.`);
+            this.stopCombat();
+            this.recoveringSlayer = true;
+            this.forceHubWarp = true;
+            this.warpAttempts = 0;
+            this.transition(STATES.WARP);
+        } else {
+            this.message(`&e${reason} Cancelling the quest and returning to the initial stage.`);
+            this.restartQuestPending = true;
+            this.beginMenu(true);
         }
     }
 
@@ -966,9 +1015,10 @@ class AutoSlayer extends ModuleBase {
         if (this.state === STATES.MOBS) return CombatBot.findMob(this.config);
         if (this.state !== STATES.BOSS) return [];
         if (this.bossTarget) {
-            return CombatBot.isCombatTargetCandidate(this.bossTarget, true) && CombatBot.isVisibleOrRecent(this.bossTarget, true) ? [this.bossTarget] : [];
+            if (CombatBot.isCombatTargetCandidate(this.bossTarget, true)) return [this.bossTarget];
+            this.bossTarget = null;
         }
-        let bosses = CombatBot.findMob({ names: [this.config.boss], checkVisibility: true });
+        let bosses = CombatBot.findMob({ names: [this.config.boss], allowInvisible: true, checkVisibility: false });
         const otherBosses = new Set();
         for (const entity of World.getAllEntities()) {
             const owner = clean(entity.getName())

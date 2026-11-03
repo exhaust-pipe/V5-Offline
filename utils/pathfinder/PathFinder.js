@@ -45,6 +45,7 @@ class Finder {
         this.lastRecalculateReason = '';
 
         this.currentStarts = null;
+        this.allowWarpStarts = true;
         this.startCandidates = [];
         this.selectedStartCandidate = null;
         this.warpCommandIssued = false;
@@ -130,6 +131,7 @@ class Finder {
         this.recalculateScheduleId++;
         this.currentEnd = end;
         this.currentStarts = startPoints;
+        this.allowWarpStarts = options?.allowWarpStarts !== false;
         this.currentCallback = onComplete;
         this.isFly = isFly;
         this.walkArrivalRadius = Number.isFinite(walkArrivalRadius) && walkArrivalRadius > 0 ? walkArrivalRadius : 2;
@@ -538,6 +540,7 @@ class Finder {
     schedulePathRetry(delay) {
         const end = this.getEntityGoals() || this.currentEnd;
         const starts = this.currentStarts;
+        const allowWarpStarts = this.allowWarpStarts;
         const callback = this.currentCallback;
         const wasFromFile = this.calledFromFile;
         const attempts = this.recalculateAttempts;
@@ -564,6 +567,7 @@ class Finder {
             this.findPath(end, callback, {
                 isFly: this.isFly,
                 startPoints: starts,
+                allowWarpStarts,
                 preserveRecalculateAttempts: true,
                 walkArrivalRadius,
                 entityTarget,
@@ -769,7 +773,7 @@ class Finder {
             point: [playerPoint[0], playerPoint[1], playerPoint[2]],
         });
 
-        if (this.isFly) {
+        if (this.isFly || !this.allowWarpStarts) {
             return { points, metadata };
         }
 
@@ -1021,6 +1025,7 @@ class Finder {
             this.calledFromFile = false;
             this.currentEnd = null;
             this.currentStarts = null;
+            this.allowWarpStarts = true;
             this.currentCallback = null;
             this.entityTarget = null;
             this.entityTargetResolver = null;

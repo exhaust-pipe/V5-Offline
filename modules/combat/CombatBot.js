@@ -635,7 +635,7 @@ class Combat extends ModuleBase {
         return best;
     }
 
-    isTargetUsable(target) {
+    isTargetUsable(target, targets = this.targets) {
         if (!target) return false;
 
         try {
@@ -647,7 +647,7 @@ class Combat extends ModuleBase {
             const position = this.getTargetPosition(target);
             if (!position || !this.isPositionSafe(position.x, position.y, position.z)) return false;
 
-            return this.targets.some((candidate) => this.sameTarget(candidate, target));
+            return targets.some((candidate) => this.sameTarget(candidate, target));
         } catch (e) {
             return false;
         }
