@@ -258,7 +258,8 @@ class AutoSlayer extends ModuleBase {
 
     locationDetails(goals = [this.config.destination]) {
         const position = [Player.getX(), Player.getY(), Player.getZ()].map((value) => value.toFixed(1)).join(', ');
-        return `Player XYZ: (${position}); destination XYZ: ${goals.map((point) => `(${point.join(', ')})`).join(' / ')}.`;
+        const destinations = goals.map((point) => `(${point.join(', ')})`).join(' / ');
+        return `Player XYZ: (${position}); destination XYZ: ${destinations}.`;
     }
 
     recoverSlayer(reason) {
