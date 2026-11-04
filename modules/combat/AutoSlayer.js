@@ -936,7 +936,7 @@ class AutoSlayer extends ModuleBase {
         const lines = (Scoreboard.getLines() || []).map((line) => cleanLabel(line?.getName?.() ?? line));
         if (lines.some((line) => /\bBoss slain\s*!/i.test(line))) return STATES.RESTART;
         if (lines.some((line) => /\bSlay\s+the\s+boss\s*!/i.test(line))) return STATES.BOSS;
-        if (lines.some((line) => /\b[\d,.]+[kmb]?\s*\/\s*[\d,.]+[kmb]?\s+Combat XP\b/i.test(line))) return STATES.MOBS;
+        if (lines.some((line) => /\b[\d,.]+[kmb]?\s*\/\s*[\d,.]+[kmb]?\s*\)?\s+Combat XP\b/i.test(line))) return STATES.MOBS;
         return null;
     }
 
