@@ -279,6 +279,11 @@ class Combat extends ModuleBase {
         this.rememberSpawnLocations();
 
         if (this.target && !this.isTargetUsable(this.target)) this.setTarget(null);
+        if (this.externalTargetOptions?.tickTarget) {
+            if (!this.target) this.setTarget(this.bestTarget());
+            this.externalTargetOptions.tickTarget(this.target);
+            return;
+        }
         if (!this.target) {
             this.setTarget(this.bestTarget());
             const position = this.getTargetPosition(this.target);

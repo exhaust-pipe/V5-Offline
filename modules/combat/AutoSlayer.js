@@ -9,6 +9,8 @@ import { Raytrace } from '../../utils/Raytrace';
 import { getArea, getTabListNames, resetAreaCache } from '../../utils/TabListUtils';
 import { Mouse } from '../../utils/Ungrab';
 import { CombatBot } from './CombatBot';
+import { AtonedHorrorBoss } from './slayer/AtonedHorrorBoss';
+import { GenericSlayerBoss } from './slayer/GenericSlayerBoss';
 
 const STATES = {
     IDLE: 'Idle',
@@ -36,14 +38,17 @@ const STATES = {
 const SLAYERS = {
     Zombie: {
         boss: 'Revenant Horror',
+        maxTier: 5,
+        bossModules: { 5: AtonedHorrorBoss },
         area: 'Crypts',
         destination: [-146, 56, -100],
-        names: ['Crypt Ghoul', 'Golden Ghoul', 'Revenant Sycophant', 'Revenant Champion', 'Deformed Revenant'],
+        names: ['Crypt Ghoul', 'Golden Ghoul', 'Revenant Sycophant', 'Revenant Champion', 'Deformed Revenant', 'Atoned Champion', 'Atoned Revenant'],
         checkVisibility: false,
         boundaryCheck: (x, y, z) => x >= -180 && x <= -30 && y >= 30 && y <= 67 && z >= -160 && z <= -55,
     },
     Wolf: {
         boss: 'Sven Packmaster',
+        maxTier: 4,
         area: 'Ruins',
         destination: [-225, 91, 63],
         names: ['Wolf', 'Old Wolf', 'Pack Enforcer', 'Sven Follower', 'Sven Alpha'],
@@ -51,7 +56,7 @@ const SLAYERS = {
         boundaryCheck: (x, y, z) => x >= -300 && x <= -150 && y >= 55 && y <= 155 && z >= 25 && z <= 150,
     },
 };
-const TIERS = ['I', 'II', 'III', 'IV'];
+const TIERS = ['I', 'II', 'III', 'IV', 'V'];
 const HUB_SELECTOR = [-5.5, 69, -22.5];
 const MAX_ATTEMPTS = 4;
 const MAX_NO_TARGET_ATTEMPTS = 3;
@@ -73,7 +78,7 @@ class AutoSlayer extends ModuleBase {
             name: 'Auto Slayer',
             subcategory: 'Combat',
             description: 'Automatically completes Zombie and Wolf Slayer quests.',
-            tooltip: 'Completes tier I-IV Slayer quests using Combat Bot. Toggle with the Auto Slayer keybind.',
+            tooltip: 'Completes Zombie tier I-V and Wolf tier I-IV Slayer quests. Toggle with the Auto Slayer keybind.',
             autoDisableOnWorldUnload: false,
             isMacro: true,
         });
@@ -89,6 +94,7 @@ class AutoSlayer extends ModuleBase {
         this.actionDelay = { low: 1, high: 3 };
         this.phoneSwap = null;
         this.pendingBoss = null;
+        this.bossModule = null;
         this.menuClickDelay = false;
         this.lastMobTarget = null;
         this.lastKilledMobPosition = null;
@@ -109,16 +115,16 @@ class AutoSlayer extends ModuleBase {
             Object.keys(SLAYERS),
             true,
             (selected) => (this.type = selected.find((option) => option.enabled)?.name || 'Zombie'),
-            'Zombie: Revenant Horror in the Crypts. Wolf: Sven Packmaster in the Ruins. Applies on the next start.',
+            'Zombie: Revenant Horror / Atoned Horror in the Crypts. Wolf: Sven Packmaster in the Ruins. Applies on the next start.',
             'Zombie'
         );
         this.addSlider(
             'Slayer Tier',
             1,
-            4,
+            5,
             1,
-            (value) => (this.tier = Math.max(1, Math.min(4, Math.round(finiteNumber(value, 1))))),
-            'Tier I-IV. Applies on the next start.'
+            (value) => (this.tier = Math.max(1, Math.min(5, Math.round(finiteNumber(value, 1))))),
+            'Zombie: tier I-V. Wolf: tier I-IV. Zombie V uses safe-ground combat against Atoned Horror. Applies on the next start.'
         );
         this.addMultiToggle(
             'Slayer Phone',
@@ -206,8 +212,11 @@ class AutoSlayer extends ModuleBase {
     onEnable() {
         if (CombatBot.enabled && CombatBot.isParentManaged) return this.fail('Combat Bot is already managed by another macro.');
         if (!Player.getPlayer() || !World.getWorld()) return this.fail('Join SkyBlock before starting Auto Slayer.');
-        this.ownsCombat = true;
         this.config = SLAYERS[this.type] || SLAYERS.Zombie;
+        if (this.tier > this.config.maxTier) return this.fail(`${this.type} Slayer only supports tiers I-${TIERS[this.config.maxTier - 1]}.`);
+        this.ownsCombat = true;
+        const BossModule = this.config.bossModules?.[this.tier] || GenericSlayerBoss;
+        this.bossModule = new BossModule(this.config);
         this.questName = `${this.config.boss} ${TIERS[this.tier - 1]}`;
         this.callMethod = this.phone;
         this.combatSlot = this.weaponSlot - 1;
@@ -307,6 +316,7 @@ class AutoSlayer extends ModuleBase {
         this.lastMobTarget = null;
         this.lastKilledMobPosition = null;
         if (!this.ownsCombat) return;
+        this.bossModule?.stop();
         CombatBot.toggle(false, true);
         CombatBot.clearExternalTargets();
         Pathfinder.resetPath();
@@ -314,7 +324,6 @@ class AutoSlayer extends ModuleBase {
         Client.setKey('leftclick', false);
         Client.setKey('rightclick', false);
         Rotations.stop();
-        this.bossTarget = null;
     }
 
     tick() {
@@ -869,14 +878,13 @@ class AutoSlayer extends ModuleBase {
                 const spawnPoint = this.lastKilledMobPosition;
                 const turnToBoss = Math.random() < 0.5 && spawnPoint !== null;
                 if (turnToBoss) this.stopCombat();
-                this.bossOrigin = spawnPoint || { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
                 this.pendingBoss = {
                     turnToBoss,
                     spawnPoint,
                     rotating: false,
                     readyAt: turnToBoss ? null : Date.now() + this.randomDelay(),
                     deadline: Date.now() + NO_TARGET_TIMEOUT_MS,
-                    origin: this.bossOrigin,
+                    origin: spawnPoint || { x: Player.getX(), y: Player.getY(), z: Player.getZ() },
                 };
             }
             const pending = this.pendingBoss;
@@ -913,15 +921,14 @@ class AutoSlayer extends ModuleBase {
         if (Client.isInGui()) closeInventory();
         this.menuAttempts = 0;
         this.restartSeen = false;
-        this.bossOrigin = bossOrigin;
         this.staleScoreboardPhase = newQuest ? this.scoreboardPhase() : null;
         this.combatOptions = {
-            roam: phase === STATES.MOBS,
+            roam: true,
             boundaryCheck: this.config.boundaryCheck,
-            travelClicks: phase === STATES.MOBS,
-            rightClickChance: phase === STATES.BOSS ? 0 : null,
-            blacklistOnPathFailure: phase === STATES.MOBS,
+            travelClicks: true,
+            blacklistOnPathFailure: true,
         };
+        if (phase === STATES.BOSS) this.bossModule.start(bossOrigin);
         setItemSlot(this.combatSlot);
         this.transition(phase);
         if (switchingToBoss) {
@@ -973,7 +980,8 @@ class AutoSlayer extends ModuleBase {
             return;
         }
         if (Client.isInGui()) {
-            CombatBot.toggle(false, true);
+            if (this.state === STATES.BOSS) this.bossModule.pause();
+            else CombatBot.toggle(false, true);
             this.noTargetSince = null;
             if (guiReady && this.isSlayerGui(getGuiName())) {
                 closeInventory();
@@ -982,17 +990,23 @@ class AutoSlayer extends ModuleBase {
             return;
         }
         if (!Pathfinder.isPathing() && Player.getHeldItemIndex() !== this.combatSlot) {
-            CombatBot.toggle(false, true);
+            if (this.state === STATES.BOSS) this.bossModule.pause();
+            else CombatBot.toggle(false, true);
             setItemSlot(this.combatSlot);
             this.defer();
             return;
         }
         if (CombatBot.enabled && !CombatBot.isParentManaged) CombatBot.toggle(false);
-        CombatBot.setExternalTargets(this.getTargets(), this.combatOptions);
-        CombatBot.toggle(true, true);
-        const targets = CombatBot.getTargets();
+        let hasTarget;
+        if (this.state === STATES.BOSS) hasTarget = this.bossModule.tick();
+        else {
+            CombatBot.setExternalTargets(CombatBot.findMob(this.config), this.combatOptions);
+            CombatBot.toggle(true, true);
+            const targets = CombatBot.getTargets();
+            hasTarget = targets.some((target) => CombatBot.isTargetUsable(target, targets));
+        }
         if (this.pendingBoss) this.noTargetSince = null;
-        else if (targets.some((target) => CombatBot.isTargetUsable(target, targets))) {
+        else if (hasTarget) {
             this.noTargetSince = null;
             this.noTargetAttempts = 0;
         } else if (this.noTargetSince === null) this.noTargetSince = Date.now();
@@ -1022,42 +1036,6 @@ class AutoSlayer extends ModuleBase {
             this.restartQuestPending = true;
             this.beginMenu(true);
         }
-    }
-
-    getTargets() {
-        if (this.state === STATES.MOBS) return CombatBot.findMob(this.config);
-        if (this.state !== STATES.BOSS) return [];
-        if (this.bossTarget) {
-            if (CombatBot.isCombatTargetCandidate(this.bossTarget, true)) return [this.bossTarget];
-            this.bossTarget = null;
-        }
-        let bosses = CombatBot.findMob({ names: [this.config.boss], allowInvisible: true, checkVisibility: false });
-        const otherBosses = new Set();
-        for (const entity of World.getAllEntities()) {
-            const owner = clean(entity.getName())
-                .toLowerCase()
-                .match(/^spawned by:\s*(\w+)$/)?.[1];
-            if (!owner) continue;
-            const boss = CombatBot.resolveNametagTarget(entity, bosses);
-            if (!boss) continue;
-            if (owner === Player.getName().toLowerCase()) this.bossTarget = boss;
-            else otherBosses.add(CombatBot.getTargetUuid(boss));
-        }
-        if (!this.bossTarget) {
-            bosses = bosses.filter(
-                (boss) =>
-                    !otherBosses.has(CombatBot.getTargetUuid(boss)) &&
-                    CombatBot.getDistanceBetween(CombatBot.getTargetPosition(boss), this.bossOrigin).distance < 64
-            );
-            bosses.sort((first, second) => {
-                return (
-                    CombatBot.getDistanceBetween(CombatBot.getTargetPosition(first), this.bossOrigin).distance -
-                    CombatBot.getDistanceBetween(CombatBot.getTargetPosition(second), this.bossOrigin).distance
-                );
-            });
-            this.bossTarget = bosses[0] || null;
-        }
-        return this.bossTarget ? [this.bossTarget] : [];
     }
 
     finishQuest() {
