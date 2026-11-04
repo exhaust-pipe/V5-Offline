@@ -941,10 +941,9 @@ class AutoSlayer extends ModuleBase {
 
     scoreboardPhase() {
         const lines = (Scoreboard.getLines() || []).map((line) => cleanLabel(line?.getName?.() ?? line));
+        if (!lines.some((line) => /\bSlayer\s+Quest\b/i.test(line))) return null;
         if (lines.some((line) => /\bBoss slain\s*!/i.test(line))) return STATES.RESTART;
-        if (lines.some((line) => /\bSlay\s+the\s+boss\s*!/i.test(line))) return STATES.BOSS;
-        if (lines.some((line) => /\b[\d,.]+[kmb]?\s*\/\s*[\d,.]+[kmb]?\s*\)?\s+Combat XP\b/i.test(line))) return STATES.MOBS;
-        return null;
+        return lines.some((line) => /\bSlay\s+the\s+boss\b/i.test(line)) ? STATES.BOSS : STATES.MOBS;
     }
 
     rememberMobKill(entity) {
