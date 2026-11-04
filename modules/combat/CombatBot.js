@@ -39,6 +39,8 @@ const PATH_HANDOFF_DISTANCE = 6;
 const REPATH_DISTANCE = 7;
 const REPATH_DELAY_MS = 1200;
 const PATH_FAILURE_BLACKLIST_MS = [5000, 20000, 60000];
+const PURSUIT_STALL_TIMEOUT_MS = 10000;
+const PURSUIT_PROGRESS_DISTANCE = 1;
 const VISIBILITY_GRACE_MS = 750;
 const ROAM_MEMORY_MS = 300000;
 const ROAM_PATH_TIMEOUT_MS = 15000;
@@ -98,6 +100,7 @@ class Combat extends ModuleBase {
         this.targets = [];
         this.target = null;
         this.trackedTarget = null;
+        this.pursuitProgress = null;
         this.state = STATES.IDLE;
 
         this.pathToken = 0;
@@ -295,6 +298,11 @@ class Combat extends ModuleBase {
         }
 
         const distance = this.getDistanceToPlayer(position);
+        if (this.isPursuitStalled(distance.distance)) {
+            this.blacklistTarget(this.target);
+            this.setTarget(null);
+            return;
+        }
 
         if (this.state === STATES.PATHING) {
             if (distance.distanceFlat <= PATH_HANDOFF_DISTANCE && Math.abs(distance.distanceY) <= 2.5 && this.canSeeTarget(this.target)) {
@@ -339,11 +347,31 @@ class Combat extends ModuleBase {
         Rotations.stop();
         this.trackedTarget = null;
         this.target = target;
+        this.pursuitProgress = null;
         this.nextAttackAt = 0;
         this.resetTravelClicks();
         this.setState(STATES.IDLE);
 
         this.trackTarget();
+    }
+
+    isPursuitStalled(distance) {
+        if (this.externalTargets !== null && !this.externalTargetOptions?.blacklistOnPathFailure) {
+            this.pursuitProgress = null;
+            return false;
+        }
+
+        const now = Date.now();
+        const progress = this.pursuitProgress;
+        if (!progress || distance <= progress.distance - PURSUIT_PROGRESS_DISTANCE || (distance <= this.attackRange + 0.35 && this.canSeeTarget(this.target))) {
+            this.pursuitProgress = { distance, checkedAt: now, stalledMs: 0 };
+            return false;
+        }
+
+        // Pathfinding handles detours and recovery; only direct pursuit consumes this timeout.
+        if (this.state !== STATES.PATHING) progress.stalledMs += now - progress.checkedAt;
+        progress.checkedAt = now;
+        return progress.stalledMs >= PURSUIT_STALL_TIMEOUT_MS;
     }
 
     trackTarget() {
@@ -454,6 +482,7 @@ class Combat extends ModuleBase {
                 if (!this.sameTarget(this.target, selected)) {
                     this.target = selected;
                     this.trackedTarget = null;
+                    this.pursuitProgress = null;
                     this.nextAttackAt = 0;
                     this.resetTravelClicks();
                     this.trackTarget();
@@ -505,6 +534,7 @@ class Combat extends ModuleBase {
     }
 
     pauseMovement() {
+        this.pursuitProgress = null;
         if (this.state === STATES.IDLE && !this.trackedTarget) return;
         this.cancelPath();
         Client.stopMovement();
@@ -954,6 +984,7 @@ class Combat extends ModuleBase {
         this.targets = [];
         this.target = null;
         this.trackedTarget = null;
+        this.pursuitProgress = null;
         this.state = STATES.IDLE;
         this.nextAttackAt = 0;
         this.resetTravelClicks();

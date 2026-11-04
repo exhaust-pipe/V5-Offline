@@ -39,7 +39,7 @@ const SLAYERS = {
         area: 'Crypts',
         destination: [-146, 56, -100],
         names: ['Crypt Ghoul', 'Golden Ghoul', 'Revenant Sycophant', 'Revenant Champion', 'Deformed Revenant'],
-        checkVisibility: true,
+        checkVisibility: false,
         boundaryCheck: (x, y, z) => x >= -180 && x <= -30 && y >= 30 && y <= 67 && z >= -160 && z <= -55,
     },
     Wolf: {
@@ -47,7 +47,7 @@ const SLAYERS = {
         area: 'Ruins',
         destination: [-225, 91, 63],
         names: ['Wolf', 'Old Wolf', 'Pack Enforcer', 'Sven Follower', 'Sven Alpha'],
-        checkVisibility: true,
+        checkVisibility: false,
         boundaryCheck: (x, y, z) => x >= -300 && x <= -150 && y >= 55 && y <= 155 && z >= 25 && z <= 150,
     },
 };
