@@ -12,8 +12,10 @@ const DANGEROUS_BLOCKS = new Set([
     'minecraft:light_gray_terracotta',
     'minecraft:acacia_planks',
     'minecraft:acacia_slab',
+    'minecraft:acacia_stairs',
     'minecraft:quartz_block',
     'minecraft:quartz_slab',
+    'minecraft:quartz_stairs',
     'minecraft:smooth_quartz_slab',
 ]);
 const SEARCH_INTERVAL_MS = 250;
