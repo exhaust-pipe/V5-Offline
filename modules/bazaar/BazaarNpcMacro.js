@@ -20,6 +20,8 @@ const MAX_API_PRICE_INCREASE = 0.05;
 const MIN_API_PRICE_SLACK = 1;
 const GUI_TIMEOUT = 10_000;
 const STUCK_RETRY_DELAY = 1_000;
+const ERROR_RETRY_DELAY = { low: 30_000, high: 60_000 };
+const MAX_ERROR_RETRIES = 3;
 const COMMAND_CAPACITY = 10;
 const COMMAND_RESTORE_TIME = 1_050; // +50ms to tolerate server lag, if server lags too much it can still kick for spam tho
 const clean = (value) =>
@@ -143,8 +145,8 @@ class BazaarNpcMacro extends ModuleBase {
             },
         ]);
 
-        this.on('tick', () => this.tick());
-        register('chat', (event) => this.onChat(event));
+        this.on('tick', () => this.runSafely(() => this.tick()));
+        register('chat', (event) => this.runSafely(() => this.onChat(event)));
         v5Command('bazaar npc cleanup', () => this.startCleanup());
         this.commandTokens = COMMAND_CAPACITY;
         this.commandRefillAt = Date.now();
@@ -219,6 +221,7 @@ class BazaarNpcMacro extends ModuleBase {
         this.cancelQuantity = 0;
         this.bazaarData = null;
         this.itemData = null;
+        this.loadingPrices = false;
         this.startingInventory = new Map();
         this.lastCheckedInventory = new Map();
         this.confirmSlot = -1;
@@ -227,6 +230,9 @@ class BazaarNpcMacro extends ModuleBase {
         this.deadline = 0;
         this.retryAction = null;
         this.retryAt = 0;
+        this.errorRetries = 0;
+        this.failedOperation = null;
+        this.waitingForRetry = false;
         this.sellEmptySince = 0;
         this.orderCooldownUntil = 0;
         this.orderMissingSince = 0;
@@ -253,7 +259,7 @@ class BazaarNpcMacro extends ModuleBase {
     }
 
     checkNpcLimit() {
-        if (this.cleanupMode) return false;
+        if (this.cleanupMode || this.waitingForRetry) return false;
         const tracker = this.dailyTracker();
         if (tracker.soldCoins < NPC_CLEANUP_LIMIT) return false;
         this.message('&eNPC sales reached 490M/500M; cleaning up buy orders and stopping.');
@@ -343,6 +349,15 @@ class BazaarNpcMacro extends ModuleBase {
         }
     }
 
+    runSafely(action) {
+        try {
+            action();
+        } catch (error) {
+            if (this.enabled) this.fail(`Unexpected error: ${error?.message || error}`);
+            else console.error(error);
+        }
+    }
+
     getDelay(delay = this.clickDelayRange) {
         return typeof delay === 'number' ? delay : randomInt(delay.low, delay.high);
     }
@@ -369,10 +384,17 @@ class BazaarNpcMacro extends ModuleBase {
 
     commandAndWait(command, action, status, delay = this.clickDelayRange, timeout = GUI_TIMEOUT) {
         const previousGui = getGuiName();
+        let deadline = 0;
         const run = () => {
             const wait = this.runCommand(command);
-            if (wait) return this.setAction(run, status, wait, 0);
+            if (wait) {
+                this.setAction(run, status, wait, 0);
+                this.deadline = deadline;
+                return;
+            }
             this.setAction(waitForGui, status, delay, timeout, retry);
+            deadline ||= this.deadline;
+            this.deadline = deadline;
         };
         const waitForGui = () => {
             action.call(this);
@@ -385,7 +407,10 @@ class BazaarNpcMacro extends ModuleBase {
             };
             this.retryAt = this.nextActionAt + STUCK_RETRY_DELAY;
         };
-        const retry = () => this.setAction(run, status, this.inputDelayRange, 0);
+        const retry = () => {
+            this.setAction(run, status, this.inputDelayRange, 0);
+            this.deadline = deadline;
+        };
         retry();
     }
 
@@ -404,25 +429,47 @@ class BazaarNpcMacro extends ModuleBase {
 
     fetchPrices(adoptOnly = false, resumeChecks = false) {
         const token = ++this.requestToken;
+        this.loadingPrices = true;
         this.setAction(null, 'Loading prices', 0, 25_000);
 
         const failed = () => {
             if (this.enabled && token === this.requestToken) this.fail('Could not load Hypixel Bazaar prices.');
         };
         requestV2({ url: BAZAAR_URL, method: 'GET', json: true, timeout: 10_000 })
-            .then((bazaar) => requestV2({ url: ITEMS_URL, method: 'GET', json: true, timeout: 10_000 }).then((items) => [bazaar, items]))
+            .then((bazaar) => {
+                if (!this.enabled || token !== this.requestToken) return;
+                return requestV2({ url: ITEMS_URL, method: 'GET', json: true, timeout: 10_000 }).then((items) => [bazaar, items]);
+            })
             .then((responses) => {
+                if (!this.enabled || token !== this.requestToken) return;
                 const bazaar = responses[0];
                 const items = responses[1];
-                if (!this.enabled || token !== this.requestToken) return;
+                if (
+                    !bazaar?.success ||
+                    !bazaar.products ||
+                    typeof bazaar.products !== 'object' ||
+                    Array.isArray(bazaar.products) ||
+                    !Object.keys(bazaar.products).length ||
+                    !items?.success ||
+                    !Array.isArray(items.items) ||
+                    !items.items.length
+                )
+                    return failed();
                 this.bazaarData = bazaar;
                 this.itemData = items;
                 this.adoptOpenOrders(bazaar, items);
+                if (!adoptOnly) {
+                    this.orderQueue = this.findBestFlips(bazaar, items);
+                    this.refillIds.clear();
+                }
+                this.loadingPrices = false;
+                this.clearErrorRetries('prices');
                 if (adoptOnly) return this.setAction(this.inspectOrder, 'Checking duplicates');
-                this.orderQueue = this.findBestFlips(bazaar, items);
-                this.refillIds.clear();
                 if (!this.orderQueue.length) {
-                    if (!this.activeTargets.length) return this.setAction(this.openOrders, 'Waiting for profitable items', 60_000, 0);
+                    if (!this.activeTargets.length) {
+                        this.clearErrorRetries();
+                        return this.setAction(this.openOrders, 'Waiting for profitable items', 60_000, 0);
+                    }
                     if (resumeChecks) return this.setAction(this.inspectOrder, 'Checking orders', this.clickDelayRange, 0);
                     return this.setAction(this.openOrders, 'Checking orders', 0, 0);
                 }
@@ -715,6 +762,7 @@ class BazaarNpcMacro extends ModuleBase {
         if (hasNewItems) return this.setAction(this.openTrades, 'Selling claimed items', 0, 0);
         this.orderQueue = [];
         this.claimOnly = false;
+        this.clearErrorRetries();
         this.setAction(this.openOrders, 'Checking orders', 0, 0);
     }
 
@@ -877,7 +925,7 @@ class BazaarNpcMacro extends ModuleBase {
         if (this.pendingSale) {
             const remaining = this.inventorySnapshot(items.slice(54)).get(this.pendingSale.key) || 0;
             if (remaining >= this.pendingSale.quantity) {
-                if (now >= this.pendingSale.deadline) return this.fail('NPC sale could not be confirmed; stopping instead of retrying.');
+                if (now >= this.pendingSale.deadline) return this.fail('NPC sale could not be confirmed.');
                 if (now - this.pendingSale.at < STUCK_RETRY_DELAY) {
                     this.nextActionAt = now + this.getDelay();
                     return;
@@ -889,7 +937,7 @@ class BazaarNpcMacro extends ModuleBase {
         const slot = this.findNewSellSlot(items);
         if (slot !== -1) {
             const tracker = this.dailyTracker();
-            if (tracker.soldCoins >= NPC_DAILY_LIMIT) return this.fail('NPC daily limit reached; remaining items could not be sold.');
+            if (tracker.soldCoins >= NPC_DAILY_LIMIT) return this.fail('NPC daily limit reached; remaining items could not be sold.', false);
             const sellPrice = Number(
                 lore(items[slot])
                     .join(' ')
@@ -897,7 +945,7 @@ class BazaarNpcMacro extends ModuleBase {
                     ?.replace(/,/g, '')
             );
             if (Number.isFinite(sellPrice) && tracker.soldCoins + sellPrice > NPC_DAILY_LIMIT) {
-                return this.fail('The next stack would exceed the NPC daily sell limit; remaining items were left in your inventory.');
+                return this.fail('The next stack would exceed the NPC daily sell limit; remaining items were left in your inventory.', false);
             }
             const key = this.itemKey(items[slot]);
             this.pendingSale = {
@@ -921,6 +969,7 @@ class BazaarNpcMacro extends ModuleBase {
         }
 
         this.lastCheckedInventory = this.inventorySnapshot();
+        this.clearErrorRetries();
         const nextAction = this.cleanupMode
             ? this.openOrders
             : this.cancelQuantity > 0
@@ -941,7 +990,7 @@ class BazaarNpcMacro extends ModuleBase {
             /\b(?:limit|cap|maximum|only)\b/i.test(message) &&
             /\b(?:NPCs?|daily|today|per day|a day)\b/i.test(message)
         ) {
-            return this.fail('The server rejected an NPC sale because of the daily limit; remaining items were left in your inventory.');
+            return this.fail('The server rejected an NPC sale because of the daily limit; remaining items were left in your inventory.', false);
         }
         const sold = message.match(/^You sold .+ for ([\d,.]+) Coins!$/);
         if (sold) {
@@ -955,7 +1004,7 @@ class BazaarNpcMacro extends ModuleBase {
             if (this.enabled) this.checkNpcLimit();
         }
         this.recordClaim(message);
-        if (!this.enabled || this.cleanupMode) return;
+        if (!this.enabled || this.cleanupMode || this.waitingForRetry) return;
         if (/^\[Bazaar\] You reached your maximum of [\d,]+ Bazaar orders!$/.test(message)) {
             this.orderLimitReached = true;
             this.orderQueue = [];
@@ -973,6 +1022,7 @@ class BazaarNpcMacro extends ModuleBase {
             this.consecutiveSkips = 0;
             this.target.expectedOrderPrice = this.target.orderPrice;
             this.activeTargets.push(this.target);
+            this.clearErrorRetries();
             this.setAction(this.placeNextOrder, 'Placing next order', 0, 0);
         } else if (/not enough coins|couldn't afford|cannot afford/i.test(message)) {
             this.orderQueue = [];
@@ -1151,20 +1201,44 @@ class BazaarNpcMacro extends ModuleBase {
     }
 
     restart(message) {
+        if (!this.enabled || this.waitingForRetry) return;
+        if (this.errorRetries >= MAX_ERROR_RETRIES) return this.fail(`${message} Still failing after ${MAX_ERROR_RETRIES} retries.`, false);
+        const errorRetries = this.errorRetries + 1;
+        const retryDelay = this.getDelay(ERROR_RETRY_DELAY);
+        const retryStatus = `Retrying in ${(retryDelay / 1_000).toFixed(1)}s (${errorRetries}/${MAX_ERROR_RETRIES})`;
+        const failedOperation = this.failedOperation || (this.loadingPrices ? 'prices' : 'workflow');
         const startingInventory = this.startingInventory;
         const lastCheckedInventory = this.lastCheckedInventory;
         const cleanupMode = this.cleanupMode;
-        this.message(`&e${message} Restarting...`);
+        this.message(`&e${message} ${retryStatus}.`);
         closeInventory();
         this.reset();
         this.startingInventory = startingInventory;
         this.lastCheckedInventory = lastCheckedInventory;
         this.cleanupMode = cleanupMode;
         this.inventoryReady = true;
-        this.openOrders();
+        this.errorRetries = errorRetries;
+        this.failedOperation = failedOperation;
+        this.waitingForRetry = true;
+        this.setAction(
+            () => {
+                this.waitingForRetry = false;
+                this.openOrders();
+            },
+            retryStatus,
+            retryDelay,
+            0
+        );
     }
 
-    fail(message) {
+    clearErrorRetries(operation = null) {
+        if (operation && this.failedOperation !== operation) return;
+        this.errorRetries = 0;
+        this.failedOperation = null;
+    }
+
+    fail(message, retryable = true) {
+        if (retryable && this.inventoryReady) return this.restart(message);
         this.message(`&c${message}`);
         this.toggle(false);
     }
