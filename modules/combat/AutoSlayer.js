@@ -928,6 +928,7 @@ class AutoSlayer extends ModuleBase {
         this.staleScoreboardPhase = newQuest ? this.scoreboardPhase() : null;
         this.combatOptions = {
             roam: true,
+            allowWarpStarts: false,
             boundaryCheck: this.config.boundaryCheck,
             travelClicks: true,
             blacklistOnPathFailure: true,
@@ -1026,7 +1027,7 @@ class AutoSlayer extends ModuleBase {
         const reason = `No Slayer target for ${timeout / 1000} seconds (${this.noTargetAttempts}/${MAX_NO_TARGET_ATTEMPTS}). ${this.locationDetails()}`;
         if (this.noTargetAttempts === 1) {
             this.message(`&e${reason} Returning to ${this.config.area} to retry.`);
-            this.pathTo([this.config.destination], STATES.CALL, this.config.area, 0, true);
+            this.pathTo([this.config.destination], STATES.CALL, this.config.area);
         } else if (this.noTargetAttempts === 2) {
             this.message(`&e${reason} Warping to Hub, then returning to ${this.config.area} to retry.`);
             this.stopCombat();

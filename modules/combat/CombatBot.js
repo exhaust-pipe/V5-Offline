@@ -477,6 +477,7 @@ class Combat extends ModuleBase {
         let target = this.target;
         const token = ++this.pathToken;
         Pathfinder.findPath(goals, (success) => this.onPathComplete(token, target, success), {
+            allowWarpStarts: this.externalTargetOptions?.allowWarpStarts !== false,
             resolveEntityTarget: (result) => {
                 const selected = this.getPathResultTarget(result, candidates);
                 const selectedPosition = this.getTargetPosition(selected);
@@ -625,6 +626,7 @@ class Combat extends ModuleBase {
                 this.nextRoamAt = Date.now() + (success ? 100 + Math.random() * 300 : 1000 + Math.random() * 1000);
             },
             {
+                allowWarpStarts: this.externalTargetOptions?.allowWarpStarts !== false,
                 pitchJitter: () => this.pathPitchJitter,
                 walkArrivalRadius: 1.5,
                 avoidPoints: this.activeBlackholes,

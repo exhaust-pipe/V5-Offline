@@ -7,6 +7,7 @@ export class GenericSlayerBoss {
         this.origin = null;
         this.combatOptions = {
             roam: false,
+            allowWarpStarts: false,
             boundaryCheck: config.boundaryCheck,
             travelClicks: false,
             rightClickChance: 0,
