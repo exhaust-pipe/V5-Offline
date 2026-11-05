@@ -23,6 +23,7 @@ const PATH_TIMEOUT_MS = 6000;
 const FAILED_GOAL_RETRY_MS = 5000;
 const OUT_OF_REACH_GRACE_MS = 1000;
 const DANGEROUS_GROUND_GRACE_MS = 500;
+const DANGEROUS_VERTICAL_RANGE = 5;
 
 export class AtonedHorrorBoss extends GenericSlayerBoss {
     constructor(config) {
@@ -77,7 +78,7 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
         if (Aote.originalSlot === -1 && now >= CombatBot.nextAttackAt) CombatBot.clickMouse(now);
 
         const playerPosition = { x: Player.getX(), y: Player.getY(), z: Player.getZ() };
-        const dangerous = this.isOnDangerousGround();
+        const dangerous = this.isNearDangerousBlocks();
         const canAttack = this.canAttackFrom(playerPosition, target);
         this.dangerousSince = dangerous ? (this.dangerousSince ?? now) : null;
         this.outOfReachSince = canAttack ? null : (this.outOfReachSince ?? now);
@@ -147,14 +148,13 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
         for (let x = Math.floor(position.x) - radius; x <= Math.floor(position.x) + radius; x++) {
             for (let z = Math.floor(position.z) - radius; z <= Math.floor(position.z) + radius; z++) {
                 for (let y = Math.floor(position.y) - 3; y <= Math.floor(position.y) + 2; y++) {
-                    const block = World.getBlockAt(x, y, z);
-                    if (DANGEROUS_BLOCKS.has(block?.type?.getRegistryName())) {
+                    const goal = this.getStandingPosition(x, y, z);
+                    if (this.isDangerousColumn(x, goal?.y ?? y + 1, z)) {
                         avoidPoints.push([x, y + 1, z]);
                         continue;
                     }
                     const key = `${x},${y},${z}`;
                     if (this.failedGoals.has(key)) continue;
-                    const goal = this.getStandingPosition(x, y, z);
                     if (!goal || !this.canAttackFrom(goal, target) || !this.isSafePosition(goal)) continue;
                     goals.push({ ...goal, key });
                 }
@@ -177,12 +177,19 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
         return top > 0 ? { x: x + 0.5, y: y + top, z: z + 0.5, groundY: y } : null;
     }
 
-    isOnDangerousGround() {
+    isDangerousColumn(x, y, z) {
+        const centerY = Math.floor(y);
+        for (let blockY = centerY - DANGEROUS_VERTICAL_RANGE; blockY <= centerY + DANGEROUS_VERTICAL_RANGE; blockY++) {
+            if (DANGEROUS_BLOCKS.has(World.getBlockAt(x, blockY, z)?.type?.getRegistryName())) return true;
+        }
+        return false;
+    }
+
+    isNearDangerousBlocks() {
         const body = Player.getPlayer().getBoundingBox();
-        const groundY = Math.floor(Player.getY() - 0.01);
         for (let x = Math.floor(body.minX + 0.001); x <= Math.floor(body.maxX - 0.001); x++) {
             for (let z = Math.floor(body.minZ + 0.001); z <= Math.floor(body.maxZ - 0.001); z++) {
-                if (DANGEROUS_BLOCKS.has(World.getBlockAt(x, groundY, z)?.type?.getRegistryName())) return true;
+                if (this.isDangerousColumn(x, Player.getY(), z)) return true;
             }
         }
         return false;
@@ -201,7 +208,7 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
             for (let z = Math.floor(body.minZ + 0.001); z <= Math.floor(body.maxZ - 0.001); z++) {
                 const blockPos = new BP(x, groundY, z);
                 if (!world.hasChunkAt(blockPos)) return false;
-                if (DANGEROUS_BLOCKS.has(World.getBlockAt(x, groundY, z)?.type?.getRegistryName())) return false;
+                if (this.isDangerousColumn(x, position.y, z)) return false;
                 for (const box of world.getBlockState(blockPos).getCollisionShape(world, blockPos).toAabbs()) {
                     if (x + box.maxX <= body.minX || x + box.minX >= body.maxX || z + box.maxZ <= body.minZ || z + box.minZ >= body.maxZ) continue;
                     if (Math.abs(groundY + box.maxY - position.y) < 0.05) supported = true;
