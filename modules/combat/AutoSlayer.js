@@ -533,7 +533,11 @@ class AutoSlayer extends ModuleBase {
                     }
                 }
             },
-            { walkArrivalRadius: 2, allowWarpStarts: !this.pathFromPlayer }
+            {
+                walkArrivalRadius: this.afterTravel === STATES.CALL ? 5 : 2,
+                walkArrivalHeightTolerance: this.afterTravel === STATES.CALL ? 5 : null,
+                allowWarpStarts: !this.pathFromPlayer,
+            }
         );
     }
 

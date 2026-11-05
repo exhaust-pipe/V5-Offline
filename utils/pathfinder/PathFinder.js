@@ -26,6 +26,7 @@ class Finder {
         this.currentEnd = null;
         this.currentCallback = null;
         this.walkArrivalRadius = 2;
+        this.walkArrivalHeightTolerance = null;
         this.entityTarget = null;
         this.entityTargetResolver = null;
         this.entityGoalOffsets = null;
@@ -135,6 +136,8 @@ class Finder {
         this.currentCallback = onComplete;
         this.isFly = isFly;
         this.walkArrivalRadius = Number.isFinite(walkArrivalRadius) && walkArrivalRadius > 0 ? walkArrivalRadius : 2;
+        const walkArrivalHeightTolerance = options?.walkArrivalHeightTolerance;
+        this.walkArrivalHeightTolerance = Number.isFinite(walkArrivalHeightTolerance) && walkArrivalHeightTolerance >= 0 ? walkArrivalHeightTolerance : null;
         if (!preserveRecalculateAttempts) {
             this.entityTarget = options?.entityTarget || null;
             this.entityTargetResolver = options && typeof options.resolveEntityTarget === 'function' ? options.resolveEntityTarget : null;
@@ -545,6 +548,7 @@ class Finder {
         const wasFromFile = this.calledFromFile;
         const attempts = this.recalculateAttempts;
         const walkArrivalRadius = this.walkArrivalRadius;
+        const walkArrivalHeightTolerance = this.walkArrivalHeightTolerance;
         const entityTarget = this.entityTarget;
         const entityTrackDistance = this.entityTrackDistance;
         const silent = this.silent;
@@ -570,6 +574,7 @@ class Finder {
                 allowWarpStarts,
                 preserveRecalculateAttempts: true,
                 walkArrivalRadius,
+                walkArrivalHeightTolerance,
                 entityTarget,
                 entityTrackDistance,
                 silent,
@@ -615,7 +620,7 @@ class Finder {
                 if (Math.abs(dy) > 1) continue;
                 if (this.flyStarted && Math.hypot(Player.getMotionX(), Player.getMotionY(), Player.getMotionZ()) > 0.2) continue;
             } else {
-                if (dy < -0.1 || dy > 5.5) continue;
+                if (dy < -(this.walkArrivalHeightTolerance ?? 0.1) || dy > (this.walkArrivalHeightTolerance ?? 5.5)) continue;
             }
 
             if (this.isFly || player.onGround()) {
@@ -1027,6 +1032,7 @@ class Finder {
             this.currentStarts = null;
             this.allowWarpStarts = true;
             this.currentCallback = null;
+            this.walkArrivalHeightTolerance = null;
             this.entityTarget = null;
             this.entityTargetResolver = null;
             this.entityGoalOffsets = null;
