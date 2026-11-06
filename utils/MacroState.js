@@ -112,6 +112,18 @@ class MacroStateClass {
         }
     }
 
+    notifyFailsafeTrigger(event) {
+        for (const name of this.getEnabledMacros()) {
+            const module = this.getModule(name);
+            if (!module?.enabled || module.ignoreFailsafes || typeof module.onFailsafeTrigger !== 'function') continue;
+            try {
+                module.onFailsafeTrigger(event);
+            } catch (e) {
+                console.error(`Error in ${name}.onFailsafeTrigger: ${e}\n${e.stack}`);
+            }
+        }
+    }
+
     onModuleEnabled(moduleName) {
         if (!moduleName) return;
         const module = this.getModule(moduleName);
@@ -246,6 +258,7 @@ export const getModuleStartTime = (name) => MacroState.getModuleStartTime(name);
 export const registerModule = (module) => MacroState.registerModule(module);
 export const isFailsafeMacroRunning = () => MacroState.isFailsafeMacroRunning();
 export const notifyFailsafeIntensity = (delta) => MacroState.notifyFailsafeIntensity(delta);
+export const notifyFailsafeTrigger = (event) => MacroState.notifyFailsafeTrigger(event);
 export const onModuleEnabled = (name) => MacroState.onModuleEnabled(name);
 export const onModuleDisabled = (name, context = 'user') => MacroState.onModuleDisabled(name, context);
 export const getModuleDuration = (name) => MacroState.getModuleDuration(name);

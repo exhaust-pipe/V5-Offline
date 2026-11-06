@@ -100,7 +100,12 @@ class PlayerGriefFailsafe extends Failsafe {
                         ? `${player.name} is standing inside you!`
                         : `${player.name} is ${player.distance.toFixed(1)} blocks away from you!`;
                     Chat.messageFailsafe(`&c&l${description}`);
-                    FailsafeUtils.incrementFailsafeIntensity(inside ? 120 : 20);
+                    FailsafeUtils.reportTrigger({
+                        type: 'Player Grief',
+                        reason: description,
+                        intensity: inside ? 120 : 20,
+                        details: { kind, playerId: id, playerName: player.name, distance: player.distance },
+                    });
                     FailsafeUtils.sendFailsafeEmbed('Player Grief', inside ? 'very high' : 'medium', description, inside ? 16711680 : 16776960);
                 }
             }

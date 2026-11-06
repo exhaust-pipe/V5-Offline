@@ -31,7 +31,12 @@ class SlotChangeFailsafe extends Failsafe {
 
     onTrigger(fromSlot, toSlot) {
         chatFailsafe(`&c&lHeld slot has changed from ${fromSlot} to slot ${toSlot}!`);
-        FailsafeUtils.incrementFailsafeIntensity(50);
+        FailsafeUtils.reportTrigger({
+            type: 'Slot Change',
+            reason: `Slot changed from ${fromSlot} to ${toSlot}!`,
+            intensity: 50,
+            details: { fromSlot, toSlot },
+        });
         FailsafeUtils.sendFailsafeEmbed('Slot Change', 'high', `Slot changed from ${fromSlot} to ${toSlot}!`, 16744448);
     }
 }

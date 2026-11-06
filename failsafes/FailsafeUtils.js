@@ -105,6 +105,18 @@ class FailsafeUtils {
 
     sendFailsafeEmbed(type, severity, description, color) {}
 
+    reportTrigger({ type, reason, intensity = 0, details = {} }) {
+        const event = Object.freeze({
+            type,
+            reason,
+            intensity: Math.max(0, finiteNumber(intensity)),
+            timestamp: Date.now(),
+            details: Object.freeze({ ...details }),
+        });
+        this.incrementFailsafeIntensity(event.intensity);
+        require('../utils/MacroState').MacroState.notifyFailsafeTrigger(event);
+    }
+
     incrementFailsafeIntensity(amt) {
         const delta = Math.max(0, finiteNumber(amt));
         if (delta === 0) return;

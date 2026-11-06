@@ -52,7 +52,12 @@ class ChatMentionFailsafe extends Failsafe {
         const embedColour = result.isHigh ? 16744448 : 16776960;
 
         chatFailsafe(`&c&lDetected blacklisted word - "${result.blockedWord}"!`);
-        FailsafeUtils.incrementFailsafeIntensity(pressure);
+        FailsafeUtils.reportTrigger({
+            type: 'Chat Mention',
+            reason: `Someone mentioned: "${result.blockedWord}"`,
+            intensity: pressure,
+            details: { blockedWord: result.blockedWord, fullMessage: result.fullMessage, isHigh: result.isHigh },
+        });
         FailsafeUtils.sendFailsafeEmbed(
             'Chat Mention',
             severity,

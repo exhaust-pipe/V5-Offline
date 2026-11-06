@@ -185,6 +185,12 @@ class TeleportFailsafe extends Failsafe {
 
     handleNullPacket(x, y, z) {
         Chat.messageFailsafe('&c&lNULL PACKET DETECTED, DO NOT REACT!', false);
+        FailsafeUtils.reportTrigger({
+            type: 'TP',
+            reason: `Null teleport packet received at ${x}, ${y}, ${z}.`,
+            intensity: 0,
+            details: { isNullPacket: true, toX: x, toY: y, toZ: z },
+        });
         FailsafeUtils.sendFailsafeEmbed('TP', 'very high - null packet', `You just recieved a null packet to ${x}, ${y}, ${z}!`, 16711680);
     }
 
@@ -195,7 +201,12 @@ class TeleportFailsafe extends Failsafe {
         Chat.messageFailsafe(`&c&lFrom: &r&7${fX.toFixed(2)}&f, &7${fY.toFixed(2)}&f, &7${fZ.toFixed(2)}&f`, false);
         Chat.messageFailsafe(`&c&lTo: &r&7${nX.toFixed(2)}&f, &7${nY.toFixed(2)}&f, &7${nZ.toFixed(2)}&f`, false);
         Chat.messageFailsafe(`&c&lTotal Blocks: &r&7${dist.toFixed(0)}`, true);
-        FailsafeUtils.incrementFailsafeIntensity(pressure);
+        FailsafeUtils.reportTrigger({
+            type: 'TP',
+            reason: `Server teleported you ${dist.toFixed(1)} blocks.`,
+            intensity: pressure,
+            details: { isNullPacket: false, fromX: fX, fromY: fY, fromZ: fZ, toX: nX, toY: nY, toZ: nZ, distance: dist },
+        });
 
         FailsafeUtils.sendFailsafeEmbed(
             'TP',

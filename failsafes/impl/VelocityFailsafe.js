@@ -83,7 +83,12 @@ class VelocityFailsafe extends Failsafe {
         const { pressure, severity, color } = VELOCITY_TIERS.find((t) => speed < t.threshold) || VELOCITY_TIERS[VELOCITY_TIERS.length - 1];
 
         chatFailsafe(`&c&lVelocity failsafe triggered! Velocity: ${speed.toFixed(0)}`);
-        FailsafeUtils.incrementFailsafeIntensity(pressure);
+        FailsafeUtils.reportTrigger({
+            type: 'Velocity',
+            reason: `Velocity change detected: ${speed.toFixed(2)}`,
+            intensity: pressure,
+            details: { speed },
+        });
         FailsafeUtils.sendFailsafeEmbed('Velocity', severity, `Velocity change detected: ${speed.toFixed(0)}`, color);
     }
 }

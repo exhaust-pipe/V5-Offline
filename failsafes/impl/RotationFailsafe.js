@@ -72,7 +72,12 @@ class RotationFailsafe extends Failsafe {
         chatFailsafe(`&c&lFrom: &r&7Yaw ${fromYaw.toFixed(2)} &f| &7Pitch ${fromPitch.toFixed(2)}`, false);
         chatFailsafe(`&c&lTo: &r&7Yaw ${toYaw.toFixed(2)} &f| &7Pitch ${toPitch.toFixed(2)}`, false);
         chatFailsafe(`&c&lTotal Rotation: &r&7${totalRotation.toFixed(2)}°`, true);
-        FailsafeUtils.incrementFailsafeIntensity(pressure);
+        FailsafeUtils.reportTrigger({
+            type: 'Rotation',
+            reason: `Server rotated you by ${totalRotation.toFixed(2)} degrees.`,
+            intensity: pressure,
+            details: { fromYaw, fromPitch, toYaw, toPitch, yawDiff, pitchDiff, totalRotation },
+        });
 
         FailsafeUtils.sendFailsafeEmbed(
             'Rotation',

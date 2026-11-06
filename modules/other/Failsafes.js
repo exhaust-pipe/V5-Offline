@@ -34,7 +34,7 @@ class Failsafes extends ModuleBase {
             (value) => {
                 this.notifyMacroIntensity = value;
             },
-            'Notify running macros of the intensity added by each failsafe trigger.',
+            'Notify running macros of the intensity added by each failsafe trigger. Trigger reasons are sent regardless of this setting.',
             this.notifyMacroIntensity,
             sectionName
         );

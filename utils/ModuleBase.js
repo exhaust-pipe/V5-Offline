@@ -548,6 +548,7 @@ export class ModuleBase {
     onEnable() {}
     onDisable() {}
     onFailsafeIntensity(delta) {}
+    onFailsafeTrigger(event) {}
 
     /**
      * @private
