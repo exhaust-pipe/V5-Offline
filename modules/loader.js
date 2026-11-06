@@ -14,6 +14,7 @@ import './mining/Nuker';
 import './mining/PowderNuker';
 import './mining/OreMacro';
 import './mining/PinglessMining';
+import './mining/ScathaMacro';
 import './mining/GlowingMushroomMacro';
 import './mining/TunnelsMiner';
 
