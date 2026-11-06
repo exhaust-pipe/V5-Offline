@@ -32,6 +32,7 @@ class Finder {
         this.entityGoalOffsets = null;
         this.entityTrackDistance = 8;
         this.pitchJitter = null;
+        this.pathValidator = null;
         this.silent = false;
         this.recalculateAttempts = 0;
         this.recalculateRetryQueued = false;
@@ -60,6 +61,7 @@ class Finder {
         this.flyStartDelayTicks = 0;
         this.flySplinePath = null;
         this.cachedPathResult = null;
+        this.validatedPathResult = null;
         this.cachedWalkSplinePath = null;
         this.cachedWalkSplineResult = null;
 
@@ -144,6 +146,7 @@ class Finder {
             this.entityGoalOffsets = this.createEntityGoalOffsets(end, this.entityTarget);
             this.entityTrackDistance = Number.isFinite(options?.entityTrackDistance) && options.entityTrackDistance > 0 ? options.entityTrackDistance : 8;
             this.pitchJitter = options?.pitchJitter ?? null;
+            this.pathValidator = typeof options?.pathValidator === 'function' ? options.pathValidator : null;
             this.silent = options?.silent === true;
             this.addAvoidPoints(options?.avoidPoints, options?.avoidRadius);
         }
@@ -239,6 +242,14 @@ class Finder {
                     this.resetPath();
                 }
                 return;
+            }
+
+            if (this.pathValidator && this.validatedPathResult !== result) {
+                if (!this.pathValidator(result.path)) {
+                    this.recalculate('unsafe_path');
+                    return;
+                }
+                this.validatedPathResult = result;
             }
 
             if (!this.saidInfo && this.calledFromFile && PathConfig.PATHFINDING_DEBUG) {
@@ -957,6 +968,7 @@ class Finder {
 
     clearPathCaches() {
         this.cachedPathResult = null;
+        this.validatedPathResult = null;
         this.cachedWalkSplinePath = null;
         this.cachedWalkSplineResult = null;
     }
@@ -1038,6 +1050,7 @@ class Finder {
             this.entityGoalOffsets = null;
             this.entityTrackDistance = 8;
             this.pitchJitter = null;
+            this.pathValidator = null;
             this.silent = false;
             this.recalculateAttempts = 0;
             this.recalculateRetryQueued = false;

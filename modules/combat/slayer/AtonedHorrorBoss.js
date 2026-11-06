@@ -5,7 +5,7 @@ import { Rotations } from '../../../utils/player/Rotations';
 import { CombatBot } from '../CombatBot';
 import { GenericSlayerBoss } from './GenericSlayerBoss';
 
-const DANGEROUS_BLOCKS = new Set([
+const DANGEROUS_BLOCKS = [
     'minecraft:white_terracotta',
     'minecraft:orange_terracotta',
     'minecraft:red_terracotta',
@@ -17,13 +17,15 @@ const DANGEROUS_BLOCKS = new Set([
     'minecraft:quartz_slab',
     'minecraft:quartz_stairs',
     'minecraft:smooth_quartz_slab',
-]);
+].map((name) => new BlockType(name));
 const SEARCH_INTERVAL_MS = 250;
 const PATH_TIMEOUT_MS = 6000;
 const FAILED_GOAL_RETRY_MS = 5000;
 const OUT_OF_REACH_GRACE_MS = 1000;
-const DANGEROUS_GROUND_GRACE_MS = 500;
-const DANGEROUS_VERTICAL_RANGE = 5;
+const DANGEROUS_GROUND_GRACE_MS = 250;
+const DANGEROUS_RECOVERY_DELAY_MS = 2000;
+const DANGEROUS_HORIZONTAL_RADIUS = 1;
+const ESCAPE_SEARCH_RADIUS = 8;
 
 export class AtonedHorrorBoss extends GenericSlayerBoss {
     constructor(config) {
@@ -36,6 +38,9 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
         this.hasSafeGoal = true;
         this.dangerousSince = null;
         this.outOfReachSince = null;
+        this.dangerousColumns = new Map();
+        this.dangerousColumnsTick = null;
+        this.dangerousColumnSafeSince = new Map();
     }
 
     tick() {
@@ -47,12 +52,15 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
         this.nextSearchAt = 0;
         this.dangerousSince = null;
         this.outOfReachSince = null;
+        this.dangerousColumns.clear();
+        this.dangerousColumnsTick = null;
         super.pause();
     }
 
     stop() {
         super.stop();
         this.failedGoals.clear();
+        this.dangerousColumnSafeSince.clear();
         this.hasSafeGoal = true;
     }
 
@@ -84,7 +92,7 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
         this.outOfReachSince = canAttack ? null : (this.outOfReachSince ?? now);
         const leaveDanger = dangerous && now - this.dangerousSince >= DANGEROUS_GROUND_GRACE_MS;
         const holdPosition = !this.goal && !leaveDanger && (dangerous || canAttack || now - this.outOfReachSince < OUT_OF_REACH_GRACE_MS);
-        const reachedFightPosition = Player.getPlayer().onGround() && this.isSafePosition(playerPosition) && canAttack;
+        const reachedFightPosition = Player.getPlayer().onGround() && this.isSafePosition(playerPosition) && (canAttack || this.goal?.escape);
         if (holdPosition || reachedFightPosition) {
             this.cancelNavigation();
             this.hasSafeGoal = true;
@@ -94,7 +102,7 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
 
         if (this.goal) {
             const safe = this.isSafePosition(this.goal);
-            this.goal.outOfReachSince = this.canAttackFrom(this.goal, target) ? null : (this.goal.outOfReachSince ?? now);
+            this.goal.outOfReachSince = this.goal.escape || this.canAttackFrom(this.goal, target) ? null : (this.goal.outOfReachSince ?? now);
             const bossMovedAway = this.goal.outOfReachSince !== null && now - this.goal.outOfReachSince >= OUT_OF_REACH_GRACE_MS;
             if (safe && !bossMovedAway && Pathfinder.isPathing() && now - this.pathStartedAt < PATH_TIMEOUT_MS) return;
             if (safe && !bossMovedAway) this.failedGoals.set(this.goal.key, now + FAILED_GOAL_RETRY_MS);
@@ -106,7 +114,8 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
             if (now >= expiry) this.failedGoals.delete(key);
         }
 
-        const { goals, avoidPoints } = this.findSafeGoals(target, position);
+        let { goals, avoidPoints } = this.findSafeGoals(target, position);
+        if (dangerous && !goals.length) ({ goals, avoidPoints } = this.findSafeGoals(target, playerPosition, true));
         this.hasSafeGoal = goals.length > 0;
         if (!this.hasSafeGoal) {
             CombatBot.setState('WAITING_FOR_SAFE_GROUND');
@@ -136,27 +145,29 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
                 pitchJitter: () => CombatBot.pathPitchJitter,
                 avoidPoints,
                 avoidRadius: 1,
+                pathValidator: (path) => this.validatePath(path),
                 silent: true,
             }
         );
     }
 
-    findSafeGoals(target, position) {
+    findSafeGoals(target, position, escape = false) {
         const goals = [];
         const avoidPoints = [];
-        const radius = Math.ceil(Math.min(CombatBot.attackRange, Player.getPlayer().entityInteractionRange())) + 1;
+        const radius = escape ? ESCAPE_SEARCH_RADIUS : Math.ceil(Math.min(CombatBot.attackRange, Player.getPlayer().entityInteractionRange())) + 1;
         for (let x = Math.floor(position.x) - radius; x <= Math.floor(position.x) + radius; x++) {
             for (let z = Math.floor(position.z) - radius; z <= Math.floor(position.z) + radius; z++) {
+                const dangerous = this.isDangerousColumn(x, z);
                 for (let y = Math.floor(position.y) - 3; y <= Math.floor(position.y) + 2; y++) {
-                    const goal = this.getStandingPosition(x, y, z);
-                    if (this.isDangerousColumn(x, goal?.y ?? y + 1, z)) {
+                    if (dangerous) {
                         avoidPoints.push([x, y + 1, z]);
                         continue;
                     }
                     const key = `${x},${y},${z}`;
                     if (this.failedGoals.has(key)) continue;
-                    if (!goal || !this.canAttackFrom(goal, target) || !this.isSafePosition(goal)) continue;
-                    goals.push({ ...goal, key });
+                    const goal = this.getStandingPosition(x, y, z);
+                    if (!goal || (!escape && !this.canAttackFrom(goal, target)) || !this.isSafePosition(goal)) continue;
+                    goals.push({ ...goal, key, escape });
                 }
             }
         }
@@ -177,26 +188,76 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
         return top > 0 ? { x: x + 0.5, y: y + top, z: z + 0.5, groundY: y } : null;
     }
 
-    isDangerousColumn(x, y, z) {
-        const centerY = Math.floor(y);
-        for (let blockY = centerY - DANGEROUS_VERTICAL_RANGE; blockY <= centerY + DANGEROUS_VERTICAL_RANGE; blockY++) {
-            if (DANGEROUS_BLOCKS.has(World.getBlockAt(x, blockY, z)?.type?.getRegistryName())) return true;
+    isDangerousColumn(x, z) {
+        const tick = World.getTime();
+        if (this.dangerousColumnsTick !== tick) {
+            this.dangerousColumns.clear();
+            this.dangerousColumnsTick = tick;
         }
-        return false;
+        const key = `${x},${z}`;
+        if (!this.dangerousColumns.has(key)) {
+            const world = World.getWorld();
+            const blocks = World.getBlocksInBox(
+                x - DANGEROUS_HORIZONTAL_RADIUS,
+                world.getMinY(),
+                z - DANGEROUS_HORIZONTAL_RADIUS,
+                x + DANGEROUS_HORIZONTAL_RADIUS,
+                world.getMaxY(),
+                z + DANGEROUS_HORIZONTAL_RADIUS,
+                DANGEROUS_BLOCKS
+            );
+            const activeColumns = new Set();
+            for (const block of blocks) activeColumns.add(`${block.x},${block.z}`);
+            const now = Date.now();
+            let dangerous = false;
+            for (let blockX = x - DANGEROUS_HORIZONTAL_RADIUS; blockX <= x + DANGEROUS_HORIZONTAL_RADIUS; blockX++) {
+                for (let blockZ = z - DANGEROUS_HORIZONTAL_RADIUS; blockZ <= z + DANGEROUS_HORIZONTAL_RADIUS; blockZ++) {
+                    const blockKey = `${blockX},${blockZ}`;
+                    if (activeColumns.has(blockKey)) {
+                        this.dangerousColumnSafeSince.set(blockKey, null);
+                    } else if (this.dangerousColumnSafeSince.has(blockKey)) {
+                        const safeSince = this.dangerousColumnSafeSince.get(blockKey) ?? now;
+                        if (now - safeSince >= DANGEROUS_RECOVERY_DELAY_MS) this.dangerousColumnSafeSince.delete(blockKey);
+                        else this.dangerousColumnSafeSince.set(blockKey, safeSince);
+                    }
+                    if (this.dangerousColumnSafeSince.has(blockKey)) dangerous = true;
+                }
+            }
+            this.dangerousColumns.set(key, dangerous);
+        }
+        return this.dangerousColumns.get(key);
     }
 
-    isNearDangerousBlocks() {
-        const body = Player.getPlayer().getBoundingBox();
+    isNearDangerousBlocks(position = { x: Player.getX(), z: Player.getZ() }) {
+        const player = Player.getPlayer();
+        const body = player.getBoundingBox().move(position.x - player.getX(), 0, position.z - player.getZ());
         for (let x = Math.floor(body.minX + 0.001); x <= Math.floor(body.maxX - 0.001); x++) {
             for (let z = Math.floor(body.minZ + 0.001); z <= Math.floor(body.maxZ - 0.001); z++) {
-                if (this.isDangerousColumn(x, Player.getY(), z)) return true;
+                if (this.isDangerousColumn(x, z)) return true;
             }
         }
         return false;
     }
 
+    validatePath(path) {
+        if (!path?.length) return false;
+        const avoidPoints = [];
+        // Allow escape from an unsafe starting area, but never re-enter danger after reaching safe ground.
+        let reachedSafeGround = !this.isNearDangerousBlocks();
+        for (const point of path) {
+            if (this.isNearDangerousBlocks({ x: point.x + 0.5, z: point.z + 0.5 })) {
+                if (reachedSafeGround) avoidPoints.push([point.x, point.y + 1, point.z]);
+            } else {
+                reachedSafeGround = true;
+            }
+        }
+        if (avoidPoints.length) Pathfinder.addAvoidPoints(avoidPoints, 1);
+        return reachedSafeGround && avoidPoints.length === 0;
+    }
+
     isSafePosition(position) {
         if (this.config.boundaryCheck && !this.config.boundaryCheck(position.x, position.y, position.z)) return false;
+        if (this.isNearDangerousBlocks(position)) return false;
         const player = Player.getPlayer();
         const world = World.getWorld();
         const body = player.getBoundingBox().move(position.x - player.getX(), position.y - player.getY(), position.z - player.getZ());
@@ -208,7 +269,6 @@ export class AtonedHorrorBoss extends GenericSlayerBoss {
             for (let z = Math.floor(body.minZ + 0.001); z <= Math.floor(body.maxZ - 0.001); z++) {
                 const blockPos = new BP(x, groundY, z);
                 if (!world.hasChunkAt(blockPos)) return false;
-                if (this.isDangerousColumn(x, position.y, z)) return false;
                 for (const box of world.getBlockState(blockPos).getCollisionShape(world, blockPos).toAabbs()) {
                     if (x + box.maxX <= body.minX || x + box.minX >= body.maxX || z + box.maxZ <= body.minZ || z + box.minZ >= body.maxZ) continue;
                     if (Math.abs(groundY + box.maxY - position.y) < 0.05) supported = true;
