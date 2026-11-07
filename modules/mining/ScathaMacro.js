@@ -1,16 +1,17 @@
-import { BP, Direction } from '../../utils/Constants';
-import { offsetPitch, wrapTo180 } from '../../utils/Math';
+import { BP, ClipContext, Direction, Vec3d } from '../../utils/Constants';
+import { calculateAbsoluteAngles, offsetPitch, wrapTo180 } from '../../utils/Math';
 import { MiningUtils } from '../../utils/MiningUtils';
 import { ModuleBase } from '../../utils/ModuleBase';
-import { ClientboundLevelParticlesPacket, ClientboundSystemChatPacket, getLevelParticleData } from '../../utils/Packets';
-import { getLookingAt } from '../../utils/Raytrace';
+import { ClientboundLevelParticlesPacket, getLevelParticleData } from '../../utils/Packets';
+import { getLookingAt, getVisiblePoint, testPointNative } from '../../utils/Raytrace';
 import { registerSkyblockEvent } from '../../utils/SkyblockEvents';
 import { getArea } from '../../utils/TabListUtils';
 import { Mouse } from '../../utils/Ungrab';
 import Pathfinder from '../../utils/pathfinder/PathFinder';
 import { clickSlot, closeInventory, getGuiName, setItemSlot } from '../../utils/player/Inventory';
 import { setKeysForStraightLineCoords } from '../../utils/player/Movement';
-import { Rotations } from '../../utils/player/Rotations';
+import { applyToPlayer } from '../../utils/player/RotationGCD';
+import { RotationModule, Rotations } from '../../utils/player/Rotations';
 import { CombatBot } from '../combat/CombatBot';
 
 const HORIZONTAL_STATES = new Set(['FORWARD', 'BACKWARD', 'RETURN', 'TURN', 'ALIGN']);
@@ -24,8 +25,8 @@ const flatDistance = (point) => Math.hypot(Player.getX() - point.x, Player.getZ(
 const blockName = (point) => World.getBlockAt(point.x, point.y, point.z)?.type?.getRegistryName();
 const key = (point) => `${point.x},${point.y},${point.z}`;
 const isChest = (name) => name === 'minecraft:chest' || name === 'minecraft:trapped_chest';
-const WORM_WARNING = /\byou hear the sound of something approaching\b/i;
 const WORM_SPAWN_TIMEOUT_MS = 60000;
+const FORWARD_STOP_DISTANCE = 2;
 const cleanChat = (text) =>
     String(ChatLib.removeFormatting(String(text)))
         .replace(/[\u200b-\u200d\ufeff]/g, '')
@@ -49,24 +50,21 @@ class ScathaMacro extends ModuleBase {
         this.initSettings();
         this.bindToggleKey();
         this.on('tick', () => this.tick());
+        this.on('postRenderWorld', () => this.updateRotation());
         this.on('worldUnload', () => this.onWorldUnload());
         this.on('chat', (event) => {
             const message = cleanChat(event.message.getUnformattedText());
-            if (WORM_WARNING.test(message)) this.interruptForWorm();
             if (this.state === 'LOADOUT' && /loadout/i.test(message) && /can't|cannot|can only|cooldown|wait|unable|locked/i.test(message)) {
                 this.currentLoadout = null;
                 this.loadoutRequest.phase = 'OPEN';
                 this.loadoutRequest.dueAt = Date.now() + this.delay(this.actionDelay);
             }
         });
-        this.on('packetReceived', (packet) => {
-            if (packet.overlay() || !WORM_WARNING.test(cleanChat(packet.content().getString()))) return;
-            const generation = this.generation;
-            // Packet callbacks run on the network thread; change macro state on the client thread before mining resumes.
-            Client.scheduleTask(0, () => {
-                if (this.enabled && this.generation === generation) this.interruptForWorm();
-            });
-        }).setFilteredClass(ClientboundSystemChatPacket);
+        this.on('chat', () => this.interruptForWorm())
+            .setCriteria('You hear the sound of something approaching')
+            .setContains()
+            .setCaseInsensitive()
+            .triggerIfCanceled(true);
         this.on('packetReceived', (packet) => {
             if (this.state !== 'CHEST' || !this.chest?.clickedAt) return;
             const data = getLevelParticleData(packet);
@@ -76,6 +74,7 @@ class ScathaMacro extends ModuleBase {
                 const distance = Math.hypot(data.x - Player.getX(), data.z - Player.getZ());
                 this.chest.particle = offsetPitch({ x: data.x, y: data.y, z: data.z }, 5 / Math.max(1, distance));
                 this.chest.particleAt = Date.now();
+                this.chest.progressAt = this.chest.particleAt;
             }
         }).setFilteredClass(ClientboundLevelParticlesPacket);
         for (const event of ['chestsolve', 'chestopen']) {
@@ -138,13 +137,14 @@ class ScathaMacro extends ModuleBase {
         range('Forward Mining Time (s)', 'forwardTime', 10, 200, 60, 90, 'Random time before each backward pass. Combat and recovery pause this timer.');
         range('UI Click Delay (ms)', 'clickDelay', 100, 2000, 200, 400, 'Random delay before inventory clicks and chest interactions.');
         range('Action Delay (ms)', 'actionDelay', 500, 5000, 1000, 3000, 'Random delay between macro states.');
+        range('Rotation Time (ms)', 'rotationTime', 100, 1000, 350, 500, 'Random duration of mining pitch changes, chest aiming, and obstacle clearing.');
         slider('Lobby Failsafe Threshold', 'lobbyThreshold', 1, 1000, 200, 'Chat Mention and Player Grief intensity. Switching lobbies clears this counter.');
         slider('Exit Failsafe Threshold', 'exitThreshold', 1, 1000, 200, 'All other failsafe events. Stops the macro when reached.');
         slider('Intensity Decay per 10s', 'intensityDecay', 0, 50, 5, 'Subtract this amount from both counters every 10 seconds.');
     }
 
     delay(range) {
-        return randomInt(range.low, range.high);
+        return typeof range === 'number' ? range : randomInt(range.low, range.high);
     }
 
     onEnable() {
@@ -161,7 +161,21 @@ class ScathaMacro extends ModuleBase {
         this.lobbyId = null;
         this.resetLobby();
         this.miningSpeed = MiningUtils.getMiningSpeed('Crystal Hollows');
-        this.setState('WARP');
+        if (getArea() === 'Crystal Hollows' && Math.abs(Player.getY() - this.tunnelY) <= 0.12) {
+            const directions = [
+                { axis: 'z', sign: 1 },
+                { axis: 'x', sign: -1 },
+                { axis: 'z', sign: -1 },
+                { axis: 'x', sign: 1 },
+            ];
+            const direction = directions[((Math.round(Player.getYaw() / 90) % 4) + 4) % 4];
+            this.lane = { ...direction, turnSign: Math.random() < 0.5 ? -1 : 1 };
+            this.setLaneStart(position());
+            this.safePoint = position();
+            this.turnGoal = null;
+            this.lobbyId = this.getLobbyId();
+            this.switchLoadout(this.forwardLoadout, 'FORWARD');
+        } else this.setState('WARP');
         this.message('&aEnabled');
     }
 
@@ -169,7 +183,7 @@ class ScathaMacro extends ModuleBase {
         this.generation++;
         try {
             this.stopActivities();
-            if (this.state === 'LOADOUT' || this.state === 'CHEST') closeInventory();
+            if (this.state === 'LOADOUT') closeInventory();
             this.state = 'IDLE';
             this.loadoutRequest = null;
             this.combatResume = null;
@@ -195,6 +209,7 @@ class ScathaMacro extends ModuleBase {
         this.currentLoadout = null;
         this.loadoutRequest = null;
         this.combatResume = null;
+        this.wormOrigin = null;
         this.returnJob = null;
         this.recovery = null;
         this.chest = null;
@@ -213,6 +228,9 @@ class ScathaMacro extends ModuleBase {
         Client.stopMovement();
         for (const button of ['leftclick', 'rightclick', 'shift', 'space', 'sprint']) Client.setKey(button, false);
         Rotations.stop();
+        this.rotation = null;
+        this.forwardAligned = false;
+        this.forwardBlocked = null;
     }
 
     stopActivities() {
@@ -228,16 +246,105 @@ class ScathaMacro extends ModuleBase {
         this.stopControls();
     }
 
-    setState(state) {
+    setState(state, transitionDelay = this.actionDelay) {
         this.stopActivities();
         this.mineTarget = null;
+        this.forwardObstacle = null;
+        this.forwardPitch = null;
+        this.forwardYaw = null;
         this.state = state;
-        this.readyAt = Date.now() + this.delay(this.actionDelay);
+        this.readyAt = Date.now() + (state === 'CHEST' ? 0 : this.delay(transitionDelay));
         this.startedAt = this.readyAt;
         this.initialized = false;
         if (state === 'COOLDOWN') this.cooldownY = Player.getY();
         this.progressPoint = null;
         this.progressAt = this.readyAt;
+    }
+
+    aimAt(target, targetId = null) {
+        if (!this.rotation) {
+            Rotations.stop();
+            this.rotation = { yaw: Player.getYaw(), pitch: Player.getPitch(), updatedAt: Date.now() };
+            if (target.forward && this.forwardPitch) {
+                this.forwardYaw = null;
+                this.forwardPitch.from = this.rotation.pitch;
+                this.forwardPitch.startedAt = this.rotation.updatedAt;
+                this.forwardPitch.complete = false;
+            }
+        }
+        this.rotation.target = target;
+        this.rotation.targetId = targetId;
+    }
+
+    updateRotation() {
+        const rotation = this.rotation;
+        if (!rotation || !Player.getPlayer() || !World.isLoaded() || Client.isInGui()) return;
+        const now = Date.now();
+        const elapsed = Math.max(0, Math.min(100, now - rotation.updatedAt));
+        rotation.updatedAt = now;
+        if (rotation.target.forward) {
+            rotation.motion = null;
+            if (!this.forwardPitch) return;
+            if (!this.forwardYaw || (this.forwardAligned && now >= this.forwardYaw.startedAt + this.forwardYaw.duration)) {
+                this.forwardYaw = {
+                    from: this.forwardYaw?.target ?? rotation.yaw,
+                    target: this.yaw(this.lane) + random(-3, 3),
+                    startedAt: now,
+                    duration: this.delay(this.rotationTime),
+                };
+            }
+            for (const [axis, motion] of [
+                ['yaw', this.forwardYaw],
+                ['pitch', this.forwardPitch],
+            ]) {
+                const progress = Math.max(0, Math.min(1, (now - motion.startedAt) / motion.duration));
+                const delta = axis === 'yaw' ? wrapTo180(motion.target - motion.from) : motion.target - motion.from;
+                rotation[axis] = motion.from + delta * progress;
+                motion.complete = progress === 1;
+            }
+        } else {
+            const target = Number.isFinite(rotation.target.yaw) ? rotation.target : calculateAbsoluteAngles(rotation.target);
+            if (this.state === 'CHEST' || (this.state === 'FORWARD' && this.forwardObstacle)) {
+                this.updateTimedRotation(rotation, target, now);
+            } else {
+                rotation.motion = null;
+                const yaw = wrapTo180(target.yaw - rotation.yaw);
+                const pitch = target.pitch - rotation.pitch;
+                const distance = Math.hypot(yaw, pitch);
+                const progress = distance ? Math.min(1, (RotationModule.ROTATION_SPEED * elapsed) / (1000 * distance)) : 1;
+                rotation.yaw += yaw * progress;
+                rotation.pitch += pitch * progress;
+            }
+        }
+        applyToPlayer(rotation.yaw, rotation.pitch);
+        if (rotation.target.forward && this.forwardAligned && this.forwardPitch.complete) {
+            this.setForwardPitch(!this.preferHead);
+        }
+    }
+
+    updateTimedRotation(rotation, target, now) {
+        let motion = rotation.motion;
+        if (
+            !motion ||
+            motion.targetId !== rotation.targetId ||
+            (motion.complete && (Math.abs(wrapTo180(target.yaw - motion.yaw)) > 0.1 || Math.abs(target.pitch - motion.pitch) > 0.1))
+        ) {
+            motion = {
+                targetId: rotation.targetId,
+                fromYaw: rotation.yaw,
+                fromPitch: rotation.pitch,
+                yaw: rotation.yaw + wrapTo180(target.yaw - rotation.yaw),
+                pitch: target.pitch,
+                startedAt: now,
+                duration: this.delay(this.rotationTime),
+                complete: false,
+            };
+            rotation.motion = motion;
+        }
+        const progress = Math.max(0, Math.min(1, (now - motion.startedAt) / motion.duration));
+        rotation.yaw = motion.fromYaw + (motion.yaw - motion.fromYaw) * progress;
+        rotation.pitch = motion.fromPitch + (motion.pitch - motion.fromPitch) * progress;
+        motion.complete = progress === 1;
     }
 
     selectSlot(slot) {
@@ -278,7 +385,7 @@ class ScathaMacro extends ModuleBase {
         this.message(`&eSwitching Crystal Hollows lobby: ${reason}`);
         this.previousServer = this.lobbyId || this.getLobbyId() || this.previousServer;
         this.generation++;
-        if (this.state === 'LOADOUT' || this.state === 'CHEST') closeInventory();
+        if (this.state === 'LOADOUT') closeInventory();
         this.resetLobby();
         this.lobbyIntensity = 0;
         this.setState('HOP');
@@ -292,7 +399,7 @@ class ScathaMacro extends ModuleBase {
         if (!['HOP', 'WARP'].includes(this.state) && getArea() !== 'Crystal Hollows') return this.switchLobby('Left the Crystal Hollows');
         if (this.checkHeight()) return;
         if (Date.now() < this.readyAt) return;
-        if (Client.isInGui() && !['LOADOUT', 'CHEST'].includes(this.state)) {
+        if (Client.isInGui() && this.state !== 'LOADOUT') {
             this.stopActivities();
             if (!this.guiPausedAt) this.guiPausedAt = Date.now();
             if (Date.now() - this.guiPausedAt > 30000) this.stop('Close the open screen before restarting.');
@@ -303,6 +410,10 @@ class ScathaMacro extends ModuleBase {
             this.startedAt += elapsed;
             this.forwardUntil += elapsed;
             this.progressAt += elapsed;
+            if (this.chest) {
+                this.chest.progressAt += elapsed;
+                if (this.chest.approach) this.chest.approach.startedAt += elapsed;
+            }
             this.guiPausedAt = 0;
         }
         if (!this.initialized) {
@@ -382,10 +493,10 @@ class ScathaMacro extends ModuleBase {
                 this.forwardUntil = Date.now() + (this.forwardRemaining ?? this.delay(this.forwardTime) * 1000);
                 this.forwardRemaining = null;
                 this.nextTunnelCheck = 0;
-                this.randomizeForward();
+                this.preferHead = Math.random() < 0.5;
                 break;
             case 'BACKWARD':
-                this.backwardYaw = this.yaw(this.lane) + random(-5, 5);
+                this.backwardYaw = this.yaw(this.lane) + random(-3, 3);
                 this.backwardPitch = random(-15, -7);
                 break;
             case 'TURN':
@@ -393,7 +504,7 @@ class ScathaMacro extends ModuleBase {
                     this.turnOrigin = center({ ...position(), y: this.tunnelY });
                     this.turnGoal = this.offset(this.turnOrigin, this.turnDirection(), randomInt(4, 6));
                 }
-                this.randomizeForward();
+                this.randomizeCorridor();
                 break;
             case 'WAIT_WORM':
                 this.wormTargets = [];
@@ -405,9 +516,6 @@ class ScathaMacro extends ModuleBase {
                 break;
             case 'RESUME_PATH':
                 this.startReturnPath();
-                break;
-            case 'RECOVERY_WALK':
-                this.randomizeForward();
                 break;
         }
     }
@@ -450,10 +558,10 @@ class ScathaMacro extends ModuleBase {
         return null;
     }
 
-    switchLoadout(number, nextState) {
-        if (this.currentLoadout === number) return this.setState(nextState);
-        this.loadoutRequest = { number, nextState, phase: 'OPEN', attempts: 0, dueAt: 0 };
-        this.setState('LOADOUT');
+    switchLoadout(number, nextState, transitionDelay = this.actionDelay) {
+        if (this.currentLoadout === number) return this.setState(nextState, transitionDelay);
+        this.loadoutRequest = { number, nextState, transitionDelay, phase: 'OPEN', attempts: 0, dueAt: 0 };
+        this.setState('LOADOUT', transitionDelay);
     }
 
     tickLoadout() {
@@ -518,7 +626,7 @@ class ScathaMacro extends ModuleBase {
         }
         this.currentLoadout = request.number;
         this.loadoutRequest = null;
-        this.setState(request.nextState);
+        this.setState(request.nextState, request.transitionDelay);
     }
 
     scanLava() {
@@ -602,7 +710,7 @@ class ScathaMacro extends ModuleBase {
         const point = center(this.lavaTarget.point);
         if (flatDistance(point) <= 0.3 && Player.getY() <= point.y + 1) return this.setState('DESCEND');
         if (Date.now() - this.startedAt > 15000) return this.setState('PATH_LAVA');
-        Rotations.lookAtVector({ ...point, y: Player.getY() + 1 });
+        this.aimAt({ ...point, y: Player.getY() + 1 });
         setKeysForStraightLineCoords(point.x, point.y, point.z, false);
     }
 
@@ -624,13 +732,49 @@ class ScathaMacro extends ModuleBase {
         if (!this.walkTo(this.alignPoint)) return;
         const axis = Math.random() < 0.5 ? 'x' : 'z';
         this.lane = { axis, sign: Math.random() < 0.5 ? -1 : 1, turnSign: Math.random() < 0.5 ? -1 : 1 };
-        this.laneStart = { ...this.alignPoint };
+        this.setLaneStart(position());
         this.turnGoal = null;
         this.setState('FORWARD');
     }
 
     yaw(direction) {
         return direction.axis === 'x' ? -90 * direction.sign : direction.sign > 0 ? 0 : 180;
+    }
+
+    setLaneStart(point) {
+        this.laneStart = center({ ...point, y: this.tunnelY });
+        this.laneStart[this.lane.axis] = point[this.lane.axis];
+    }
+
+    moveAlongLane(direction) {
+        const goal = this.offset(position(), direction, 0.35);
+        const other = direction.axis === 'x' ? 'z' : 'x';
+        goal[other] = this.laneStart[other];
+        setKeysForStraightLineCoords(goal.x, goal.y, goal.z, false);
+    }
+
+    blockingAhead(direction, distance = 0.25) {
+        const player = Player.getPlayer();
+        const world = World.getWorld();
+        const delta = this.offset({ x: 0, y: 0, z: 0 }, direction, distance);
+        const bounds = player.getBoundingBox().expandTowards(delta.x, 0, delta.z);
+        let nearest = null;
+        for (let y = Math.floor(bounds.maxY - 0.001); y >= Math.floor(bounds.minY + 0.001); y--) {
+            for (let x = Math.floor(bounds.minX + 0.001); x <= Math.floor(bounds.maxX - 0.001); x++) {
+                for (let z = Math.floor(bounds.minZ + 0.001); z <= Math.floor(bounds.maxZ - 0.001); z++) {
+                    const point = { x, y, z };
+                    if (nearest && (point[direction.axis] - nearest[direction.axis]) * direction.sign >= 0) continue;
+                    if (!this.loaded(point)) return { ...point, unknown: true };
+                    const pos = new BP(x, y, z);
+                    for (const box of world.getBlockState(pos).getCollisionShape(world, pos).toAabbs()) {
+                        if (!bounds.intersects(box.move(x, y, z))) continue;
+                        nearest = point;
+                        break;
+                    }
+                }
+            }
+        }
+        return nearest;
     }
 
     turnDirection() {
@@ -661,22 +805,30 @@ class ScathaMacro extends ModuleBase {
 
     scanTunnel(y, direction, origin = position()) {
         let run = 0;
-        let longest = 0;
-        let firstRun = null;
-        for (let step = 1; step <= 20; step++) {
+        const side = { axis: direction.axis === 'x' ? 'z' : 'x', sign: 1 };
+        for (let step = 1; step <= 24; step++) {
+            if (step > 20 && run === 0) break;
             const point = this.offset({ x: Math.floor(origin.x), y: Math.floor(y), z: Math.floor(origin.z) }, direction, step);
-            if (!this.loaded(point)) return { unknown: true, open: false };
-            const low = blockName(point);
-            const high = blockName({ ...point, y: point.y + 1 });
-            if (low === 'minecraft:bedrock' || high === 'minecraft:bedrock') return { open: false, boundary: step, firstRun };
-            run = low && high && !AIR.has(low) && !AIR.has(high) ? run + 1 : 0;
-            longest = Math.max(longest, run);
-            if (run === 5 && firstRun === null) firstRun = step - 4;
+            const column = [
+                { ...point, y: point.y - 1 },
+                point,
+                { ...point, y: point.y + 1 },
+                { ...point, y: point.y + 2 },
+                this.offset(point, side, -1),
+                this.offset(point, side, 1),
+                this.offset({ ...point, y: point.y + 1 }, side, -1),
+                this.offset({ ...point, y: point.y + 1 }, side, 1),
+            ];
+            if (column.some((block) => !this.loaded(block))) return { unknown: true, open: false };
+            const names = column.map(blockName);
+            if (names[1] === 'minecraft:bedrock' || names[2] === 'minecraft:bedrock') return { open: false, boundary: step };
+            run = names.every((name) => name && !AIR.has(name)) ? run + 1 : 0;
+            if (run === 5) return { open: false };
         }
-        return { open: longest < 5, firstRun };
+        return { open: true };
     }
 
-    randomizeForward() {
+    randomizeCorridor() {
         this.stopDistance = random(1, 2);
         this.advanceDistance = random(Math.max(2, this.stopDistance + 0.1), 4);
         this.advancing = false;
@@ -693,12 +845,76 @@ class ScathaMacro extends ModuleBase {
                 this.stopControls();
                 return this.checkProgress(10000);
             }
-            if (scan.open) return this.switchLobby('Fewer than five consecutive 1x2 solid columns in the next 20 blocks');
+            if (scan.open) return this.switchLobby('No five-column enclosed tunnel starts within the next 20 blocks');
             this.nextTunnelCheck = Date.now() + 5000;
         }
+        if (this.forwardObstacle) {
+            const point = this.forwardObstacle;
+            if (!this.loaded(point)) {
+                this.stopControls();
+                return this.checkProgress(10000);
+            }
+            const name = blockName(point);
+            if (name === 'minecraft:bedrock') return this.beginBackward(true);
+            if (!AIR.has(name) && !this.passable(point)) {
+                Client.stopMovement();
+                this.mineBlock(point, true);
+                return this.checkProgress(this.mineTarget ? Math.max(15000, this.mineTarget.expectedMs * 3) : 15000);
+            }
+            this.stopControls();
+            this.forwardObstacle = null;
+            this.forwardPitch = null;
+            this.forwardYaw = null;
+            this.mineTarget = null;
+            this.progressAt = Date.now();
+        }
         if (Date.now() >= this.forwardUntil) return this.beginBackward(false);
-        const result = this.mineCorridor(this.lane, this.tunnelY, this.laneStart);
-        if (result === 'BEDROCK') this.beginBackward(true);
+        if (!this.selectSlot(this.miningSlot)) return;
+        if (!this.forwardPitch) this.setForwardPitch(this.preferHead);
+        this.aimAt({ forward: true });
+        if (!this.forwardAligned) {
+            Client.stopMovement();
+            Client.setKey('leftclick', false);
+            if (
+                !this.forwardYaw ||
+                !this.forwardYaw.complete ||
+                !this.forwardPitch.complete ||
+                Math.abs(wrapTo180(Player.getYaw() - this.forwardYaw.target)) > 1 ||
+                Math.abs(Player.getPitch() - this.forwardPitch.target) > 1
+            )
+                return;
+            this.forwardAligned = true;
+            this.progressAt = Date.now();
+        }
+        const looking = getLookingAt(4.5);
+        if (looking && isChest(blockName(looking)) && !this.openedChests.has(key(looking))) return this.openChest(looking);
+        const obstacle = this.blockingAhead(this.lane, FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2);
+        if (obstacle) {
+            if (obstacle.unknown) {
+                this.stopControls();
+                return this.checkProgress(10000);
+            }
+            if (blockName(obstacle) === 'minecraft:bedrock') return this.beginBackward(true);
+            Client.stopMovement();
+            const now = Date.now();
+            const coordinate = position()[this.lane.axis];
+            const obstacleKey = key(obstacle);
+            const blocked = this.forwardBlocked;
+            if (!blocked || blocked.key !== obstacleKey || (coordinate - blocked.coordinate) * this.lane.sign > 0.05) {
+                this.forwardBlocked = { key: obstacleKey, coordinate, dueAt: now + this.delay(this.actionDelay) };
+            } else if (now >= blocked.dueAt) {
+                this.forwardBlocked = null;
+                this.forwardObstacle = obstacle;
+                this.mineTarget = null;
+                this.mineBlock(obstacle, true);
+                return;
+            }
+        } else {
+            this.forwardBlocked = null;
+            this.moveAlongLane(this.lane);
+        }
+        Client.setKey('leftclick', true);
+        this.checkProgress(15000);
     }
 
     beginBackward(atBoundary) {
@@ -713,14 +929,14 @@ class ScathaMacro extends ModuleBase {
         const remaining = (coordinate - this.laneStart[this.lane.axis]) * this.lane.sign;
         if (remaining <= 0.45) return this.switchLoadout(this.forwardLoadout, 'RETURN');
         if (!this.selectSlot(this.miningSlot)) return;
-        Rotations.lookAtAngles(this.backwardYaw, this.backwardPitch);
+        this.aimAt({ yaw: this.backwardYaw, pitch: this.backwardPitch });
         if (Math.abs(wrapTo180(Player.getYaw() - this.backwardYaw)) > 3 || Math.abs(Player.getPitch() - this.backwardPitch) > 2) {
-            Client.setKey('s', false);
+            Client.stopMovement();
             Client.setKey('leftclick', false);
             this.checkProgress(15000);
             return;
         }
-        Client.setKey('s', true);
+        this.moveAlongLane({ ...this.lane, sign: -this.lane.sign });
         Client.setKey('leftclick', true);
         this.checkProgress(15000);
     }
@@ -737,7 +953,7 @@ class ScathaMacro extends ModuleBase {
     turnLane() {
         if (flatDistance(this.turnGoal) <= 0.35) {
             this.lane.sign *= -1;
-            this.laneStart = { ...this.turnGoal };
+            this.setLaneStart(position());
             this.turnGoal = null;
             this.turnPending = false;
             return this.setState('FORWARD');
@@ -791,6 +1007,26 @@ class ScathaMacro extends ModuleBase {
         this.checkProgress(this.mineTarget ? Math.max(15000, this.mineTarget.expectedMs * 3) : 15000);
     }
 
+    setForwardPitch(head) {
+        this.preferHead = head;
+        this.forwardPitch = {
+            from: this.rotation?.pitch ?? Player.getPitch(),
+            target: head ? random(5, 10) : random(15, 30),
+            startedAt: Date.now(),
+            duration: this.delay(this.rotationTime),
+            complete: false,
+        };
+    }
+
+    createMineTarget(point, name) {
+        const speed = Math.max(1, this.miningSpeed || 1500);
+        const ticks = MiningUtils.getBlockInfo(name)
+            ? MiningUtils.getMineTimeForBlock(name, MiningUtils.getEffectiveMiningSpeed(speed, false))
+            : Math.max(4, Math.round(1500 / speed));
+        const now = Date.now();
+        return { point, key: key(point), name, expectedMs: ticks * 50, attackedMs: 0, lastTick: now, changedAt: now + Math.min(ticks * 50, 150) };
+    }
+
     mineBlock(point, vertical = false) {
         const name = blockName(point);
         if (!name || AIR.has(name)) {
@@ -812,17 +1048,13 @@ class ScathaMacro extends ModuleBase {
             return;
         }
         if (!this.mineTarget) {
-            const speed = Math.max(1, this.miningSpeed || 1500);
-            const ticks = MiningUtils.getBlockInfo(name)
-                ? MiningUtils.getMineTimeForBlock(name, MiningUtils.getEffectiveMiningSpeed(speed, false))
-                : Math.max(4, Math.round(1500 / speed));
-            this.mineTarget = { key: key(point), name, expectedMs: ticks * 50, attackedMs: 0, lastTick: now, changedAt: now + Math.min(ticks * 50, 150) };
+            this.mineTarget = this.createMineTarget(point, name);
         }
         const mining = this.mineTarget;
         // Stay inside the selected face until the server changes it; a timer alone can abandon slow gemstones.
         const wobble = vertical ? 0 : 0.12 * Math.sin(now / 300);
         const aim = { x: point.x + 0.5, y: point.y + 0.5 + wobble, z: point.z + 0.5 };
-        Rotations.lookAtVector(aim);
+        this.aimAt(aim, `mine:${mining.key}`);
         const looking = getLookingAt(4.5);
         const onTarget = looking && looking.x === point.x && looking.y === point.y && looking.z === point.z;
         Client.setKey('leftclick', !!onTarget);
@@ -836,7 +1068,7 @@ class ScathaMacro extends ModuleBase {
             this.stopControls();
             return true;
         }
-        Rotations.lookAtVector({ ...point, y: Player.getY() + 1.4 });
+        this.aimAt({ ...point, y: Player.getY() + 1.4 });
         setKeysForStraightLineCoords(point.x, point.y, point.z, false);
         this.checkProgress(15000);
         return false;
@@ -863,23 +1095,27 @@ class ScathaMacro extends ModuleBase {
         };
     }
 
-    restore(snapshot) {
+    restore(snapshot, transitionDelay = this.actionDelay) {
         this.forwardRemaining = snapshot.forwardRemaining;
-        if (snapshot.recoveryContext) this.recovery = snapshot.recoveryContext;
-        if (snapshot.chestContext) this.chest = snapshot.chestContext;
+        this.recovery = snapshot.recoveryContext;
+        this.chest = snapshot.chestContext;
+        if (this.chest) {
+            this.chest.approach = null;
+            this.chest.progressAt = Date.now();
+        }
         if (this.recovery && snapshot.recoveryElapsed !== null) {
             this.recovery.startedAt = Date.now() - snapshot.recoveryElapsed;
             this.recovery.pillar = null;
         }
         if (snapshot.cooldownRemaining !== null) this.cooldownDuration = snapshot.cooldownRemaining;
-        if (snapshot.state === 'LOADOUT') return this.switchLoadout(snapshot.loadout.number, snapshot.loadout.nextState);
+        if (snapshot.state === 'LOADOUT') return this.switchLoadout(snapshot.loadout.number, snapshot.loadout.nextState, transitionDelay);
         const loadout = snapshot.state === 'BACKWARD' ? this.backwardLoadout : snapshot.currentLoadout || this.forwardLoadout;
-        this.switchLoadout(loadout, snapshot.state);
+        this.switchLoadout(loadout, snapshot.state, transitionDelay);
     }
 
     openChest(point) {
-        this.chest = { point: { ...point }, resume: this.snapshot(), clickedAt: 0, particleAt: 0, opened: false, dueAt: 0 };
-        this.setState('CHEST');
+        this.chest = { point: { ...point }, resume: this.snapshot(), clickedAt: 0, particleAt: 0, opened: false, dueAt: 0, progressAt: Date.now() };
+        this.setState('CHEST', 0);
     }
 
     tickChest() {
@@ -887,23 +1123,61 @@ class ScathaMacro extends ModuleBase {
         const now = Date.now();
         if (!chest) return this.stop('Missing treasure chest position.');
         if (!isChest(blockName(chest.point))) return this.finishChest();
-        if (now - this.startedAt > 25000) return this.switchLobby('Treasure chest did not open');
-        const gui = getGuiName();
-        if (chest.clickedAt && gui && /chest/i.test(gui)) {
-            if (!chest.closeAt) chest.closeAt = now + this.delay(this.clickDelay);
-            if (now >= chest.closeAt) {
-                closeInventory();
-                chest.opened = true;
-            }
-            return;
-        }
         if (chest.opened) return this.finishChest();
         if (Client.isInGui()) return;
-        if (chest.particle && now - chest.particleAt < 2000) {
-            Rotations.lookAtVector(chest.particle);
-            return;
+        if (now - this.startedAt > 120000) return this.switchLobby('Treasure chest did not open');
+        if (chest.approach) return this.tickChestApproach();
+        if (now - chest.progressAt > Math.max(25000, (this.mineTarget?.expectedMs || 0) * 3)) return this.switchLobby('Treasure chest stopped making progress');
+        const player = Player.getPlayer();
+        const eye = player.getEyePosition();
+        const particle = chest.particle && now - chest.particleAt < 2000;
+        let aim = particle ? chest.particle : { x: chest.point.x + 0.5, y: chest.point.y + 0.5, z: chest.point.z + 0.5 };
+        const trace = (point) =>
+            World.getWorld().clip(new ClipContext(eye, new Vec3d(point.x, point.y, point.z), ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+        let hit = trace(aim);
+        const hitPoint = (result) => {
+            if (String(result?.getType?.()) !== 'BLOCK') return null;
+            const pos = result.getBlockPos();
+            return { x: pos.getX(), y: pos.getY(), z: pos.getZ() };
+        };
+        let obstacle = hitPoint(hit);
+        if (!particle && (!obstacle || key(obstacle) !== key(chest.point))) {
+            if (now >= (chest.nextVisibleCheck || 0)) {
+                chest.visiblePoint = getVisiblePoint(chest.point.x, chest.point.y, chest.point.z);
+                chest.nextVisibleCheck = now + 250;
+            }
+            if (chest.visiblePoint) {
+                const [x, y, z] = chest.visiblePoint;
+                aim = { x, y, z };
+                hit = trace(aim);
+                obstacle = hitPoint(hit);
+            }
         }
-        Rotations.lookAtVector({ x: chest.point.x + 0.5, y: chest.point.y + 0.5, z: chest.point.z + 0.5 });
+        const obstacleKey = obstacle && key(obstacle);
+        if (chest.obstacleKey !== obstacleKey) {
+            chest.obstacleKey = obstacleKey;
+            chest.progressAt = now;
+            this.mineTarget = null;
+        }
+        const hitLocation = hit.getLocation();
+        const distance = Math.hypot(hitLocation.x() - eye.x(), hitLocation.y() - eye.y(), hitLocation.z() - eye.z());
+        if (obstacle && obstacleKey !== key(chest.point)) {
+            chest.dueAt = 0;
+            const foot = { x: Math.floor(Player.getX()), y: Math.floor(Player.getY() - 0.01), z: Math.floor(Player.getZ()) };
+            const descending = chest.resume.state === 'DESCEND' || (chest.resume.state === 'RECOVERY_HEIGHT' && Player.getY() > this.recovery.goalY + 0.12);
+            const name = blockName(obstacle);
+            if (name === 'minecraft:bedrock' || (isChest(name) && this.openedChests.has(obstacleKey)) || (!descending && obstacleKey === key(foot)))
+                return this.approachChest(chest.point);
+            if (distance > 4.5) return this.approachChest(obstacle);
+            Client.stopMovement();
+            return this.mineBlock(obstacle, true);
+        }
+        Client.setKey('leftclick', false);
+        this.mineTarget = null;
+        if (distance > 4.5) return this.approachChest(chest.point);
+        Client.stopMovement();
+        this.aimAt(aim, `${particle ? 'particle' : 'chest'}:${key(chest.point)}`);
+        if (particle) return;
         const looking = getLookingAt(4.5);
         if (!looking || looking.x !== chest.point.x || looking.y !== chest.point.y || looking.z !== chest.point.z) return;
         if (!chest.dueAt) chest.dueAt = now + this.delay(this.clickDelay);
@@ -913,27 +1187,129 @@ class ScathaMacro extends ModuleBase {
         chest.dueAt = now + Math.max(1000, this.delay(this.clickDelay));
     }
 
+    approachChest(point) {
+        this.stopControls();
+        this.mineTarget = null;
+        const origin = { x: Math.floor(Player.getX()), y: Math.floor(Player.getY()), z: Math.floor(Player.getZ()) };
+        this.chest.approach = {
+            target: point,
+            origin,
+            queue: [{ point: origin, parent: null }],
+            visited: new Set([key(origin)]),
+            index: 0,
+            startedAt: Date.now(),
+        };
+    }
+
+    tickChestApproach() {
+        const chest = this.chest;
+        const job = chest.approach;
+        const world = World.getWorld();
+        const now = Date.now();
+        Client.stopMovement();
+        Client.setKey('leftclick', false);
+        Client.setKey('shift', false);
+        if (now - job.startedAt > 30000) return this.switchLobby('Could not reach the treasure chest');
+        const eyeHeight = Player.getPlayer().getEyePosition().y() - Player.getY();
+        if (!job.points) {
+            const target = job.target;
+            for (let budget = 0; budget < 64 && job.index < job.queue.length && job.index < 1024; budget++) {
+                const node = job.queue[job.index++];
+                const point = node.point;
+                const eye = { x: point.x + 0.5, y: point.y + eyeHeight, z: point.z + 0.5 };
+                if (
+                    (node.parent || flatDistance(center(point)) > 0.15) &&
+                    Math.hypot(target.x + 0.5 - eye.x, target.y + 0.5 - eye.y, target.z + 0.5 - eye.z) <= 3.5 &&
+                    testPointNative(target.x, target.y, target.z, [target.x + 0.5, target.y + 0.5, target.z + 0.5], eye)
+                ) {
+                    job.points = [];
+                    for (let cursor = node; cursor; cursor = cursor.parent) job.points.push(center(cursor.point));
+                    job.points.reverse();
+                    const first = job.points[0];
+                    job.points.unshift({ x: first.x, y: first.y, z: Player.getZ() });
+                    break;
+                }
+                for (const [dx, dz] of [
+                    [1, 0],
+                    [-1, 0],
+                    [0, 1],
+                    [0, -1],
+                ]) {
+                    const next = { x: point.x + dx, y: point.y, z: point.z + dz };
+                    if (job.visited.has(key(next)) || Math.abs(next.x - job.origin.x) + Math.abs(next.z - job.origin.z) > 24) continue;
+                    job.visited.add(key(next));
+                    const floor = new BP(next.x, next.y - 1, next.z);
+                    if (!this.loaded(next) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) continue;
+                    if (!this.passable(next) || !this.passable({ ...next, y: next.y + 1 })) continue;
+                    job.queue.push({ point: next, parent: node });
+                }
+            }
+            if (!job.points && (job.index >= job.queue.length || job.index >= 1024))
+                return this.switchLobby('No clear walking route to the obstructed treasure chest');
+            return;
+        }
+        const goal = job.points[0];
+        if (!goal) {
+            chest.approach = null;
+            chest.progressAt = now;
+            return;
+        }
+        if (flatDistance(goal) <= 0.15) {
+            job.points.shift();
+            chest.progressAt = now;
+            return;
+        }
+        const axis = Math.abs(goal.x - Player.getX()) > Math.abs(goal.z - Player.getZ()) ? 'x' : 'z';
+        const direction = { axis, sign: Math.sign(goal[axis] - position()[axis]) };
+        const floor = new BP(Math.floor(goal.x), Math.floor(goal.y) - 1, Math.floor(goal.z));
+        if (!this.loaded(goal) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP) || this.blockingAhead(direction)) {
+            chest.approach = null;
+            return;
+        }
+        const target = calculateAbsoluteAngles({ ...goal, y: Player.getY() + eyeHeight });
+        this.aimAt({ yaw: target.yaw, pitch: 10 }, `walk:${key(goal)}`);
+        if (Math.abs(wrapTo180(Player.getYaw() - target.yaw)) > 2 || Math.abs(Player.getPitch() - 10) > 2) return;
+        Client.setKey('shift', true);
+        Client.setKey('w', true);
+    }
+
     finishChest() {
         const chest = this.chest;
         if (chest.opened) this.openedChests.add(key(chest.point));
         this.chest = null;
-        this.restore(chest.resume);
+        this.restore(chest.resume, 0);
     }
 
     interruptForWorm() {
-        if (!this.enabled || this.combatResume) return;
-        if (!MINING_STATES.has(this.state) && !(this.state === 'LOADOUT' && MINING_STATES.has(this.loadoutRequest?.nextState))) return;
-        this.combatResume = this.snapshot();
-        if (this.recovery?.pillar) this.combatResume.point.y = this.recovery.pillar.y;
-        if (this.state === 'CHEST' || this.state === 'LOADOUT') closeInventory();
-        this.switchLoadout(this.combatLoadout, 'WAIT_WORM');
+        if (!this.enabled) return;
+        const state = this.state === 'LOADOUT' ? this.loadoutRequest?.nextState : this.state;
+        if (state === 'WAIT_WORM' || state === 'WORM') return;
+        if (!MINING_STATES.has(state) && state !== 'COOLDOWN' && state !== 'RESUME_PATH') return;
+        const interruptedState = state === 'CHEST' ? this.chest?.resume.state : state;
+        const resumingCombat =
+            this.combatResume &&
+            (state === 'COOLDOWN' ||
+                state === 'RESUME_PATH' ||
+                ((interruptedState === 'RECOVERY_WALK' || interruptedState === 'RECOVERY_HEIGHT') &&
+                    (['COOLDOWN', 'COMBAT_RESUME'].includes(this.recovery?.after) || this.recovery?.snapshot.state === 'COOLDOWN')));
+        if (!resumingCombat) {
+            this.combatResume = state === 'RESUME_PATH' ? this.returnJob?.snapshot : this.snapshot();
+            if (!this.combatResume) return;
+            if (this.recovery?.pillar) this.combatResume.point.y = this.recovery.pillar.y;
+        }
+        this.wormOrigin = position();
+        if (this.state === 'LOADOUT') {
+            this.currentLoadout = null;
+            closeInventory();
+        }
+        this.switchLoadout(this.combatLoadout, 'WAIT_WORM', this.actionDelay);
         this.message('&eWorm warning received. Mining paused; preparing combat and waiting for the spawn.');
     }
 
     findWormTargets() {
-        const origin = this.combatResume.point;
+        const origin = this.wormOrigin || this.combatResume.point;
         return CombatBot.findMob({
-            names: ['Stoneworm', 'Scatha'],
+            names: ['Worm', 'Scatha'],
             allowInvisible: true,
             checkVisibility: false,
             boundaryCheck: (x, y, z) => Math.hypot(x - origin.x, y - origin.y, z - origin.z) <= 32,
@@ -946,7 +1322,7 @@ class ScathaMacro extends ModuleBase {
         const targets = this.findWormTargets();
         if (targets.length) {
             this.wormTargets = targets;
-            this.setState('WORM');
+            this.setState('WORM', this.actionDelay);
             this.message('&aWorm spawned. Starting combat.');
             return;
         }
@@ -1018,8 +1394,6 @@ class ScathaMacro extends ModuleBase {
         if (Math.abs(Player.getY() - job.snapshot.point.y) > 0.25) {
             if (!this.lane || this.nearbyPlayer()) return this.switchLobby('Return path ended at the wrong height near a player or outside the tunnel');
             const direction = job.snapshot.state === 'TURN' ? this.turnDirection() : this.lane;
-            const scan = this.scanTunnel(job.snapshot.point.y, direction);
-            if (scan.open || scan.unknown) return this.switchLobby('The return position is above an open or unloaded tunnel');
             this.recovery = { snapshot: job.snapshot, after: job.after, direction, goalY: job.snapshot.point.y, startedAt: Date.now(), pillar: null };
             this.returnJob = null;
             return this.prepareRecoveryWalk();
@@ -1056,16 +1430,11 @@ class ScathaMacro extends ModuleBase {
             return true;
         }
         const direction = state === 'TURN' ? this.turnDirection() : this.lane;
-        const scan = this.scanTunnel(expectedY, direction);
-        if (scan.open || scan.unknown) {
-            this.switchLobby('Height changed over an open or unloaded tunnel');
-            return true;
-        }
         const snapshot = this.snapshot();
         const goalY = Math.floor(expectedY);
         snapshot.point = this.safePoint ? { ...this.safePoint, y: goalY } : { ...position(), y: goalY };
         this.recovery = { snapshot, direction, goalY, startedAt: Date.now(), pillar: null };
-        if (this.state === 'LOADOUT' || this.state === 'CHEST') closeInventory();
+        if (this.state === 'LOADOUT') closeInventory();
         this.prepareRecoveryWalk();
         return true;
     }
@@ -1079,12 +1448,7 @@ class ScathaMacro extends ModuleBase {
 
     prepareRecoveryWalk() {
         const recovery = this.recovery;
-        const origin = center({ ...position(), y: Math.floor(Player.getY()) });
-        const scan = this.scanTunnel(origin.y, recovery.direction, origin);
-        if (scan.open || scan.unknown) return this.switchLobby('No solid recovery column or bedrock within 20 blocks');
-        const stopAt = Math.min(scan.firstRun ?? Infinity, scan.boundary ?? Infinity) - 1;
-        recovery.origin = origin;
-        recovery.goal = this.offset(origin, recovery.direction, Math.max(0, stopAt));
+        recovery.origin = center({ ...position(), y: Math.floor(Player.getY()) });
         this.switchLoadout(this.forwardLoadout, 'RECOVERY_WALK');
     }
 
@@ -1095,9 +1459,33 @@ class ScathaMacro extends ModuleBase {
             if (this.nearbyPlayer()) return this.switchLobby('Player interference during height recovery');
             return this.prepareRecoveryWalk();
         }
-        if (flatDistance(recovery.goal) <= 0.3) return this.setState('RECOVERY_HEIGHT');
-        const result = this.mineCorridor(recovery.direction, recovery.origin.y, recovery.origin, recovery.goal);
-        if (result === 'BEDROCK') this.setState('RECOVERY_HEIGHT');
+        Client.setKey('leftclick', false);
+        const player = Player.getPlayer();
+        const direction = recovery.direction;
+        const other = direction.axis === 'x' ? 'z' : 'x';
+        const base = { x: Math.floor(Player.getX()), y: recovery.origin.y, z: Math.floor(Player.getZ()) };
+        base[other] = Math.floor(recovery.origin[other]);
+        for (let step = 0; step <= 20; step++) {
+            const point = this.offset(base, direction, step);
+            if (!this.loaded(point)) {
+                this.stopControls();
+                return this.checkProgress(10000);
+            }
+            const bounds = player.getBoundingBox().move(point.x + 0.5 - Player.getX(), 0, point.z + 0.5 - Player.getZ());
+            if (!World.getWorld().getBlockCollisions(player, bounds).iterator().hasNext()) continue;
+            const distance = (point[direction.axis] + 0.5 - position()[direction.axis]) * direction.sign - 0.5;
+            if (distance <= 0.6) {
+                this.stopControls();
+                if (player.onGround()) this.setState('RECOVERY_HEIGHT');
+                return;
+            }
+            const goal = this.offset(center(point), direction, -0.85);
+            if (this.walkTo(goal) && player.onGround()) this.setState('RECOVERY_HEIGHT');
+            return;
+        }
+        const aligned = position();
+        aligned[other] = recovery.origin[other];
+        this.walkTo(this.offset(aligned, direction, 3));
     }
 
     recoverHeight() {
@@ -1116,7 +1504,7 @@ class ScathaMacro extends ModuleBase {
             }
             if (now - pillar.startedAt > 4000) return this.switchLobby('Could not place a recovery block');
             if (!this.selectSlot(this.blockSlot)) return;
-            Rotations.lookAtAngles(Player.getYaw(), 90);
+            this.aimAt({ yaw: Player.getYaw(), pitch: 90 });
             const placed = { x: foot.x, y: Math.floor(pillar.y), z: foot.z };
             if (!AIR.has(blockName(placed))) {
                 Client.setKey('space', false);
