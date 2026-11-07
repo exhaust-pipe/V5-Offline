@@ -676,7 +676,7 @@ class Combat extends ModuleBase {
         if (!target) return false;
 
         try {
-            if (!this.isCombatTargetCandidate(target, true)) return false;
+            if (!this.isCombatTargetCandidate(target, true, this.externalTargetOptions?.allowArmorStands)) return false;
 
             const uuid = this.getTargetUuid(target);
             if (uuid && this.blacklistedTargets.has(uuid)) return false;
@@ -797,12 +797,14 @@ class Combat extends ModuleBase {
         return [...targets.values()];
     }
 
-    isCombatTargetCandidate(entity, allowInvisible = false) {
+    isCombatTargetCandidate(entity, allowInvisible = false, allowArmorStands = false) {
         try {
             const mcEntity = entity?.toMC ? entity.toMC() : entity;
             if (mcEntity instanceof PlayerEntity) {
                 const uuid = mcEntity.getUUID();
                 if (uuid.version() !== 2 || String(uuid) === String(Player.getUUID())) return false;
+            } else if (mcEntity instanceof ArmorStandEntity) {
+                if (!allowArmorStands || !mcEntity.isPickable()) return false;
             } else if (!(mcEntity instanceof MobEntity)) {
                 return false;
             }
@@ -819,13 +821,13 @@ class Combat extends ModuleBase {
         }
     }
 
-    resolveNametagTarget(namedEntity, mobs) {
+    resolveNametagTarget(namedEntity, mobs, maxDistance = NAMETAG_MOB_RANGE) {
         const mcEntity = namedEntity.toMC();
         if (mcEntity.isRemoved?.() || namedEntity.isDead?.()) return null;
 
         const point = mcEntity.position();
 
-        const maxDistanceSq = NAMETAG_MOB_RANGE ** 2;
+        const maxDistanceSq = maxDistance ** 2;
         let closest = null;
         let closestDistanceSq = Infinity;
 

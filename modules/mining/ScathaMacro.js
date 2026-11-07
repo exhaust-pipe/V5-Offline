@@ -1,4 +1,4 @@
-import { BP, ClipContext, Direction, Vec3d } from '../../utils/Constants';
+import { ArmorStandEntity, BP, ClipContext, Direction, Vec3d } from '../../utils/Constants';
 import { calculateAbsoluteAngles, offsetPitch, wrapTo180 } from '../../utils/Math';
 import { MiningUtils } from '../../utils/MiningUtils';
 import { ModuleBase } from '../../utils/ModuleBase';
@@ -54,17 +54,13 @@ class ScathaMacro extends ModuleBase {
         this.on('worldUnload', () => this.onWorldUnload());
         this.on('chat', (event) => {
             const message = cleanChat(event.message.getUnformattedText());
+            if (/^You hear the sound of something approaching(?:\.{3}|\u2026)?$/i.test(message)) return this.interruptForWorm();
             if (this.state === 'LOADOUT' && /loadout/i.test(message) && /can't|cannot|can only|cooldown|wait|unable|locked/i.test(message)) {
                 this.currentLoadout = null;
                 this.loadoutRequest.phase = 'OPEN';
                 this.loadoutRequest.dueAt = Date.now() + this.delay(this.actionDelay);
             }
-        });
-        this.on('chat', () => this.interruptForWorm())
-            .setCriteria('You hear the sound of something approaching')
-            .setContains()
-            .setCaseInsensitive()
-            .triggerIfCanceled(true);
+        }).triggerIfCanceled(true);
         this.on('packetReceived', (packet) => {
             if (this.state !== 'CHEST' || !this.chest?.clickedAt) return;
             const data = getLevelParticleData(packet);
@@ -1286,16 +1282,19 @@ class ScathaMacro extends ModuleBase {
         if (state === 'WAIT_WORM' || state === 'WORM') return;
         if (!MINING_STATES.has(state) && state !== 'COOLDOWN' && state !== 'RESUME_PATH') return;
         const interruptedState = state === 'CHEST' ? this.chest?.resume.state : state;
+        const recovery = this.recovery;
         const resumingCombat =
             this.combatResume &&
             (state === 'COOLDOWN' ||
                 state === 'RESUME_PATH' ||
                 ((interruptedState === 'RECOVERY_WALK' || interruptedState === 'RECOVERY_HEIGHT') &&
-                    (['COOLDOWN', 'COMBAT_RESUME'].includes(this.recovery?.after) || this.recovery?.snapshot.state === 'COOLDOWN')));
+                    recovery &&
+                    (['COOLDOWN', 'COMBAT_RESUME'].includes(recovery.after) || (recovery.snapshot && recovery.snapshot.state === 'COOLDOWN'))));
         if (!resumingCombat) {
             this.combatResume = state === 'RESUME_PATH' ? this.returnJob?.snapshot : this.snapshot();
             if (!this.combatResume) return;
-            if (this.recovery?.pillar) this.combatResume.point.y = this.recovery.pillar.y;
+            const pillar = recovery && recovery.pillar;
+            if (pillar) this.combatResume.point.y = pillar.y;
         }
         this.wormOrigin = position();
         if (this.state === 'LOADOUT') {
@@ -1308,12 +1307,22 @@ class ScathaMacro extends ModuleBase {
 
     findWormTargets() {
         const origin = this.wormOrigin || this.combatResume.point;
-        return CombatBot.findMob({
-            names: ['Worm', 'Scatha'],
-            allowInvisible: true,
-            checkVisibility: false,
-            boundaryCheck: (x, y, z) => Math.hypot(x - origin.x, y - origin.y, z - origin.z) <= 32,
-        });
+        const stands = World.getAllEntitiesOfType(ArmorStandEntity).filter(
+            (entity) => !entity.isDead() && Math.hypot(entity.getX() - origin.x, entity.getY() - origin.y, entity.getZ() - origin.z) <= 32
+        );
+        const segments = stands.filter(
+            (entity) => CombatBot.isCombatTargetCandidate(entity, true, true) && entity.getStackInSlot(5)?.type?.getRegistryName() === 'minecraft:player_head'
+        );
+        const targets = new Map();
+        for (const stand of stands) {
+            const name = cleanChat(stand.getName());
+            if (!/(?:^|\s)(?:Stoneworm|Worm|Scatha)\s/i.test(name) || !name.includes('\u2764')) continue;
+
+            // Worm health labels can be separate marker stands with no attackable hitbox.
+            const target = segments.find((segment) => CombatBot.sameTarget(segment, stand)) || CombatBot.resolveNametagTarget(stand, segments, 2);
+            if (target) targets.set(CombatBot.getTargetUuid(target), target);
+        }
+        return [...targets.values()];
     }
 
     waitForWorm() {
@@ -1336,11 +1345,11 @@ class ScathaMacro extends ModuleBase {
         if (now - this.startedAt > 120000) return this.switchLobby('Worm combat timed out');
         if (!Pathfinder.isPathing() && !this.selectSlot(this.attackSlot)) return;
         let targets = this.findWormTargets();
-        if (!targets.length) targets = this.wormTargets.filter((target) => CombatBot.isCombatTargetCandidate(target, true));
+        if (!targets.length) targets = this.wormTargets.filter((target) => CombatBot.isCombatTargetCandidate(target, true, true));
         if (targets.length) {
             this.wormTargets = targets;
             this.wormMissingAt = 0;
-            CombatBot.setExternalTargets(targets, { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0 });
+            CombatBot.setExternalTargets(targets, { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true });
             if (!this.ownsCombat) {
                 this.ownsCombat = true;
                 CombatBot.toggle(true, true);
