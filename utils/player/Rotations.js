@@ -53,6 +53,14 @@ const ENTITY_PRECISION = 0.5;
 const ENTITY_JITTER_DURATION_MS = 150;
 const TARGET_SHIFT_RESET_DEGREES = 5;
 
+export function getRotationCurveOffset(progress, distance, seed) {
+    const strength = distance * 0.18 * Math.sin(progress * Math.PI) * (1 - progress);
+    return {
+        x: Math.cos(seed) * strength,
+        y: Math.sin(seed) * strength,
+    };
+}
+
 class RotationController {
     constructor() {
         this.request = null;
@@ -357,15 +365,7 @@ class RotationController {
 
     getCurveOffset(progress) {
         if (RotationModule.rotationMode === 'Linear' || RotationModule.rotationMode === 'Instant') return { x: 0, y: 0 };
-
-        const ease = Math.sin(progress * Math.PI);
-        const fade = 1 - progress;
-        const strength = this.initialDistance * 0.18 * ease * fade;
-
-        return {
-            x: Math.cos(this.curveSeed) * strength,
-            y: Math.sin(this.curveSeed) * strength,
-        };
+        return getRotationCurveOffset(progress, this.initialDistance, this.curveSeed);
     }
 
     onReachedTarget() {

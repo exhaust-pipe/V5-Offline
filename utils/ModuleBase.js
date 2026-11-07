@@ -74,7 +74,7 @@ export class ModuleBase {
 
         if (opts.isMacro && opts.recoverFromLimbo !== false) {
             manager.subscribe('limbo', () => {
-                if (!this.enabled) return;
+                if (!this.enabled || this.isParentManaged) return;
                 this.toggle(false);
                 Chat.message('&cYou were spawned in limbo! Attempting to recover...');
 
