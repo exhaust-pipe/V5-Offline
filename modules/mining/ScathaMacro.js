@@ -862,7 +862,25 @@ class ScathaMacro extends ModuleBase {
         Client.setKey('sprint', false);
     }
 
-    blockingAhead(direction, distance = 0.25) {
+    overlappingChest() {
+        const world = World.getWorld();
+        const bounds = Player.getPlayer().getBoundingBox();
+        for (let y = Math.floor(bounds.minY + 0.001); y <= Math.floor(bounds.maxY - 0.001); y++) {
+            for (let x = Math.floor(bounds.minX + 0.001); x <= Math.floor(bounds.maxX - 0.001); x++) {
+                for (let z = Math.floor(bounds.minZ + 0.001); z <= Math.floor(bounds.maxZ - 0.001); z++) {
+                    const point = { x, y, z };
+                    if (!this.loaded(point) || !isChest(blockName(point)) || this.openedChests.has(key(point))) continue;
+                    const pos = new BP(x, y, z);
+                    for (const box of world.getBlockState(pos).getCollisionShape(world, pos).toAabbs()) {
+                        if (bounds.intersects(box.move(x, y, z))) return point;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    blockingAhead(direction, distance = 0.25, ignoredPoint = null) {
         const player = Player.getPlayer();
         const world = World.getWorld();
         const delta = this.offset({ x: 0, y: 0, z: 0 }, direction, distance);
@@ -872,6 +890,7 @@ class ScathaMacro extends ModuleBase {
             for (let x = Math.floor(bounds.minX + 0.001); x <= Math.floor(bounds.maxX - 0.001); x++) {
                 for (let z = Math.floor(bounds.minZ + 0.001); z <= Math.floor(bounds.maxZ - 0.001); z++) {
                     const point = { x, y, z };
+                    if (ignoredPoint && key(point) === key(ignoredPoint)) continue;
                     if (nearest && (point[direction.axis] - nearest[direction.axis]) * direction.sign >= 0) continue;
                     if (!this.loaded(point)) return { ...point, unknown: true };
                     const pos = new BP(x, y, z);
@@ -945,6 +964,8 @@ class ScathaMacro extends ModuleBase {
     }
 
     mineForward() {
+        const overlapping = this.overlappingChest();
+        if (overlapping) return this.openChest(overlapping);
         if (this.forwardObstacle && !this.clearForwardObstacles()) return;
         if (Date.now() >= this.nextTunnelCheck) {
             const scanOrigin = position();
@@ -1492,6 +1513,8 @@ class ScathaMacro extends ModuleBase {
         if (Client.isInGui()) return;
         if (now - this.startedAt > 120000) return this.switchLobby('Treasure chest did not open');
         if (chest.approach) return this.tickChestApproach();
+        const overlapping = this.overlappingChest();
+        if (overlapping && key(overlapping) === key(chest.point)) return this.approachChest(chest.point);
         if (now - chest.progressAt > Math.max(25000, this.mineTarget ? this.mineTarget.timeoutMs : 0))
             return this.switchLobby('Treasure chest stopped making progress');
         const player = Player.getPlayer();
@@ -1577,6 +1600,8 @@ class ScathaMacro extends ModuleBase {
         Client.setKey('shift', false);
         if (now - job.startedAt > 30000) return this.switchLobby('Could not reach the treasure chest');
         const eyeHeight = Player.getPlayer().getEyePosition().y() - Player.getY();
+        const overlapping = this.overlappingChest();
+        const escapingChest = overlapping && key(overlapping) === key(chest.point);
         if (!job.points) {
             const target = job.target;
             for (let budget = 0; budget < 64 && job.index < job.queue.length && job.index < 1024; budget++) {
@@ -1584,15 +1609,21 @@ class ScathaMacro extends ModuleBase {
                 const point = node.point;
                 const eye = { x: point.x + 0.5, y: point.y + eyeHeight, z: point.z + 0.5 };
                 if (
+                    (!escapingChest || node.parent) &&
                     (node.parent || flatDistance(center(point)) > 0.15) &&
+                    this.passable(point) &&
+                    this.passable({ ...point, y: point.y + 1 }) &&
                     Math.hypot(target.x + 0.5 - eye.x, target.y + 0.5 - eye.y, target.z + 0.5 - eye.z) <= 3.5 &&
                     testPointNative(target.x, target.y, target.z, [target.x + 0.5, target.y + 0.5, target.z + 0.5], eye)
                 ) {
                     job.points = [];
                     for (let cursor = node; cursor; cursor = cursor.parent) job.points.push(center(cursor.point));
                     job.points.reverse();
-                    const first = job.points[0];
-                    job.points.unshift({ x: first.x, y: first.y, z: Player.getZ() });
+                    if (escapingChest) job.points.shift();
+                    else {
+                        const first = job.points[0];
+                        job.points.unshift({ x: first.x, y: first.y, z: Player.getZ() });
+                    }
                     break;
                 }
                 for (const [dx, dz] of [
@@ -1628,7 +1659,11 @@ class ScathaMacro extends ModuleBase {
         const axis = Math.abs(goal.x - Player.getX()) > Math.abs(goal.z - Player.getZ()) ? 'x' : 'z';
         const direction = { axis, sign: Math.sign(goal[axis] - position()[axis]) };
         const floor = new BP(Math.floor(goal.x), Math.floor(goal.y) - 1, Math.floor(goal.z));
-        if (!this.loaded(goal) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP) || this.blockingAhead(direction)) {
+        if (
+            !this.loaded(goal) ||
+            !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP) ||
+            this.blockingAhead(direction, 0.25, escapingChest ? chest.point : null)
+        ) {
             chest.approach = null;
             return;
         }
