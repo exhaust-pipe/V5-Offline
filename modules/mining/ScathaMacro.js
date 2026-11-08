@@ -36,6 +36,8 @@ const blockName = (point) => World.getBlockAt(point.x, point.y, point.z)?.type?.
 const key = (point) => `${point.x},${point.y},${point.z}`;
 const isChest = (name) => name === 'minecraft:chest' || name === 'minecraft:trapped_chest';
 const WORM_SPAWN_TIMEOUT_MS = 60000;
+const WORM_NAMETAG_GRACE_MS = 3000;
+const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_TUNNEL_HALF_LENGTH = 32;
 const WORM_TUNNEL_HALF_WIDTH = 1.5;
 const FORWARD_STOP_DISTANCE = 2;
@@ -222,6 +224,7 @@ class ScathaMacro extends ModuleBase {
             this.wormSearch = null;
             this.wormTargets = [];
             this.wormCandidates?.clear();
+            this.wormNametags?.clear();
             this.returnJob = null;
             this.recovery = null;
             this.chest = null;
@@ -250,6 +253,7 @@ class ScathaMacro extends ModuleBase {
         this.wormWarningAt = 0;
         this.wormTargets = [];
         this.wormCandidates = new Map();
+        this.wormNametags = new Map();
         this.returnJob = null;
         this.recovery = null;
         this.chest = null;
@@ -1674,6 +1678,7 @@ class ScathaMacro extends ModuleBase {
         };
         this.wormWarningAt = Date.now();
         this.wormCandidates.clear();
+        this.wormNametags.clear();
         if (this.state === 'LOADOUT') {
             this.currentLoadout = null;
             closeInventory();
@@ -1708,22 +1713,58 @@ class ScathaMacro extends ModuleBase {
     findWormTargets() {
         if (!this.wormSearch) return [];
 
-        // Attackable player-head armor stands identify the worm directly.
-        // A nametag or health label is not required to select a target.
-        const targets = new Map();
+        const now = Date.now();
+        const available = new Map();
+        const updatedCandidates = new Map();
         for (const stand of World.getAllEntitiesOfType(ArmorStandEntity)) {
-            if (!this.isWormSegment(stand)) continue;
+            if (!this.inWormSearchBounds({ x: stand.getX(), y: stand.getY(), z: stand.getZ() })) continue;
             const uuid = CombatBot.getTargetUuid(stand);
-            if (uuid) targets.set(uuid, stand);
+            if (!uuid) continue;
+
+            // Only the Scatha/Stoneworm nametag identifies the worm. No health
+            // symbol or other worm name is required.
+            if (/(?:^|[^a-z])(?:Scatha|Stoneworm)(?![a-z])/i.test(cleanChat(stand.getName()))) {
+                this.wormNametags.set(uuid, {
+                    point: { x: stand.getX(), y: stand.getY(), z: stand.getZ() },
+                    seenAt: now,
+                });
+            }
+
+            if (!this.isWormSegment(stand)) continue;
+            available.set(uuid, stand);
+            updatedCandidates.set(uuid, { target: stand, seenAt: now });
         }
 
-        // Preserve targets seen during the loadout switch as long as the
-        // actual stand remains alive, pickable, and inside the tunnel bounds.
-        for (const [uuid, candidate] of this.wormCandidates) {
-            if (!targets.has(uuid) && this.isWormSegment(candidate)) targets.set(uuid, candidate);
+        // The label and attackable head can appear on different client ticks.
+        // Keep recent positions during the combat loadout transition.
+        for (const [uuid, marker] of this.wormNametags) {
+            if (now - marker.seenAt > WORM_NAMETAG_GRACE_MS) this.wormNametags.delete(uuid);
         }
-        this.wormCandidates = targets;
-        return [...targets.values()];
+        for (const [uuid, candidate] of this.wormCandidates) {
+            if (available.has(uuid) || now - candidate.seenAt > WORM_SEGMENT_GRACE_MS || !this.isWormSegment(candidate.target)) continue;
+            available.set(uuid, candidate.target);
+            updatedCandidates.set(uuid, candidate);
+        }
+        this.wormCandidates = updatedCandidates;
+
+        // Worms have several armor stands. Select only the attackable player-head
+        // stand closest to the named marker, not every head segment.
+        let nearest = null;
+        let nearestDistanceSq = Infinity;
+        for (const marker of this.wormNametags.values()) {
+            const point = new Vec3d(marker.point.x, marker.point.y, marker.point.z);
+            for (const segment of available.values()) {
+                try {
+                    const distanceSq = segment.toMC().getBoundingBox().distanceToSqr(point);
+                    if (distanceSq >= nearestDistanceSq) continue;
+                    nearestDistanceSq = distanceSq;
+                    nearest = segment;
+                } catch (error) {
+                    // The stand may unload while matching entities.
+                }
+            }
+        }
+        return nearest ? [nearest] : [];
     }
 
     createWormWaitMovement() {
@@ -1814,6 +1855,7 @@ class ScathaMacro extends ModuleBase {
         this.combatResume = null;
         this.wormSearch = null;
         this.wormCandidates.clear();
+        this.wormNametags.clear();
         this.restore(snapshot);
     }
 
