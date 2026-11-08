@@ -676,7 +676,7 @@ class Combat extends ModuleBase {
         if (!target) return false;
 
         try {
-            if (!this.isCombatTargetCandidate(target, true, this.externalTargetOptions?.allowArmorStands)) return false;
+            if (!this.isCombatTargetCandidate(target, true, this.externalTargetOptions?.allowArmorStands, this.externalTargetOptions?.ignoreArmorStandPickable)) return false;
 
             const uuid = this.getTargetUuid(target);
             if (uuid && this.blacklistedTargets.has(uuid)) return false;
@@ -797,14 +797,14 @@ class Combat extends ModuleBase {
         return [...targets.values()];
     }
 
-    isCombatTargetCandidate(entity, allowInvisible = false, allowArmorStands = false) {
+    isCombatTargetCandidate(entity, allowInvisible = false, allowArmorStands = false, ignoreArmorStandPickable = false) {
         try {
             const mcEntity = entity?.toMC ? entity.toMC() : entity;
             if (mcEntity instanceof PlayerEntity) {
                 const uuid = mcEntity.getUUID();
                 if (uuid.version() !== 2 || String(uuid) === String(Player.getUUID())) return false;
             } else if (mcEntity instanceof ArmorStandEntity) {
-                if (!allowArmorStands || !mcEntity.isPickable()) return false;
+                if (!allowArmorStands || (!ignoreArmorStandPickable && !mcEntity.isPickable())) return false;
             } else if (!(mcEntity instanceof MobEntity)) {
                 return false;
             }
