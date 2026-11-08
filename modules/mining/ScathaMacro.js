@@ -226,6 +226,7 @@ class ScathaMacro extends ModuleBase {
             this.loadoutRequest = null;
             this.combatResume = null;
             this.wormSearch = null;
+            this.wormLastStandPosition = null;
             this.wormTargets = [];
             this.wormCandidates?.clear();
             this.wormNametags?.clear();
@@ -255,6 +256,7 @@ class ScathaMacro extends ModuleBase {
         this.wormSearch = null;
         this.wormWarningAt = 0;
         this.wormLastSeenAt = 0;
+        this.wormLastStandPosition = null;
         this.wormTargets = [];
         this.wormCandidates = new Map();
         this.wormNametags = new Map();
@@ -1730,6 +1732,7 @@ class ScathaMacro extends ModuleBase {
         };
         this.wormWarningAt = Date.now();
         this.wormLastSeenAt = 0;
+        this.wormLastStandPosition = null;
         this.wormCandidates.clear();
         this.wormNametags.clear();
         if (this.state === 'LOADOUT') {
@@ -1769,6 +1772,10 @@ class ScathaMacro extends ModuleBase {
         const now = Date.now();
         const available = new Map();
         const updatedCandidates = new Map();
+        let nearestApproachPoint = null;
+        let nearestApproachDistance = Infinity;
+        let nearestStandPoint = null;
+        let nearestStandDistance = Infinity;
         for (const stand of World.getAllEntitiesOfType(ArmorStandEntity)) {
             if (!this.inWormSearchBounds({ x: stand.getX(), y: stand.getY(), z: stand.getZ() })) continue;
             const uuid = CombatBot.getTargetUuid(stand);
@@ -1789,6 +1796,19 @@ class ScathaMacro extends ModuleBase {
             if (!this.isWormSegment(stand)) continue;
             available.set(uuid, stand);
             updatedCandidates.set(uuid, { target: stand, seenAt: now });
+
+            // Remember actual coordinates separately from entity wrappers:
+            // unloaded stands must not erase the last place we saw one.
+            const point = { x: stand.getX(), y: stand.getY(), z: stand.getZ() };
+            const distance = Math.abs(point[this.wormSearch.axis] - position()[this.wormSearch.axis]);
+            if (distance < nearestStandDistance) {
+                nearestStandPoint = point;
+                nearestStandDistance = distance;
+            }
+            if (distance > WORM_APPROACH_STOP_DISTANCE && distance < nearestApproachDistance) {
+                nearestApproachPoint = point;
+                nearestApproachDistance = distance;
+            }
         }
 
         // The label and attackable head can appear on different client ticks.
@@ -1802,6 +1822,7 @@ class ScathaMacro extends ModuleBase {
             updatedCandidates.set(uuid, candidate);
         }
         this.wormCandidates = updatedCandidates;
+        if (nearestApproachPoint || nearestStandPoint) this.wormLastStandPosition = nearestApproachPoint || nearestStandPoint;
 
         // Only select the player-head stand nearest a Scatha/Stoneworm
         // nametag within two blocks; no isPickable check is required.
@@ -1825,6 +1846,42 @@ class ScathaMacro extends ModuleBase {
         return nearest ? [nearest] : [];
     }
 
+    approachLastWormPosition() {
+        const search = this.wormSearch;
+        const goal = this.wormLastStandPosition;
+        Client.setKey('leftclick', false);
+        Client.setKey('rightclick', false);
+        if (!search || !goal || !this.inWormSearchBounds(goal) || !this.lane || !this.selectSlot(this.attackSlot)) return Client.stopMovement();
+
+        const here = position();
+        const coordinate = goal[search.axis];
+        const distance = Math.abs(coordinate - here[search.axis]);
+        if (distance <= WORM_APPROACH_STOP_DISTANCE) return Client.stopMovement();
+
+        const direction = { axis: search.axis, sign: Math.sign(coordinate - here[search.axis]) };
+        const yaw = this.yaw(direction);
+        const targetId = `wait:worm:${direction.axis}:${direction.sign}`;
+        this.aimAt({ yaw, pitch: 0 }, targetId);
+        if (
+            this.rotation.motion?.targetId !== targetId ||
+            !this.rotation.motion.complete ||
+            Math.abs(wrapTo180(Player.getYaw() - yaw)) > 2 ||
+            Math.abs(Player.getPitch()) > 2 ||
+            Math.abs(Player.getY() - this.tunnelY) > 0.25 ||
+            !Player.getPlayer().onGround() ||
+            this.blockingAhead(direction, 0.8)
+        )
+            return Client.stopMovement();
+
+        const next = this.offset(here, direction, 0.8);
+        const world = World.getWorld();
+        const floor = new BP(Math.floor(next.x), Math.floor(this.tunnelY) - 1, Math.floor(next.z));
+        if (!this.loaded(next) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) return Client.stopMovement();
+        const origin = { ...here };
+        origin[search.crossAxis] = search.cross;
+        this.moveAlongLane(direction, origin, direction);
+    }
+
     waitForWorm() {
         if (!this.combatResume) return this.stop('Missing combat return position.');
         const targets = this.findWormTargets();
@@ -1835,49 +1892,7 @@ class ScathaMacro extends ModuleBase {
             return this.fightWorm();
         }
         if (Date.now() - this.wormWarningAt >= WORM_SPAWN_TIMEOUT_MS) return this.switchLobby('No Stoneworm or Scatha appeared within 60 seconds');
-        Client.setKey('leftclick', false);
-        Client.setKey('rightclick', false);
-        if (!this.selectSlot(this.attackSlot)) return Client.stopMovement();
-
-        // Head stands can load before the worm's nametag is visible. Approach
-        // nearby loaded stands along the corridor instead of walking in the
-        // opposite direction of the interrupted mining pass.
-        const search = this.wormSearch;
-        if (!search || !this.lane) return Client.stopMovement();
-        const here = position();
-        let approach = null;
-        let approachDistance = Infinity;
-        for (const { target } of this.wormCandidates.values()) {
-            if (!this.isWormSegment(target)) continue;
-            const coordinate = search.axis === 'x' ? target.getX() : target.getZ();
-            const distance = Math.abs(coordinate - here[search.axis]);
-            if (distance <= WORM_APPROACH_STOP_DISTANCE || distance >= approachDistance) continue;
-            approach = target;
-            approachDistance = distance;
-        }
-        if (!approach) return Client.stopMovement();
-
-        const coordinate = search.axis === 'x' ? approach.getX() : approach.getZ();
-        const direction = { axis: search.axis, sign: Math.sign(coordinate - here[search.axis]) };
-        const yaw = this.yaw(direction);
-        this.aimAt({ yaw, pitch: 0 }, `wait:worm:${direction.axis}:${direction.sign}`);
-        if (
-            this.rotation.motion?.targetId !== `wait:worm:${direction.axis}:${direction.sign}` ||
-            !this.rotation.motion.complete ||
-            Math.abs(wrapTo180(Player.getYaw() - yaw)) > 2 ||
-            Math.abs(Player.getPitch()) > 2 ||
-            Math.abs(Player.getY() - this.tunnelY) > 0.25 ||
-            !Player.getPlayer().onGround() ||
-            this.blockingAhead(direction, 0.8)
-        )
-            return Client.stopMovement();
-        const next = this.offset(here, direction, 0.8);
-        const world = World.getWorld();
-        const floor = new BP(Math.floor(next.x), Math.floor(this.tunnelY) - 1, Math.floor(next.z));
-        if (!this.loaded(next) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) return Client.stopMovement();
-        const origin = { ...here };
-        origin[search.crossAxis] = search.cross;
-        this.moveAlongLane(direction, origin, direction);
+        return this.approachLastWormPosition();
     }
 
     fightWorm() {
@@ -1896,13 +1911,13 @@ class ScathaMacro extends ModuleBase {
             }
             return;
         }
-        // The worm's head may briefly disappear or become unpickable between
-        // attacks. Keep Combat Bot idle until it can be reacquired instead of
-        // treating a two-second detection gap as a confirmed kill.
-        if (this.ownsCombat) CombatBot.setExternalTargets([], WORM_COMBAT_OPTIONS);
+        // When the head or nametag unloads, approach the last observed position
+        // during the existing five-second grace period. Do not fight stale entities.
+        if (this.ownsCombat) this.stopActivities();
         if (!this.wormMissingAt) this.wormMissingAt = now;
-        if (now - Math.max(this.wormMissingAt, this.wormLastSeenAt) < WORM_DISAPPEAR_GRACE_MS) return;
-        this.stopActivities();
+        if (now - Math.max(this.wormMissingAt, this.wormLastSeenAt) < WORM_DISAPPEAR_GRACE_MS) {
+            return this.approachLastWormPosition();
+        }
         this.cooldownDuration = randomInt(25000, 35000);
         this.waitBeforeReturn = Math.random() < 0.5;
         if (this.waitBeforeReturn) this.setState('COOLDOWN');
@@ -1919,6 +1934,7 @@ class ScathaMacro extends ModuleBase {
         const snapshot = this.combatResume;
         this.combatResume = null;
         this.wormSearch = null;
+        this.wormLastStandPosition = null;
         this.wormCandidates.clear();
         this.wormNametags.clear();
         this.restore(snapshot);
