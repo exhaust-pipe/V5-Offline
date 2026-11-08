@@ -36,6 +36,8 @@ const blockName = (point) => World.getBlockAt(point.x, point.y, point.z)?.type?.
 const key = (point) => `${point.x},${point.y},${point.z}`;
 const isChest = (name) => name === 'minecraft:chest' || name === 'minecraft:trapped_chest';
 const WORM_SPAWN_TIMEOUT_MS = 60000;
+const WORM_DISAPPEAR_GRACE_MS = 12000;
+const WORM_COMBAT_OPTIONS = { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true };
 const WORM_NAMETAG_GRACE_MS = 3000;
 const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_TUNNEL_HALF_LENGTH = 32;
@@ -251,6 +253,7 @@ class ScathaMacro extends ModuleBase {
         this.wormWaitMovement = null;
         this.wormSearch = null;
         this.wormWarningAt = 0;
+        this.wormLastSeenAt = 0;
         this.wormTargets = [];
         this.wormCandidates = new Map();
         this.wormNametags = new Map();
@@ -469,6 +472,7 @@ class ScathaMacro extends ModuleBase {
             const elapsed = Date.now() - this.guiPausedAt;
             this.startedAt += elapsed;
             if (this.state === 'WAIT_WORM' && this.wormWarningAt) this.wormWarningAt += elapsed;
+            if (this.state === 'WORM' && this.wormLastSeenAt) this.wormLastSeenAt += elapsed;
             this.forwardUntil += elapsed;
             this.progressAt += elapsed;
             if (this.chest) {
@@ -1677,6 +1681,7 @@ class ScathaMacro extends ModuleBase {
             maxY: this.tunnelY + 3,
         };
         this.wormWarningAt = Date.now();
+        this.wormLastSeenAt = 0;
         this.wormCandidates.clear();
         this.wormNametags.clear();
         if (this.state === 'LOADOUT') {
@@ -1724,6 +1729,9 @@ class ScathaMacro extends ModuleBase {
             // Only the Scatha/Stoneworm nametag identifies the worm. No health
             // symbol or other worm name is required.
             if (/(?:^|[^a-z])(?:Scatha|Stoneworm)(?![a-z])/i.test(cleanChat(stand.getName()))) {
+                // A visible worm nametag means combat is still in progress even
+                // if the attackable head is temporarily hidden or unpickable.
+                this.wormLastSeenAt = now;
                 this.wormNametags.set(uuid, {
                     point: { x: stand.getX(), y: stand.getY(), z: stand.getZ() },
                     seenAt: now,
@@ -1764,6 +1772,7 @@ class ScathaMacro extends ModuleBase {
                 }
             }
         }
+        if (nearest) this.wormLastSeenAt = now;
         return nearest ? [nearest] : [];
     }
 
@@ -1828,16 +1837,20 @@ class ScathaMacro extends ModuleBase {
         if (targets.length) {
             this.wormTargets = targets;
             this.wormMissingAt = 0;
-            CombatBot.setExternalTargets(targets, { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true });
+            CombatBot.setExternalTargets(targets, WORM_COMBAT_OPTIONS);
             if (!this.ownsCombat) {
                 this.ownsCombat = true;
                 CombatBot.toggle(true, true);
             }
             return;
         }
-        if (this.ownsCombat) this.stopActivities();
+        // The worm's head may briefly disappear or become unpickable between
+        // attacks. Keep Combat Bot idle until it can be reacquired instead of
+        // treating a two-second detection gap as a confirmed kill.
+        if (this.ownsCombat) CombatBot.setExternalTargets([], WORM_COMBAT_OPTIONS);
         if (!this.wormMissingAt) this.wormMissingAt = now;
-        if (now - this.wormMissingAt < 2000) return;
+        if (now - Math.max(this.wormMissingAt, this.wormLastSeenAt) < WORM_DISAPPEAR_GRACE_MS) return;
+        this.stopActivities();
         this.cooldownDuration = randomInt(25000, 35000);
         this.waitBeforeReturn = Math.random() < 0.5;
         if (this.waitBeforeReturn) this.setState('COOLDOWN');
