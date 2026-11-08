@@ -227,6 +227,7 @@ class ScathaMacro extends ModuleBase {
             this.combatResume = null;
             this.wormSearch = null;
             this.wormLastStandPosition = null;
+            this.wormTargetUuid = null;
             this.wormTargets = [];
             this.wormCandidates?.clear();
             this.wormNametags?.clear();
@@ -257,6 +258,7 @@ class ScathaMacro extends ModuleBase {
         this.wormWarningAt = 0;
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
+        this.wormTargetUuid = null;
         this.wormTargets = [];
         this.wormCandidates = new Map();
         this.wormNametags = new Map();
@@ -1733,6 +1735,7 @@ class ScathaMacro extends ModuleBase {
         this.wormWarningAt = Date.now();
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
+        this.wormTargetUuid = null;
         this.wormCandidates.clear();
         this.wormNametags.clear();
         if (this.state === 'LOADOUT') {
@@ -1886,7 +1889,8 @@ class ScathaMacro extends ModuleBase {
         if (!this.combatResume) return this.stop('Missing combat return position.');
         const targets = this.findWormTargets();
         if (targets.length) {
-            this.wormTargets = targets;
+            this.wormTargetUuid = CombatBot.getTargetUuid(targets[0]);
+            this.wormTargets = [targets[0]];
             this.setState('WORM', 0);
             this.message('&aWorm spawned. Starting combat.');
             return this.fightWorm();
@@ -1895,24 +1899,39 @@ class ScathaMacro extends ModuleBase {
         return this.approachLastWormPosition();
     }
 
+    findLockedWormTarget() {
+        const uuid = this.wormTargetUuid;
+        if (!uuid) return null;
+
+        // The nametag and player-head equipment are needed only for initial
+        // detection. Follow the same armor stand by UUID during combat.
+        const loaded = World.getAllEntitiesOfType(ArmorStandEntity).find(
+            (entity) => CombatBot.getTargetUuid(entity) === uuid
+        );
+        const target = loaded || this.wormTargets.find((entity) => CombatBot.getTargetUuid(entity) === uuid);
+        return target && CombatBot.isCombatTargetCandidate(target, true, true, true) ? target : null;
+    }
+
     fightWorm() {
         const now = Date.now();
         if (!this.combatResume) return this.stop('Missing combat return position.');
         if (now - this.startedAt > 120000) return this.switchLobby('Worm combat timed out');
         if (!Pathfinder.isPathing() && !this.selectSlot(this.attackSlot)) return;
-        const targets = this.findWormTargets();
-        if (targets.length) {
-            this.wormTargets = targets;
+        const target = this.findLockedWormTarget();
+        if (target) {
+            this.wormTargets = [target];
+            this.wormLastSeenAt = now;
+            this.wormLastStandPosition = { x: target.getX(), y: target.getY(), z: target.getZ() };
             this.wormMissingAt = 0;
-            CombatBot.setExternalTargets(targets, WORM_COMBAT_OPTIONS);
+            CombatBot.setExternalTargets([target], WORM_COMBAT_OPTIONS);
             if (!this.ownsCombat) {
                 this.ownsCombat = true;
                 CombatBot.toggle(true, true);
             }
             return;
         }
-        // When the head or nametag unloads, approach the last observed position
-        // during the existing five-second grace period. Do not fight stale entities.
+        // If the locked entity unloads or dies, approach its last position
+        // during the five-second grace period. Nametag changes do not lose the target.
         if (this.ownsCombat) this.stopActivities();
         if (!this.wormMissingAt) this.wormMissingAt = now;
         if (now - Math.max(this.wormMissingAt, this.wormLastSeenAt) < WORM_DISAPPEAR_GRACE_MS) {
@@ -1935,6 +1954,8 @@ class ScathaMacro extends ModuleBase {
         this.combatResume = null;
         this.wormSearch = null;
         this.wormLastStandPosition = null;
+        this.wormTargetUuid = null;
+        this.wormTargets = [];
         this.wormCandidates.clear();
         this.wormNametags.clear();
         this.restore(snapshot);
