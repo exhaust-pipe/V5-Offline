@@ -1,5 +1,6 @@
 import { chatPathfinder } from '../../Chat';
 import PathConfig from '../PathConfig';
+import { Jump } from './PathJumps';
 
 class PathRecovery {
     constructor() {
@@ -127,33 +128,53 @@ class PathNonChangeRecovery {
     constructor() {
         this.PATH_PROGRESS_DELTA = 0.45;
         this.NON_CHANGE_TICKS_RECALC = 35;
+        this.FLUID_PROGRESS_DELTA = 0.5;
+        this.FLUID_NON_CHANGE_TICKS_RECALC = 80;
 
         this.bestPathPosition = null;
         this.nonChangeTicks = 0;
+        this.fluidProgress = null;
     }
 
     trackProgress(pathPosition) {
         const player = Player.getPlayer();
         if (!player) return false;
 
-        const playerMP = Player.asPlayerMP();
-        if (playerMP && (playerMP.isInLava() || playerMP.isInWater())) {
-            this.resetTracking();
-            return false;
-        }
-
         if (typeof pathPosition !== 'number' || !Number.isFinite(pathPosition)) {
             this.resetTracking();
             return false;
         }
 
-        if (this.bestPathPosition === null) {
-            this.bestPathPosition = pathPosition;
-            this.nonChangeTicks = 0;
-            return false;
+        const inFluid = Jump.isPlayerInFluid() || (this.fluidProgress !== null && !player.onGround());
+        let madeProgress = this.bestPathPosition === null || pathPosition > this.bestPathPosition + this.PATH_PROGRESS_DELTA;
+
+        if (inFluid) {
+            const pX = Player.getX();
+            const pY = Player.getY();
+            const pZ = Player.getZ();
+            if (!Number.isFinite(pX) || !Number.isFinite(pY) || !Number.isFinite(pZ)) {
+                this.resetTracking();
+                return false;
+            }
+
+            const previous = this.fluidProgress;
+            const movedHorizontally = !previous || Math.hypot(pX - previous.x, pZ - previous.z) > this.FLUID_PROGRESS_DELTA;
+            madeProgress = movedHorizontally || pY > previous.maxY + this.FLUID_PROGRESS_DELTA || pY < previous.minY - this.FLUID_PROGRESS_DELTA;
+
+            if (madeProgress) {
+                this.fluidProgress = {
+                    x: pX,
+                    z: pZ,
+                    minY: movedHorizontally ? pY : Math.min(previous.minY, pY),
+                    maxY: movedHorizontally ? pY : Math.max(previous.maxY, pY),
+                };
+            }
+        } else if (this.fluidProgress !== null) {
+            this.resetTracking();
+            madeProgress = true;
         }
 
-        if (pathPosition > this.bestPathPosition + this.PATH_PROGRESS_DELTA) {
+        if (madeProgress) {
             this.bestPathPosition = pathPosition;
             this.nonChangeTicks = 0;
             return false;
@@ -161,7 +182,8 @@ class PathNonChangeRecovery {
 
         this.nonChangeTicks++;
 
-        if (this.nonChangeTicks >= this.NON_CHANGE_TICKS_RECALC) {
+        const recalcTicks = inFluid ? this.FLUID_NON_CHANGE_TICKS_RECALC : this.NON_CHANGE_TICKS_RECALC;
+        if (this.nonChangeTicks >= recalcTicks) {
             if (PathConfig.PATHFINDING_DEBUG) {
                 chatPathfinder('§6Recovery (nonchange): Recalculating');
             }
@@ -175,6 +197,7 @@ class PathNonChangeRecovery {
     resetTracking() {
         this.bestPathPosition = null;
         this.nonChangeTicks = 0;
+        this.fluidProgress = null;
     }
 
     stop() {
