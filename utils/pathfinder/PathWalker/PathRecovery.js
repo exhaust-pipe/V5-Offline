@@ -134,6 +134,7 @@ class PathNonChangeRecovery {
         this.bestPathPosition = null;
         this.nonChangeTicks = 0;
         this.fluidProgress = null;
+        this.fluidExitTicks = 0;
     }
 
     trackProgress(pathPosition) {
@@ -145,7 +146,9 @@ class PathNonChangeRecovery {
             return false;
         }
 
-        const inFluid = Jump.isPlayerInFluid() || (this.fluidProgress !== null && !player.onGround());
+        const playerInFluid = Jump.isPlayerInFluid();
+        // Brief landings at a fluid edge must not restart stall tracking.
+        const inFluid = playerInFluid || this.isTrackingFluid();
         let madeProgress = this.bestPathPosition === null || pathPosition > this.bestPathPosition + this.PATH_PROGRESS_DELTA;
 
         if (inFluid) {
@@ -157,11 +160,14 @@ class PathNonChangeRecovery {
                 return false;
             }
 
+            this.fluidExitTicks = playerInFluid ? 0 : this.fluidExitTicks + 1;
             const previous = this.fluidProgress;
             const movedHorizontally = !previous || Math.hypot(pX - previous.x, pZ - previous.z) > this.FLUID_PROGRESS_DELTA;
             madeProgress = movedHorizontally || pY > previous.maxY + this.FLUID_PROGRESS_DELTA || pY < previous.minY - this.FLUID_PROGRESS_DELTA;
 
-            if (madeProgress) {
+            if (!playerInFluid && player.onGround() && movedHorizontally && this.fluidExitTicks >= this.FLUID_NON_CHANGE_TICKS_RECALC) {
+                this.resetTracking();
+            } else if (madeProgress) {
                 this.fluidProgress = {
                     x: pX,
                     z: pZ,
@@ -169,9 +175,6 @@ class PathNonChangeRecovery {
                     maxY: movedHorizontally ? pY : Math.max(previous.maxY, pY),
                 };
             }
-        } else if (this.fluidProgress !== null) {
-            this.resetTracking();
-            madeProgress = true;
         }
 
         if (madeProgress) {
@@ -194,10 +197,15 @@ class PathNonChangeRecovery {
         return false;
     }
 
+    isTrackingFluid() {
+        return this.fluidProgress !== null;
+    }
+
     resetTracking() {
         this.bestPathPosition = null;
         this.nonChangeTicks = 0;
         this.fluidProgress = null;
+        this.fluidExitTicks = 0;
     }
 
     stop() {

@@ -313,7 +313,10 @@ class Finder {
                     }
                 }
 
-                if (!Recovery.isStallRecoveryActive() && NonChangeRecovery.trackProgress(Rotations.currentPathPosition)) {
+                if (
+                    (NonChangeRecovery.isTrackingFluid() || !Recovery.isStallRecoveryActive()) &&
+                    NonChangeRecovery.trackProgress(Rotations.currentPathPosition)
+                ) {
                     this.recalculate('nonchange_progress');
                     return;
                 }
