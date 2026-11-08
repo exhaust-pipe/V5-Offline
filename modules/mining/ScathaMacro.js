@@ -45,15 +45,12 @@ const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_TUNNEL_HALF_LENGTH = 32;
 const WORM_TUNNEL_HALF_WIDTH = 1.5;
 const FORWARD_STOP_DISTANCE = 2;
-// Search for source lava only within these four horizontal regions; the Y=46..64 bounds are unchanged.
+// Search for source lava only in four square horizontal regions; the Y=46..64 bounds are unchanged.
 const LAVA_SCAN_CENTERS = [[565, 565], [465, 535], [470, 500], [565, 490]];
-const LAVA_SCAN_RADIUS = 30;
-const LAVA_SCAN_RADIUS_SQ = LAVA_SCAN_RADIUS * LAVA_SCAN_RADIUS;
-const isInLavaScanRegion = (point) => LAVA_SCAN_CENTERS.some(([x, z]) => {
-    const dx = point.x - x;
-    const dz = point.z - z;
-    return dx * dx + dz * dz < LAVA_SCAN_RADIUS_SQ;
-});
+const LAVA_SCAN_HALF_SIZE = 30;
+const isInLavaScanRegion = (point) => LAVA_SCAN_CENTERS.some(([x, z]) =>
+    Math.abs(point.x - x) < LAVA_SCAN_HALF_SIZE && Math.abs(point.z - z) < LAVA_SCAN_HALF_SIZE
+);
 const ABILITY_STATES = new Set(['FORWARD', 'BACKWARD', 'TURN', 'DESCEND']);
 const ABILITY_FALLBACK_COOLDOWN_MS = 200000;
 const ABILITY_RETRY_DELAY_MS = 5000;
@@ -558,10 +555,10 @@ class ScathaMacro extends ModuleBase {
                 this.lavaSeen = 0;
                 const seenChunks = new Set();
                 for (const [x, z] of LAVA_SCAN_CENTERS) {
-                    const minX = Math.floor((x - LAVA_SCAN_RADIUS) / 16);
-                    const maxX = Math.floor((x + LAVA_SCAN_RADIUS) / 16);
-                    const minZ = Math.floor((z - LAVA_SCAN_RADIUS) / 16);
-                    const maxZ = Math.floor((z + LAVA_SCAN_RADIUS) / 16);
+                    const minX = Math.floor((x - LAVA_SCAN_HALF_SIZE + 1) / 16);
+                    const maxX = Math.floor((x + LAVA_SCAN_HALF_SIZE - 1) / 16);
+                    const minZ = Math.floor((z - LAVA_SCAN_HALF_SIZE + 1) / 16);
+                    const maxZ = Math.floor((z + LAVA_SCAN_HALF_SIZE - 1) / 16);
                     for (let cx = minX; cx <= maxX; cx++) for (let cz = minZ; cz <= maxZ; cz++) {
                         const chunkKey = `${cx},${cz}`;
                         if (seenChunks.has(chunkKey)) continue;
