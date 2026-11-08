@@ -16,7 +16,7 @@ import { getRotationCurveOffset, Rotations } from '../../utils/player/Rotations'
 import { CombatBot } from '../combat/CombatBot';
 
 const HORIZONTAL_STATES = new Set(['FORWARD', 'BACKWARD', 'RETURN', 'TURN', 'ALIGN']);
-const MINING_STATES = new Set([...HORIZONTAL_STATES, 'DESCEND', 'CHEST', 'RECOVERY_WALK', 'RECOVERY_HEIGHT']);
+const MINING_STATES = new Set([...HORIZONTAL_STATES, 'DESCEND', 'CHEST', 'RECOVERY_HEIGHT']);
 const AIR = new Set(['minecraft:air', 'minecraft:cave_air', 'minecraft:void_air', 'minecraft:water', 'minecraft:lava']);
 const HARDSTONE = 'minecraft:stone';
 const BLOCK_NEIGHBORS = [
@@ -291,6 +291,7 @@ class ScathaMacro extends ModuleBase {
 
     setState(state, transitionDelay = this.actionDelay) {
         this.stopActivities();
+        this.heightCheckAt = 0;
         this.mineTarget = null;
         this.forwardPitch = null;
         this.forwardYaw = null;
@@ -500,8 +501,6 @@ class ScathaMacro extends ModuleBase {
                 return this.tickCooldown();
             case 'RESUME_PATH':
                 return this.tickReturnPath();
-            case 'RECOVERY_WALK':
-                return this.recoverWalk();
             case 'RECOVERY_HEIGHT':
                 return this.recoverHeight();
         }
@@ -1144,6 +1143,7 @@ class ScathaMacro extends ModuleBase {
     }
 
     returnToFace() {
+        setKeysForStraightLineCoords(this.breakPoint.x, this.breakPoint.y, this.breakPoint.z, false);
         if (this.tryReturnTeleport()) return;
         if (!this.walkTo(this.breakPoint)) return;
         if (this.turnPending) {
@@ -1156,12 +1156,8 @@ class ScathaMacro extends ModuleBase {
     tryReturnTeleport() {
         const now = Date.now();
         if (this.returnTeleport) {
-            if (flatDistance(this.returnTeleport.point) < 0.5) {
-                // Wait for the position update so queued teleports cannot overshoot the return point.
-                if (now - this.returnTeleport.sentAt < 1000) return true;
-                this.returnTeleport = null;
-                return false;
-            }
+            // Walking also changes position, so space out teleports without treating walking as a teleport response.
+            if (now - this.returnTeleport.sentAt < 1000 && flatDistance(this.breakPoint) > 0.3) return true;
             this.returnTeleport = null;
         }
         if (this.returnTeleportBlocked && flatDistance(this.returnTeleportBlocked) < 0.5) return false;
@@ -1173,7 +1169,6 @@ class ScathaMacro extends ModuleBase {
         if (slot === null) return false;
         const target = calculateAbsoluteAngles({ ...this.breakPoint, y: player.getEyePosition().y() });
         this.aimAt({ yaw: target.yaw, pitch: 0 }, 'return:aote');
-        Client.stopMovement();
         Client.setKey('leftclick', false);
         Client.setKey('shift', false);
         Client.setKey('sprint', false);
@@ -1201,7 +1196,7 @@ class ScathaMacro extends ModuleBase {
         if (this.returnOriginalSlot === null) this.returnOriginalSlot = Player.getHeldItemIndex();
         if (!this.selectSlot(slot + 1)) return true;
         Client.rightClick();
-        this.returnTeleport = { point: position(), sentAt: now };
+        this.returnTeleport = { sentAt: now };
         return true;
     }
 
@@ -1640,7 +1635,7 @@ class ScathaMacro extends ModuleBase {
             this.combatResume &&
             (state === 'COOLDOWN' ||
                 state === 'RESUME_PATH' ||
-                ((interruptedState === 'RECOVERY_WALK' || interruptedState === 'RECOVERY_HEIGHT') &&
+                (interruptedState === 'RECOVERY_HEIGHT' &&
                     recovery &&
                     (['COOLDOWN', 'COMBAT_RESUME'].includes(recovery.after) || (recovery.snapshot && recovery.snapshot.state === 'COOLDOWN'))));
         if (!resumingCombat) {
@@ -1791,12 +1786,13 @@ class ScathaMacro extends ModuleBase {
             return;
         }
         if (Math.abs(Player.getY() - job.snapshot.point.y) > 0.25) {
+            if (!this.confirmHeightChange()) return;
             if (!this.lane || this.nearbyPlayer()) return this.switchLobby('Return path ended at the wrong height near a player or outside the tunnel');
-            const direction = job.snapshot.state === 'TURN' ? this.turnDirection() : this.lane;
-            this.recovery = { snapshot: job.snapshot, after: job.after, direction, goalY: job.snapshot.point.y, startedAt: Date.now(), pillar: null };
+            this.recovery = { snapshot: job.snapshot, after: job.after, goalY: job.snapshot.point.y, startedAt: Date.now(), pillar: null };
             this.returnJob = null;
-            return this.prepareRecoveryWalk();
+            return this.switchLoadout(this.forwardLoadout, 'RECOVERY_HEIGHT');
         }
+        this.heightCheckAt = 0;
         if (this.ownsPath) {
             Pathfinder.resetPath();
             this.ownsPath = false;
@@ -1817,9 +1813,11 @@ class ScathaMacro extends ModuleBase {
         const expectedY = state === 'COOLDOWN' ? this.cooldownY : this.tunnelY;
         if (!Number.isFinite(expectedY)) return false;
         if (Math.abs(Player.getY() - expectedY) <= 0.25) {
+            this.heightCheckAt = 0;
             this.safePoint = position();
             return false;
         }
+        if (!this.confirmHeightChange()) return true;
         if (this.nearbyPlayer()) {
             this.switchLobby('Height changed with another player within 10 blocks');
             return true;
@@ -1828,14 +1826,22 @@ class ScathaMacro extends ModuleBase {
             this.switchLobby('Height changed before the tunnel was established');
             return true;
         }
-        const direction = state === 'TURN' ? this.turnDirection() : this.lane;
         const snapshot = this.snapshot();
         const goalY = Math.floor(expectedY);
         snapshot.point = this.safePoint ? { ...this.safePoint, y: goalY } : { ...position(), y: goalY };
-        this.recovery = { snapshot, direction, goalY, startedAt: Date.now(), pillar: null };
+        this.recovery = { snapshot, goalY, startedAt: Date.now(), pillar: null };
         if (this.state === 'LOADOUT') closeInventory();
-        this.prepareRecoveryWalk();
+        this.switchLoadout(this.forwardLoadout, 'RECOVERY_HEIGHT');
         return true;
+    }
+
+    confirmHeightChange() {
+        if (!this.heightCheckAt) {
+            this.stopActivities();
+            this.heightCheckAt = Date.now() + this.delay(this.actionDelay);
+            return false;
+        }
+        return Date.now() >= this.heightCheckAt;
     }
 
     nearbyPlayer() {
@@ -1843,48 +1849,6 @@ class ScathaMacro extends ModuleBase {
             if (player.getName() === Player.getName() || player.getUUID()?.version() === 2) return false;
             return Math.hypot(player.getX() - Player.getX(), player.getY() - Player.getY(), player.getZ() - Player.getZ()) <= 10;
         });
-    }
-
-    prepareRecoveryWalk() {
-        const recovery = this.recovery;
-        recovery.origin = center({ ...position(), y: Math.floor(Player.getY()) });
-        this.switchLoadout(this.forwardLoadout, 'RECOVERY_WALK');
-    }
-
-    recoverWalk() {
-        const recovery = this.recovery;
-        if (Date.now() - recovery.startedAt > 90000) return this.switchLobby('Height recovery timed out');
-        if (Math.abs(Player.getY() - recovery.origin.y) > 0.8) {
-            if (this.nearbyPlayer()) return this.switchLobby('Player interference during height recovery');
-            return this.prepareRecoveryWalk();
-        }
-        Client.setKey('leftclick', false);
-        const player = Player.getPlayer();
-        const direction = recovery.direction;
-        const other = direction.axis === 'x' ? 'z' : 'x';
-        const base = { x: Math.floor(Player.getX()), y: recovery.origin.y, z: Math.floor(Player.getZ()) };
-        base[other] = Math.floor(recovery.origin[other]);
-        for (let step = 0; step <= 20; step++) {
-            const point = this.offset(base, direction, step);
-            if (!this.loaded(point)) {
-                this.stopControls();
-                return this.checkProgress(10000);
-            }
-            const bounds = player.getBoundingBox().move(point.x + 0.5 - Player.getX(), 0, point.z + 0.5 - Player.getZ());
-            if (!World.getWorld().getBlockCollisions(player, bounds).iterator().hasNext()) continue;
-            const distance = (point[direction.axis] + 0.5 - position()[direction.axis]) * direction.sign - 0.5;
-            if (distance <= 0.6) {
-                this.stopControls();
-                if (player.onGround()) this.setState('RECOVERY_HEIGHT');
-                return;
-            }
-            const goal = this.offset(center(point), direction, -0.85);
-            if (this.walkTo(goal) && player.onGround()) this.setState('RECOVERY_HEIGHT');
-            return;
-        }
-        const aligned = position();
-        aligned[other] = recovery.origin[other];
-        this.walkTo(this.offset(aligned, direction, 3));
     }
 
     recoverHeight() {
