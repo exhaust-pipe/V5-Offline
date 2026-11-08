@@ -38,8 +38,9 @@ const isChest = (name) => name === 'minecraft:chest' || name === 'minecraft:trap
 const WORM_SPAWN_TIMEOUT_MS = 60000;
 const WORM_DISAPPEAR_GRACE_MS = 5000;
 const WORM_COMBAT_OPTIONS = { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true, ignoreArmorStandPickable: true };
-// Goblins spawned inside the entry shaft must be fought in place, not pathed to.
-const GOBLIN_COMBAT_OPTIONS = {
+// Stop moving in shafts and while solving chests. Ordinary tunnel mining may
+// chase a fleeing goblin, then return to the saved mining position.
+const GOBLIN_STATIONARY_COMBAT_OPTIONS = {
     roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0,
     tickTarget: (target) => {
         Client.stopMovement();
@@ -49,10 +50,16 @@ const GOBLIN_COMBAT_OPTIONS = {
         if (point) CombatBot.tryAttack(CombatBot.getDistanceToPlayer(point).distance);
     },
 };
+const GOBLIN_CHASE_COMBAT_OPTIONS = {
+    roam: false, allowWarpStarts: false, travelClicks: false,
+    rightClickChance: 0, blacklistOnPathFailure: false,
+};
 const AREA_MISSING_CONFIRM_MS = 6000;
 const AREA_WARP_GRACE_MS = 10000;
-const GOBLIN_SCAN_INTERVAL_MS = 250;
-const GOBLIN_MISSING_GRACE_MS = 1500;
+const GOBLIN_SPAWN_SEARCH_RADIUS = 10;
+const GOBLIN_CHASE_RADIUS = 14;
+const GOBLIN_MISSING_GRACE_MS = 2000;
+const GOBLIN_SPAWN_WAIT_MS = 12000;
 const GOBLIN_COMBAT_TIMEOUT_MS = 35000;
 const WORM_NAMETAG_HEAD_MAX_DISTANCE = 2;
 const WORM_APPROACH_STOP_DISTANCE = 3.5;
@@ -98,6 +105,8 @@ class ScathaMacro extends ModuleBase {
         this.on('chat', (event) => {
             const message = cleanChat(event.message.getUnformattedText());
             if (/^You hear the sound of something approaching(?:\.{3}|\u2026)?$/i.test(message)) return this.interruptForWorm();
+            const goblin = message.match(/^A (Golden|Diamond) Goblin has spawned!$/i);
+            if (goblin) return this.interruptForGoblin(goblin[1].toLowerCase());
             if (this.state === 'LOADOUT' && /loadout/i.test(message) && /can't|cannot|can only|cooldown|wait|unable|locked/i.test(message)) {
                 this.currentLoadout = null;
                 this.loadoutRequest.phase = 'OPEN';
@@ -105,20 +114,25 @@ class ScathaMacro extends ModuleBase {
             }
         }).triggerIfCanceled(true);
         this.on('packetReceived', (packet) => {
-            if (this.state !== 'CHEST' || !this.chest?.clickedAt) return;
+            const chest = this.state === 'CHEST' ? this.chest :
+                this.goblinResume?.state === 'CHEST' ? this.goblinResume.chestContext : null;
+            if (!chest?.clickedAt) return;
             const data = getLevelParticleData(packet);
             if (data.particle?.getType() !== net.minecraft.core.particles.ParticleTypes.CRIT) return;
-            const point = this.chest.point;
+            const point = chest.point;
             if (Math.abs(data.x - point.x - 0.5) < 0.8 && Math.abs(data.y - point.y - 0.5) < 0.8 && Math.abs(data.z - point.z - 0.5) < 0.8) {
                 const distance = Math.hypot(data.x - Player.getX(), data.z - Player.getZ());
-                this.chest.particle = offsetPitch({ x: data.x, y: data.y, z: data.z }, 5 / Math.max(1, distance));
-                this.chest.particleAt = Date.now();
-                this.chest.progressAt = this.chest.particleAt;
+                chest.particle = offsetPitch({ x: data.x, y: data.y, z: data.z }, 5 / Math.max(1, distance));
+                chest.particleAt = Date.now();
+                chest.progressAt = chest.particleAt;
             }
         }).setFilteredClass(ClientboundLevelParticlesPacket);
         for (const event of ['chestsolve', 'chestopen']) {
             registerSkyblockEvent(event, () => {
-                if (this.enabled && this.state === 'CHEST' && this.chest?.clickedAt) this.chest.opened = true;
+                if (!this.enabled) return;
+                const chest = this.state === 'CHEST' ? this.chest :
+                    this.goblinResume?.state === 'CHEST' ? this.goblinResume.chestContext : null;
+                if (chest?.clickedAt) chest.opened = true;
             });
         }
         registerSkyblockEvent('fasttravellocked', () => {
@@ -256,8 +270,9 @@ class ScathaMacro extends ModuleBase {
             this.returnJob = null;
             this.recovery = null;
             this.chest = null;
+            this.goblinResume = null;
             this.goblinTargetUuid = null;
-            this.goblinResumeLoadout = null;
+            this.goblinType = null;
         } finally {
             const restoreMouse = this.restoreMouseOnDisable;
             this.restoreMouseOnDisable = false;
@@ -302,11 +317,12 @@ class ScathaMacro extends ModuleBase {
         this.lavaAttempts = 0;
         this.areaMissingSince = 0;
         this.areaWarpGraceUntil = 0;
-        this.nextGoblinScanAt = 0;
+        this.goblinResume = null;
+        this.goblinType = null;
+        this.goblinOrigin = null;
+        this.goblinSpawnedAt = 0;
         this.goblinTargetUuid = null;
-        this.goblinResumeLoadout = null;
         this.goblinMissingAt = 0;
-        this.goblinIgnoreUntil = 0;
     }
 
     stopControls() {
@@ -510,6 +526,7 @@ class ScathaMacro extends ModuleBase {
         // Entity packets can arrive while the combat loadout screen is open.
         // Keep tracking without starting combat or interrupting the GUI transition.
         if (this.state === 'LOADOUT' && this.loadoutRequest?.nextState === 'WAIT_WORM') this.findWormTargets();
+        if (this.state === 'LOADOUT' && this.loadoutRequest?.nextState === 'WAIT_GOBLIN') this.lockGoblinTarget();
         if (Date.now() < this.readyAt) return;
         if (Client.isInGui() && this.state !== 'LOADOUT') {
             this.stopActivities();
@@ -551,6 +568,8 @@ class ScathaMacro extends ModuleBase {
                 return this.enterLava();
             case 'DESCEND':
                 return this.descend();
+            case 'WAIT_GOBLIN':
+                return this.waitForGoblin();
             case 'GOBLIN':
                 return this.fightGoblin();
             case 'ALIGN':
@@ -879,12 +898,6 @@ class ScathaMacro extends ModuleBase {
             return;
         }
         if (Date.now() - this.startedAt > 120000) return this.switchLobby('Entry shaft descent timed out');
-        const now = Date.now();
-        if (now >= this.nextGoblinScanAt && now >= this.goblinIgnoreUntil) {
-            this.nextGoblinScanAt = now + GOBLIN_SCAN_INTERVAL_MS;
-            const goblin = this.findNearbyGoblin();
-            if (goblin) return this.beginGoblinCombat(goblin);
-        }
         if (!this.alignLavaColumn()) return;
         const point = { x: Math.floor(Player.getX()), y: Math.floor(Player.getY() - 0.05), z: Math.floor(Player.getZ()) };
         if (point.y < this.tunnelY) return;
@@ -892,29 +905,45 @@ class ScathaMacro extends ModuleBase {
         this.mineBlock(point, true);
     }
 
-    findNearbyGoblin() {
-        // The nametag can be on an armor stand separate from the damageable mob.
-        // Combat Bot resolves named stands to their closest actual mob.
-        const goblins = CombatBot.findMob({
-            names: ['Golden Goblin', 'Diamond Goblin'],
-            allowInvisible: true,
-            boundaryCheck: (x, y, z) =>
-                Math.hypot(x - Player.getX(), z - Player.getZ()) <= 2.5 &&
-                Math.abs(y - Player.getY()) <= 4,
-        });
-        return goblins.sort((a, b) =>
-            Math.hypot(a.getX() - Player.getX(), a.getY() - Player.getY(), a.getZ() - Player.getZ()) -
-            Math.hypot(b.getX() - Player.getX(), b.getY() - Player.getY(), b.getZ() - Player.getZ())
-        )[0] || null;
+    interruptForGoblin(type) {
+        if (!this.enabled || !['golden', 'diamond'].includes(type) || this.goblinResume) return;
+        const pendingState = this.state === 'LOADOUT' ? this.loadoutRequest?.nextState : this.state;
+        if (!MINING_STATES.has(pendingState)) return;
+
+        // Keep the exact interrupted state (including any open treasure chest).
+        // This snapshot also freezes the remaining forward mining time.
+        this.goblinResume = this.snapshot();
+        this.goblinType = type;
+        this.goblinOrigin = position();
+        this.goblinSpawnedAt = Date.now();
+        this.goblinTargetUuid = null;
+        this.goblinMissingAt = 0;
+        if (this.state === 'LOADOUT') {
+            this.currentLoadout = null;
+            closeInventory();
+        }
+        this.lockGoblinTarget();
+        this.switchLoadout(this.combatLoadout, 'WAIT_GOBLIN', 0);
+        this.message(`&e${type === 'golden' ? 'Golden' : 'Diamond'} Goblin spawned. Pausing mining to attack.`);
     }
 
-    beginGoblinCombat(target) {
-        this.goblinTargetUuid = CombatBot.getTargetUuid(target);
-        if (!this.goblinTargetUuid) return;
-        this.goblinResumeLoadout = this.currentLoadout || this.forwardLoadout;
-        this.goblinMissingAt = 0;
-        this.switchLoadout(this.combatLoadout, 'GOBLIN', 0);
-        this.message('&eGoblin in the entry shaft. Pausing descent to attack.');
+    lockGoblinTarget() {
+        if (!this.goblinType || !this.goblinOrigin || this.goblinTargetUuid) return;
+        // Resolve the matching nametag to an actual damageable mob; do not
+        // attack armor stands, other goblin types or nearby unrelated mobs.
+        const origin = this.goblinOrigin;
+        const candidates = CombatBot.findMob({
+            names: [`${this.goblinType} Goblin`],
+            allowInvisible: true,
+            boundaryCheck: (x, y, z) =>
+                Math.hypot(x - origin.x, z - origin.z) <= GOBLIN_SPAWN_SEARCH_RADIUS &&
+                Math.abs(y - origin.y) <= 4,
+        });
+        const target = candidates.sort((a, b) =>
+            Math.hypot(a.getX() - origin.x, a.getY() - origin.y, a.getZ() - origin.z) -
+            Math.hypot(b.getX() - origin.x, b.getY() - origin.y, b.getZ() - origin.z)
+        )[0];
+        if (target) this.goblinTargetUuid = CombatBot.getTargetUuid(target);
     }
 
     findLockedGoblinTarget() {
@@ -922,25 +951,50 @@ class ScathaMacro extends ModuleBase {
         const target = World.getAllEntities().find((entity) =>
             CombatBot.getTargetUuid(entity) === this.goblinTargetUuid
         );
-        return target && CombatBot.isCombatTargetCandidate(target, true) ? target : null;
+        if (!target || !CombatBot.isCombatTargetCandidate(target, true) || !this.goblinOrigin) return null;
+        const origin = this.goblinOrigin;
+        return Math.hypot(target.getX() - origin.x, target.getZ() - origin.z) <= GOBLIN_CHASE_RADIUS &&
+            Math.abs(target.getY() - origin.y) <= 6 ? target : null;
+    }
+
+    waitForGoblin() {
+        if (!this.goblinResume) return this.stop('Missing goblin resume state.');
+        this.lockGoblinTarget();
+        if (this.findLockedGoblinTarget()) {
+            this.setState('GOBLIN', 0);
+            this.message('&aGoblin located. Starting combat.');
+            return this.fightGoblin();
+        }
+        if (Date.now() - this.startedAt >= GOBLIN_SPAWN_WAIT_MS ||
+            Date.now() - this.goblinSpawnedAt >= GOBLIN_COMBAT_TIMEOUT_MS) {
+            this.message('&eSpawned goblin not found nearby. Resuming the previous state.');
+            this.finishGoblinCombat();
+        }
     }
 
     fightGoblin() {
         const now = Date.now();
-        const target = this.findLockedGoblinTarget();
-        if (now - this.startedAt > GOBLIN_COMBAT_TIMEOUT_MS) {
-            this.goblinIgnoreUntil = now + 5000;
+        if (!this.goblinResume) return this.stop('Missing goblin resume state.');
+        if (now - this.goblinSpawnedAt >= GOBLIN_COMBAT_TIMEOUT_MS) {
+            this.message('&eGoblin combat timed out. Resuming the previous state.');
             return this.finishGoblinCombat();
         }
+        const target = this.findLockedGoblinTarget();
         if (!target) {
             if (this.ownsCombat) this.stopActivities();
             if (!this.goblinMissingAt) this.goblinMissingAt = now;
-            if (now - this.goblinMissingAt >= GOBLIN_MISSING_GRACE_MS) this.finishGoblinCombat();
+            if (now - this.goblinMissingAt >= GOBLIN_MISSING_GRACE_MS) {
+                this.message('&aGoblin disappeared. Resuming the previous state.');
+                this.finishGoblinCombat();
+            }
             return;
         }
         this.goblinMissingAt = 0;
-        if (!this.selectSlot(this.attackSlot)) return;
-        CombatBot.setExternalTargets([target], GOBLIN_COMBAT_OPTIONS);
+        if (!Pathfinder.isPathing() && !this.selectSlot(this.attackSlot)) return;
+        const snapshot = this.goblinResume;
+        const interruptedState = snapshot.state === 'LOADOUT' ? snapshot.loadout?.nextState : snapshot.state;
+        const stayInPlace = ['DESCEND', 'CHEST', 'RECOVERY_HEIGHT'].includes(interruptedState);
+        CombatBot.setExternalTargets([target], stayInPlace ? GOBLIN_STATIONARY_COMBAT_OPTIONS : GOBLIN_CHASE_COMBAT_OPTIONS);
         if (!this.ownsCombat) {
             this.ownsCombat = true;
             CombatBot.toggle(true, true);
@@ -948,11 +1002,23 @@ class ScathaMacro extends ModuleBase {
     }
 
     finishGoblinCombat() {
-        const loadout = this.goblinResumeLoadout || this.forwardLoadout;
+        const snapshot = this.goblinResume;
+        if (!snapshot) return this.stop('Missing goblin resume state.');
+        const interruptedState = snapshot.state === 'LOADOUT' ? snapshot.loadout?.nextState : snapshot.state;
+        const stayInPlace = ['DESCEND', 'CHEST', 'RECOVERY_HEIGHT'].includes(interruptedState);
+        this.stopActivities();
+        this.goblinResume = null;
+        this.goblinType = null;
+        this.goblinOrigin = null;
+        this.goblinSpawnedAt = 0;
         this.goblinTargetUuid = null;
-        this.goblinResumeLoadout = null;
         this.goblinMissingAt = 0;
-        this.switchLoadout(loadout, 'DESCEND', 0);
+
+        // Chasing a fleeing goblin may move away from the original mining lane.
+        // Return first when that happened, rather than mining from the wrong spot.
+        if (!stayInPlace && (flatDistance(snapshot.point) > 0.6 || Math.abs(Player.getY() - snapshot.point.y) > 0.25))
+            return this.returnToSnapshot(snapshot, 'GOBLIN_RESUME');
+        this.restore(snapshot, 0);
     }
 
     align() {
