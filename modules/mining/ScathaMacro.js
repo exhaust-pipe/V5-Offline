@@ -36,7 +36,7 @@ const blockName = (point) => World.getBlockAt(point.x, point.y, point.z)?.type?.
 const key = (point) => `${point.x},${point.y},${point.z}`;
 const isChest = (name) => name === 'minecraft:chest' || name === 'minecraft:trapped_chest';
 const WORM_SPAWN_TIMEOUT_MS = 60000;
-const WORM_DISAPPEAR_GRACE_MS = 12000;
+const WORM_DISAPPEAR_GRACE_MS = 5000;
 const WORM_COMBAT_OPTIONS = { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true, ignoreArmorStandPickable: true };
 const WORM_NAMETAG_HEAD_MAX_DISTANCE = 2;
 const WORM_APPROACH_STOP_DISTANCE = 3.5;
