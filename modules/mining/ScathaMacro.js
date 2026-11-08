@@ -37,7 +37,8 @@ const key = (point) => `${point.x},${point.y},${point.z}`;
 const isChest = (name) => name === 'minecraft:chest' || name === 'minecraft:trapped_chest';
 const WORM_SPAWN_TIMEOUT_MS = 60000;
 const WORM_DISAPPEAR_GRACE_MS = 12000;
-const WORM_COMBAT_OPTIONS = { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true };
+const WORM_COMBAT_OPTIONS = { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true, ignoreArmorStandPickable: true };
+const WORM_NAMETAG_HEAD_MAX_DISTANCE = 2;
 const WORM_NAMETAG_GRACE_MS = 3000;
 const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_TUNNEL_HALF_LENGTH = 32;
@@ -1707,7 +1708,7 @@ class ScathaMacro extends ModuleBase {
         try {
             return (
                 this.inWormSearchBounds({ x: entity.getX(), y: entity.getY(), z: entity.getZ() }) &&
-                CombatBot.isCombatTargetCandidate(entity, true, true) &&
+                CombatBot.isCombatTargetCandidate(entity, true, true, true) &&
                 entity.getStackInSlot(5)?.type?.getRegistryName() === 'minecraft:player_head'
             );
         } catch (error) {
@@ -1730,7 +1731,7 @@ class ScathaMacro extends ModuleBase {
             // symbol or other worm name is required.
             if (/(?:^|[^a-z])(?:Scatha|Stoneworm)(?![a-z])/i.test(cleanChat(stand.getName()))) {
                 // A visible worm nametag means combat is still in progress even
-                // if the attackable head is temporarily hidden or unpickable.
+                // if its player-head stand is temporarily missing.
                 this.wormLastSeenAt = now;
                 this.wormNametags.set(uuid, {
                     point: { x: stand.getX(), y: stand.getY(), z: stand.getZ() },
@@ -1755,16 +1756,17 @@ class ScathaMacro extends ModuleBase {
         }
         this.wormCandidates = updatedCandidates;
 
-        // Worms have several armor stands. Select only the attackable player-head
-        // stand closest to the named marker, not every head segment.
+        // Only select the player-head stand nearest a Scatha/Stoneworm
+        // nametag within two blocks; no isPickable check is required.
         let nearest = null;
         let nearestDistanceSq = Infinity;
+        const maxDistanceSq = WORM_NAMETAG_HEAD_MAX_DISTANCE ** 2;
         for (const marker of this.wormNametags.values()) {
             const point = new Vec3d(marker.point.x, marker.point.y, marker.point.z);
             for (const segment of available.values()) {
                 try {
                     const distanceSq = segment.toMC().getBoundingBox().distanceToSqr(point);
-                    if (distanceSq >= nearestDistanceSq) continue;
+                    if (distanceSq > maxDistanceSq || distanceSq >= nearestDistanceSq) continue;
                     nearestDistanceSq = distanceSq;
                     nearest = segment;
                 } catch (error) {
@@ -1832,8 +1834,7 @@ class ScathaMacro extends ModuleBase {
         if (!this.combatResume) return this.stop('Missing combat return position.');
         if (now - this.startedAt > 120000) return this.switchLobby('Worm combat timed out');
         if (!Pathfinder.isPathing() && !this.selectSlot(this.attackSlot)) return;
-        let targets = this.findWormTargets();
-        if (!targets.length) targets = this.wormTargets.filter((target) => this.isWormSegment(target));
+        const targets = this.findWormTargets();
         if (targets.length) {
             this.wormTargets = targets;
             this.wormMissingAt = 0;
