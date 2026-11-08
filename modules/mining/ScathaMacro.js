@@ -36,6 +36,11 @@ const blockName = (point) => World.getBlockAt(point.x, point.y, point.z)?.type?.
 const key = (point) => `${point.x},${point.y},${point.z}`;
 const isChest = (name) => name === 'minecraft:chest' || name === 'minecraft:trapped_chest';
 const WORM_SPAWN_TIMEOUT_MS = 60000;
+const WORM_NAMETAG_GRACE_MS = 3000;
+const WORM_TARGET_GRACE_MS = 1500;
+const WORM_MATCH_DISTANCE = 3;
+const WORM_TUNNEL_HALF_LENGTH = 32;
+const WORM_TUNNEL_HALF_WIDTH = 1.5;
 const FORWARD_STOP_DISTANCE = 2;
 const ABILITY_STATES = new Set(['FORWARD', 'BACKWARD', 'TURN', 'DESCEND']);
 const ABILITY_FALLBACK_COOLDOWN_MS = 200000;
@@ -217,6 +222,10 @@ class ScathaMacro extends ModuleBase {
             this.state = 'IDLE';
             this.loadoutRequest = null;
             this.combatResume = null;
+            this.wormSearch = null;
+            this.wormTargets = [];
+            this.wormNametags?.clear();
+            this.wormCandidates?.clear();
             this.returnJob = null;
             this.recovery = null;
             this.chest = null;
@@ -241,6 +250,11 @@ class ScathaMacro extends ModuleBase {
         this.combatResume = null;
         this.wormOrigin = null;
         this.wormWaitMovement = null;
+        this.wormSearch = null;
+        this.wormWarningAt = 0;
+        this.wormTargets = [];
+        this.wormNametags = new Map();
+        this.wormCandidates = new Map();
         this.returnJob = null;
         this.recovery = null;
         this.chest = null;
@@ -442,6 +456,9 @@ class ScathaMacro extends ModuleBase {
         }
         if (!['HOP', 'WARP'].includes(this.state) && getArea() !== 'Crystal Hollows') return this.switchLobby('Left the Crystal Hollows');
         if (this.checkHeight()) return;
+        // Entity packets can arrive while the combat loadout screen is open.
+        // Keep tracking without starting combat or interrupting the GUI transition.
+        if (this.state === 'LOADOUT' && this.loadoutRequest?.nextState === 'WAIT_WORM') this.findWormTargets();
         if (Date.now() < this.readyAt) return;
         if (Client.isInGui() && this.state !== 'LOADOUT') {
             this.stopActivities();
@@ -452,6 +469,7 @@ class ScathaMacro extends ModuleBase {
         if (this.guiPausedAt) {
             const elapsed = Date.now() - this.guiPausedAt;
             this.startedAt += elapsed;
+            if (this.state === 'WAIT_WORM' && this.wormWarningAt) this.wormWarningAt += elapsed;
             this.forwardUntil += elapsed;
             this.progressAt += elapsed;
             if (this.chest) {
@@ -1645,6 +1663,23 @@ class ScathaMacro extends ModuleBase {
             if (pillar) this.combatResume.point.y = pillar.y;
         }
         this.wormOrigin = position();
+        // The 1x2 mining corridor, expanded one block in both cross-section axes.
+        // The search remains anchored to the location of this worm warning.
+        const direction = interruptedState === 'TURN' && this.lane ? this.turnDirection() : this.lane;
+        const axis = direction?.axis || 'z';
+        const crossAxis = axis === 'x' ? 'z' : 'x';
+        const crossOrigin = interruptedState === 'TURN' ? this.turnOrigin : this.laneStart;
+        this.wormSearch = {
+            axis,
+            crossAxis,
+            along: this.wormOrigin[axis],
+            cross: crossOrigin?.[crossAxis] ?? Math.floor(this.wormOrigin[crossAxis]) + 0.5,
+            minY: this.tunnelY - 1,
+            maxY: this.tunnelY + 3,
+        };
+        this.wormWarningAt = Date.now();
+        this.wormNametags.clear();
+        this.wormCandidates.clear();
         if (this.state === 'LOADOUT') {
             this.currentLoadout = null;
             closeInventory();
@@ -1653,24 +1688,85 @@ class ScathaMacro extends ModuleBase {
         this.message('&eWorm warning received. Mining paused; preparing combat and waiting for the spawn.');
     }
 
+    inWormSearchBounds(point) {
+        const search = this.wormSearch;
+        return (
+            !!search &&
+            Math.abs(point[search.axis] - search.along) <= WORM_TUNNEL_HALF_LENGTH &&
+            Math.abs(point[search.crossAxis] - search.cross) <= WORM_TUNNEL_HALF_WIDTH &&
+            point.y >= search.minY &&
+            point.y <= search.maxY
+        );
+    }
+
+    isWormSegment(entity) {
+        try {
+            return (
+                this.inWormSearchBounds({ x: entity.getX(), y: entity.getY(), z: entity.getZ() }) &&
+                CombatBot.isCombatTargetCandidate(entity, true, true) &&
+                entity.getStackInSlot(5)?.type?.getRegistryName() === 'minecraft:player_head'
+            );
+        } catch (error) {
+            return false;
+        }
+    }
+
     findWormTargets() {
-        const origin = this.wormOrigin || this.combatResume.point;
+        if (!this.wormSearch) return [];
+        const now = Date.now();
         const stands = World.getAllEntitiesOfType(ArmorStandEntity).filter(
-            (entity) => !entity.isDead() && Math.hypot(entity.getX() - origin.x, entity.getY() - origin.y, entity.getZ() - origin.z) <= 32
+            (entity) =>
+                !entity.isDead() && this.inWormSearchBounds({ x: entity.getX(), y: entity.getY(), z: entity.getZ() })
         );
-        const segments = stands.filter(
-            (entity) => CombatBot.isCombatTargetCandidate(entity, true, true) && entity.getStackInSlot(5)?.type?.getRegistryName() === 'minecraft:player_head'
-        );
-        const targets = new Map();
+        const segments = stands.filter((entity) => this.isWormSegment(entity));
+        const segmentByUuid = new Map(segments.map((entity) => [CombatBot.getTargetUuid(entity), entity]));
+
+        // Store the last known position of each worm nametag. The nametag and
+        // the attackable head may not be loaded at the same time.
         for (const stand of stands) {
             const name = cleanChat(stand.getName());
-            if (!/(?:^|\s)(?:Stoneworm|Worm|Scatha)\s/i.test(name) || !name.includes('\u2764')) continue;
-
-            // Worm health labels can be separate marker stands with no attackable hitbox.
-            const target = segments.find((segment) => CombatBot.sameTarget(segment, stand)) || CombatBot.resolveNametagTarget(stand, segments, 2);
-            if (target) targets.set(CombatBot.getTargetUuid(target), target);
+            if (!/(?:^|\s)(?:Stoneworm|Worm|Scatha)(?=\s|$|[\]:❤])/i.test(name)) continue;
+            const uuid = CombatBot.getTargetUuid(stand);
+            if (!uuid) continue;
+            this.wormNametags.set(uuid, {
+                point: { x: stand.getX(), y: stand.getY(), z: stand.getZ() },
+                seenAt: now,
+            });
         }
-        return [...targets.values()];
+        for (const [uuid, marker] of this.wormNametags) {
+            if (now - marker.seenAt > WORM_NAMETAG_GRACE_MS) this.wormNametags.delete(uuid);
+        }
+
+        for (const [uuid, marker] of this.wormNametags) {
+            let target = segmentByUuid.get(uuid);
+            if (!target) {
+                const point = new Vec3d(marker.point.x, marker.point.y, marker.point.z);
+                let nearestSq = WORM_MATCH_DISTANCE ** 2;
+                for (const segment of segments) {
+                    try {
+                        const distanceSq = segment.toMC().getBoundingBox().distanceToSqr(point);
+                        if (distanceSq > nearestSq) continue;
+                        target = segment;
+                        nearestSq = distanceSq;
+                    } catch (error) {
+                        // A segment can unload between the entity scan and the match.
+                    }
+                }
+            }
+            if (!target) continue;
+            const targetUuid = CombatBot.getTargetUuid(target);
+            if (targetUuid) this.wormCandidates.set(targetUuid, { target, seenAt: now });
+        }
+
+        const targets = [];
+        for (const [uuid, candidate] of this.wormCandidates) {
+            if (now - candidate.seenAt > WORM_TARGET_GRACE_MS || !this.isWormSegment(candidate.target)) {
+                this.wormCandidates.delete(uuid);
+                continue;
+            }
+            targets.push(candidate.target);
+        }
+        return targets;
     }
 
     createWormWaitMovement() {
@@ -1701,7 +1797,7 @@ class ScathaMacro extends ModuleBase {
             this.message('&aWorm spawned. Starting combat.');
             return this.fightWorm();
         }
-        if (Date.now() - this.startedAt >= WORM_SPAWN_TIMEOUT_MS) return this.switchLobby('No Stoneworm or Scatha appeared within 60 seconds');
+        if (Date.now() - this.wormWarningAt >= WORM_SPAWN_TIMEOUT_MS) return this.switchLobby('No Stoneworm or Scatha appeared within 60 seconds');
         Client.setKey('leftclick', false);
         Client.setKey('rightclick', false);
         const movement = this.wormWaitMovement;
@@ -1759,6 +1855,9 @@ class ScathaMacro extends ModuleBase {
     finishCombat() {
         const snapshot = this.combatResume;
         this.combatResume = null;
+        this.wormSearch = null;
+        this.wormNametags.clear();
+        this.wormCandidates.clear();
         this.restore(snapshot);
     }
 
