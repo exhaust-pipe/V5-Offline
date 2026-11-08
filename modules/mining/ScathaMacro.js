@@ -45,6 +45,15 @@ const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_TUNNEL_HALF_LENGTH = 32;
 const WORM_TUNNEL_HALF_WIDTH = 1.5;
 const FORWARD_STOP_DISTANCE = 2;
+// Search for source lava only within these four horizontal regions; the Y=46..64 bounds are unchanged.
+const LAVA_SCAN_CENTERS = [[565, 565], [465, 535], [470, 500], [565, 490]];
+const LAVA_SCAN_RADIUS = 30;
+const LAVA_SCAN_RADIUS_SQ = LAVA_SCAN_RADIUS * LAVA_SCAN_RADIUS;
+const isInLavaScanRegion = (point) => LAVA_SCAN_CENTERS.some(([x, z]) => {
+    const dx = point.x - x;
+    const dz = point.z - z;
+    return dx * dx + dz * dz < LAVA_SCAN_RADIUS_SQ;
+});
 const ABILITY_STATES = new Set(['FORWARD', 'BACKWARD', 'TURN', 'DESCEND']);
 const ABILITY_FALLBACK_COOLDOWN_MS = 200000;
 const ABILITY_RETRY_DELAY_MS = 5000;
@@ -547,9 +556,19 @@ class ScathaMacro extends ModuleBase {
             case 'SCAN_LAVA': {
                 this.scanChunks = [];
                 this.lavaSeen = 0;
-                const x = Math.floor(Player.getX() / 16);
-                const z = Math.floor(Player.getZ() / 16);
-                for (let dx = -16; dx <= 16; dx++) for (let dz = -16; dz <= 16; dz++) this.scanChunks.push([16 * (x + dx), 16 * (z + dz)]);
+                const seenChunks = new Set();
+                for (const [x, z] of LAVA_SCAN_CENTERS) {
+                    const minX = Math.floor((x - LAVA_SCAN_RADIUS) / 16);
+                    const maxX = Math.floor((x + LAVA_SCAN_RADIUS) / 16);
+                    const minZ = Math.floor((z - LAVA_SCAN_RADIUS) / 16);
+                    const maxZ = Math.floor((z + LAVA_SCAN_RADIUS) / 16);
+                    for (let cx = minX; cx <= maxX; cx++) for (let cz = minZ; cz <= maxZ; cz++) {
+                        const chunkKey = `${cx},${cz}`;
+                        if (seenChunks.has(chunkKey)) continue;
+                        seenChunks.add(chunkKey);
+                        this.scanChunks.push([16 * cx, 16 * cz]);
+                    }
+                }
                 break;
             }
             case 'PATH_LAVA':
@@ -712,6 +731,7 @@ class ScathaMacro extends ModuleBase {
             const blocks = World.getBlocksInBox(x, 46, z, x + 15, 64, z + 15, [new BlockType('minecraft:lava')]);
             for (const block of blocks) {
                 const point = { x: block.x, y: block.y, z: block.z };
+                if (!isInLavaScanRegion(point)) continue;
                 if (
                     !world
                         .getBlockState(new BP(point.x, point.y, point.z))
@@ -776,7 +796,9 @@ class ScathaMacro extends ModuleBase {
 
     tickLavaPath() {
         if (this.lavaTarget.result === true) return this.setState('ENTER_LAVA');
-        if (this.lavaTarget.result === false || Date.now() - this.startedAt > 60000) return this.setState('PATH_LAVA');
+        // Pathfinder handles search timeouts, stalls and recalculation failures itself.
+        // Do not abandon a long but otherwise successful walk based on elapsed time.
+        if (this.lavaTarget.result === false) return this.setState('PATH_LAVA');
         if (!Pathfinder.isPathing()) this.setState('PATH_LAVA');
     }
 
