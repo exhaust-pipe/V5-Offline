@@ -39,6 +39,7 @@ const WORM_SPAWN_TIMEOUT_MS = 60000;
 const WORM_DISAPPEAR_GRACE_MS = 12000;
 const WORM_COMBAT_OPTIONS = { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true, ignoreArmorStandPickable: true };
 const WORM_NAMETAG_HEAD_MAX_DISTANCE = 2;
+const WORM_APPROACH_STOP_DISTANCE = 3.5;
 const WORM_NAMETAG_GRACE_MS = 3000;
 const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_TUNNEL_HALF_LENGTH = 32;
@@ -251,7 +252,6 @@ class ScathaMacro extends ModuleBase {
         this.loadoutRequest = null;
         this.combatResume = null;
         this.wormOrigin = null;
-        this.wormWaitMovement = null;
         this.wormSearch = null;
         this.wormWarningAt = 0;
         this.wormLastSeenAt = 0;
@@ -578,7 +578,6 @@ class ScathaMacro extends ModuleBase {
             case 'WAIT_WORM':
                 this.wormTargets = [];
                 this.wormMissingAt = 0;
-                this.wormWaitMovement = this.createWormWaitMovement();
                 break;
             case 'COOLDOWN':
                 this.cooldownUntil = Date.now() + this.cooldownDuration;
@@ -1826,25 +1825,6 @@ class ScathaMacro extends ModuleBase {
         return nearest ? [nearest] : [];
     }
 
-    createWormWaitMovement() {
-        let snapshot = this.combatResume;
-        let state;
-        while (snapshot) {
-            state = snapshot.state === 'LOADOUT' ? snapshot.loadout?.nextState : snapshot.state;
-            if (state !== 'CHEST') break;
-            snapshot = snapshot.chestContext?.resume;
-        }
-        if (!this.lane || !['FORWARD', 'BACKWARD', 'TURN', 'RETURN'].includes(state)) return null;
-        const facing = state === 'TURN' ? this.turnDirection() : { axis: this.lane.axis, sign: this.lane.sign };
-        return {
-            facing,
-            direction: { ...facing, sign: state === 'BACKWARD' ? facing.sign : -facing.sign },
-            origin: state === 'TURN' ? (this.turnGoal ? this.turnOrigin : center(position())) : this.laneStart,
-            yaw: this.yaw(facing) + random(-3, 3),
-            pitch: random(-5, 5),
-        };
-    }
-
     waitForWorm() {
         if (!this.combatResume) return this.stop('Missing combat return position.');
         const targets = this.findWormTargets();
@@ -1857,24 +1837,47 @@ class ScathaMacro extends ModuleBase {
         if (Date.now() - this.wormWarningAt >= WORM_SPAWN_TIMEOUT_MS) return this.switchLobby('No Stoneworm or Scatha appeared within 60 seconds');
         Client.setKey('leftclick', false);
         Client.setKey('rightclick', false);
-        const movement = this.wormWaitMovement;
-        if (!this.selectSlot(this.attackSlot) || !movement) return Client.stopMovement();
-        this.aimAt({ yaw: movement.yaw, pitch: movement.pitch }, 'wait:worm');
+        if (!this.selectSlot(this.attackSlot)) return Client.stopMovement();
+
+        // Head stands can load before the worm's nametag is visible. Approach
+        // nearby loaded stands along the corridor instead of walking in the
+        // opposite direction of the interrupted mining pass.
+        const search = this.wormSearch;
+        if (!search || !this.lane) return Client.stopMovement();
+        const here = position();
+        let approach = null;
+        let approachDistance = Infinity;
+        for (const { target } of this.wormCandidates.values()) {
+            if (!this.isWormSegment(target)) continue;
+            const coordinate = search.axis === 'x' ? target.getX() : target.getZ();
+            const distance = Math.abs(coordinate - here[search.axis]);
+            if (distance <= WORM_APPROACH_STOP_DISTANCE || distance >= approachDistance) continue;
+            approach = target;
+            approachDistance = distance;
+        }
+        if (!approach) return Client.stopMovement();
+
+        const coordinate = search.axis === 'x' ? approach.getX() : approach.getZ();
+        const direction = { axis: search.axis, sign: Math.sign(coordinate - here[search.axis]) };
+        const yaw = this.yaw(direction);
+        this.aimAt({ yaw, pitch: 0 }, `wait:worm:${direction.axis}:${direction.sign}`);
         if (
-            this.rotation.motion?.targetId !== 'wait:worm' ||
+            this.rotation.motion?.targetId !== `wait:worm:${direction.axis}:${direction.sign}` ||
             !this.rotation.motion.complete ||
-            Math.abs(wrapTo180(Player.getYaw() - movement.yaw)) > 1 ||
-            Math.abs(Player.getPitch() - movement.pitch) > 1 ||
+            Math.abs(wrapTo180(Player.getYaw() - yaw)) > 2 ||
+            Math.abs(Player.getPitch()) > 2 ||
             Math.abs(Player.getY() - this.tunnelY) > 0.25 ||
             !Player.getPlayer().onGround() ||
-            this.blockingAhead(movement.direction, 0.8)
+            this.blockingAhead(direction, 0.8)
         )
             return Client.stopMovement();
-        const next = this.offset(position(), movement.direction, 0.8);
+        const next = this.offset(here, direction, 0.8);
         const world = World.getWorld();
         const floor = new BP(Math.floor(next.x), Math.floor(this.tunnelY) - 1, Math.floor(next.z));
         if (!this.loaded(next) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) return Client.stopMovement();
-        this.moveAlongLane(movement.direction, movement.origin, movement.facing);
+        const origin = { ...here };
+        origin[search.crossAxis] = search.cross;
+        this.moveAlongLane(direction, origin, direction);
     }
 
     fightWorm() {
