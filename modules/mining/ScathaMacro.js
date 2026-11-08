@@ -966,7 +966,11 @@ class ScathaMacro extends ModuleBase {
     mineForward() {
         const overlapping = this.overlappingChest();
         if (overlapping) return this.openChest(overlapping);
-        if (this.forwardObstacle && !this.clearForwardObstacles()) return;
+        if (this.forwardObstacle) {
+            const blocker = this.blockingAhead(this.lane, FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2);
+            if (blocker && !blocker.unknown && isChest(blockName(blocker)) && !this.openedChests.has(key(blocker))) return this.openChest(blocker);
+            if (!this.clearForwardObstacles()) return;
+        }
         if (Date.now() >= this.nextTunnelCheck) {
             const scanOrigin = position();
             const other = this.lane.axis === 'x' ? 'z' : 'x';
@@ -1005,6 +1009,7 @@ class ScathaMacro extends ModuleBase {
                 this.stopControls();
                 return this.checkProgress(10000);
             }
+            if (isChest(blockName(obstacle)) && !this.openedChests.has(key(obstacle))) return this.openChest(obstacle);
             if (!this.isForwardTunnelBlock(obstacle)) {
                 this.forwardBlocked = null;
                 Client.setKey('leftclick', false);
@@ -1125,6 +1130,10 @@ class ScathaMacro extends ModuleBase {
                 this.beginBackward(true);
                 return false;
             }
+            if (isChest(name) && !this.openedChests.has(key(point))) {
+                this.openChest(point);
+                return false;
+            }
             if (name === point.name && !AIR.has(name) && !this.passable(point) && !(isChest(name) && this.openedChests.has(key(point)))) {
                 point.aim ??= this.getMiningAim(point);
                 if (point.aim) {
@@ -1143,6 +1152,10 @@ class ScathaMacro extends ModuleBase {
         for (let budget = 0; budget < 2 && job.candidates.length; budget++) {
             const point = job.candidates.pop();
             if (!this.isForwardTunnelBlock(point) || blockName(point) !== point.name) continue;
+            if (isChest(point.name) && !this.openedChests.has(key(point))) {
+                this.openChest(point);
+                return false;
+            }
             const aim = this.getMiningAim(point);
             if (!aim) continue;
             job.target = { ...point, aim };
