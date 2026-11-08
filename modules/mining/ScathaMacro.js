@@ -38,6 +38,22 @@ const isChest = (name) => name === 'minecraft:chest' || name === 'minecraft:trap
 const WORM_SPAWN_TIMEOUT_MS = 60000;
 const WORM_DISAPPEAR_GRACE_MS = 5000;
 const WORM_COMBAT_OPTIONS = { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true, ignoreArmorStandPickable: true };
+// Goblins spawned inside the entry shaft must be fought in place, not pathed to.
+const GOBLIN_COMBAT_OPTIONS = {
+    roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0,
+    tickTarget: (target) => {
+        Client.stopMovement();
+        if (!target) return;
+        CombatBot.trackTarget();
+        const point = CombatBot.getTargetPosition(target);
+        if (point) CombatBot.tryAttack(CombatBot.getDistanceToPlayer(point).distance);
+    },
+};
+const AREA_MISSING_CONFIRM_MS = 6000;
+const AREA_WARP_GRACE_MS = 10000;
+const GOBLIN_SCAN_INTERVAL_MS = 250;
+const GOBLIN_MISSING_GRACE_MS = 1500;
+const GOBLIN_COMBAT_TIMEOUT_MS = 35000;
 const WORM_NAMETAG_HEAD_MAX_DISTANCE = 2;
 const WORM_APPROACH_STOP_DISTANCE = 3.5;
 const WORM_NAMETAG_GRACE_MS = 3000;
@@ -240,6 +256,8 @@ class ScathaMacro extends ModuleBase {
             this.returnJob = null;
             this.recovery = null;
             this.chest = null;
+            this.goblinTargetUuid = null;
+            this.goblinResumeLoadout = null;
         } finally {
             const restoreMouse = this.restoreMouseOnDisable;
             this.restoreMouseOnDisable = false;
@@ -282,6 +300,13 @@ class ScathaMacro extends ModuleBase {
         this.lavaCandidates = [];
         this.lavaTarget = null;
         this.lavaAttempts = 0;
+        this.areaMissingSince = 0;
+        this.areaWarpGraceUntil = 0;
+        this.nextGoblinScanAt = 0;
+        this.goblinTargetUuid = null;
+        this.goblinResumeLoadout = null;
+        this.goblinMissingAt = 0;
+        this.goblinIgnoreUntil = 0;
     }
 
     stopControls() {
@@ -467,7 +492,20 @@ class ScathaMacro extends ModuleBase {
             this.initialized = false;
             return;
         }
-        if (!['HOP', 'WARP'].includes(this.state) && getArea() !== 'Crystal Hollows') return this.switchLobby('Left the Crystal Hollows');
+        if (!['HOP', 'WARP'].includes(this.state)) {
+            if (getArea() === 'Crystal Hollows') this.areaMissingSince = 0;
+            else {
+                const now = Date.now();
+                if (!this.areaMissingSince) this.areaMissingSince = now;
+                // Tab-list area data briefly disappears after warps and during lag.
+                // Require sustained evidence before abandoning an otherwise valid lobby.
+                if (now >= Math.max(this.areaMissingSince + AREA_MISSING_CONFIRM_MS, this.areaWarpGraceUntil))
+                    return this.switchLobby('Left the Crystal Hollows');
+                Client.stopMovement();
+                Client.setKey('leftclick', false);
+                return;
+            }
+        }
         if (this.checkHeight()) return;
         // Entity packets can arrive while the combat loadout screen is open.
         // Keep tracking without starting combat or interrupting the GUI transition.
@@ -513,6 +551,8 @@ class ScathaMacro extends ModuleBase {
                 return this.enterLava();
             case 'DESCEND':
                 return this.descend();
+            case 'GOBLIN':
+                return this.fightGoblin();
             case 'ALIGN':
                 return this.align();
             case 'FORWARD':
@@ -634,6 +674,8 @@ class ScathaMacro extends ModuleBase {
             this.previousServer = null;
             this.lobbyId = server;
             this.hopAttempts = 0;
+            this.areaMissingSince = 0;
+            this.areaWarpGraceUntil = Date.now() + AREA_WARP_GRACE_MS;
             return this.switchLoadout(this.forwardLoadout, 'SCAN_LAVA');
         }
         this.retryCommand('warp nucleus');
@@ -837,11 +879,80 @@ class ScathaMacro extends ModuleBase {
             return;
         }
         if (Date.now() - this.startedAt > 120000) return this.switchLobby('Entry shaft descent timed out');
+        const now = Date.now();
+        if (now >= this.nextGoblinScanAt && now >= this.goblinIgnoreUntil) {
+            this.nextGoblinScanAt = now + GOBLIN_SCAN_INTERVAL_MS;
+            const goblin = this.findNearbyGoblin();
+            if (goblin) return this.beginGoblinCombat(goblin);
+        }
         if (!this.alignLavaColumn()) return;
         const point = { x: Math.floor(Player.getX()), y: Math.floor(Player.getY() - 0.05), z: Math.floor(Player.getZ()) };
         if (point.y < this.tunnelY) return;
         if (blockName(point) === 'minecraft:bedrock') return this.switchLobby('Bedrock blocks the entry shaft');
         this.mineBlock(point, true);
+    }
+
+    findNearbyGoblin() {
+        // The nametag can be on an armor stand separate from the damageable mob.
+        // Combat Bot resolves named stands to their closest actual mob.
+        const goblins = CombatBot.findMob({
+            names: ['Golden Goblin', 'Diamond Goblin'],
+            allowInvisible: true,
+            boundaryCheck: (x, y, z) =>
+                Math.hypot(x - Player.getX(), z - Player.getZ()) <= 2.5 &&
+                Math.abs(y - Player.getY()) <= 4,
+        });
+        return goblins.sort((a, b) =>
+            Math.hypot(a.getX() - Player.getX(), a.getY() - Player.getY(), a.getZ() - Player.getZ()) -
+            Math.hypot(b.getX() - Player.getX(), b.getY() - Player.getY(), b.getZ() - Player.getZ())
+        )[0] || null;
+    }
+
+    beginGoblinCombat(target) {
+        this.goblinTargetUuid = CombatBot.getTargetUuid(target);
+        if (!this.goblinTargetUuid) return;
+        this.goblinResumeLoadout = this.currentLoadout || this.forwardLoadout;
+        this.goblinMissingAt = 0;
+        this.switchLoadout(this.combatLoadout, 'GOBLIN', 0);
+        this.message('&eGoblin in the entry shaft. Pausing descent to attack.');
+    }
+
+    findLockedGoblinTarget() {
+        if (!this.goblinTargetUuid) return null;
+        const target = World.getAllEntities().find((entity) =>
+            CombatBot.getTargetUuid(entity) === this.goblinTargetUuid
+        );
+        return target && CombatBot.isCombatTargetCandidate(target, true) ? target : null;
+    }
+
+    fightGoblin() {
+        const now = Date.now();
+        const target = this.findLockedGoblinTarget();
+        if (now - this.startedAt > GOBLIN_COMBAT_TIMEOUT_MS) {
+            this.goblinIgnoreUntil = now + 5000;
+            return this.finishGoblinCombat();
+        }
+        if (!target) {
+            if (this.ownsCombat) this.stopActivities();
+            if (!this.goblinMissingAt) this.goblinMissingAt = now;
+            if (now - this.goblinMissingAt >= GOBLIN_MISSING_GRACE_MS) this.finishGoblinCombat();
+            return;
+        }
+        this.goblinMissingAt = 0;
+        if (!this.selectSlot(this.attackSlot)) return;
+        CombatBot.setExternalTargets([target], GOBLIN_COMBAT_OPTIONS);
+        if (!this.ownsCombat) {
+            this.ownsCombat = true;
+            CombatBot.toggle(true, true);
+        }
+    }
+
+    finishGoblinCombat() {
+        const loadout = this.goblinResumeLoadout || this.forwardLoadout;
+        this.goblinTargetUuid = null;
+        this.goblinResumeLoadout = null;
+        this.goblinMissingAt = 0;
+        this.switchLoadout(loadout, 'DESCEND', 0);
     }
 
     align() {
@@ -1549,13 +1660,20 @@ class ScathaMacro extends ModuleBase {
         if (now - this.startedAt > 120000) return this.switchLobby('Treasure chest did not open');
         if (chest.approach) return this.tickChestApproach();
         const overlapping = this.overlappingChest();
-        if (overlapping && key(overlapping) === key(chest.point)) return this.approachChest(chest.point);
+        const descentChest = chest.resume.state === 'DESCEND' &&
+            Math.floor(Player.getX()) === chest.point.x && Math.floor(Player.getZ()) === chest.point.z;
+        if (overlapping && key(overlapping) === key(chest.point) && !descentChest)
+            return this.approachChest(chest.point);
         if (now - chest.progressAt > Math.max(25000, this.mineTarget ? this.mineTarget.timeoutMs : 0))
             return this.switchLobby('Treasure chest stopped making progress');
         const player = Player.getPlayer();
         const eye = player.getEyePosition();
         const particle = chest.particle && now - chest.particleAt < 2000;
-        let aim = particle ? chest.particle : { x: chest.point.x + 0.5, y: chest.point.y + 0.5, z: chest.point.z + 0.5 };
+        let aim = particle ? chest.particle : {
+            x: chest.point.x + 0.5,
+            y: chest.point.y + (descentChest ? 0.85 : 0.5),
+            z: chest.point.z + 0.5,
+        };
         const trace = (point) =>
             World.getWorld().clip(new ClipContext(eye, new Vec3d(point.x, point.y, point.z), ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
         let hit = trace(aim);
@@ -1578,6 +1696,17 @@ class ScathaMacro extends ModuleBase {
             }
         }
         const obstacleKey = obstacle && key(obstacle);
+        if (descentChest && obstacleKey !== key(chest.point)) {
+            // A chest generated inside the player has no walking route from the
+            // one-block lava shaft. Try its upper face; rise above it if needed.
+            Client.stopMovement();
+            Client.setKey('leftclick', false);
+            Client.setKey('space', Player.getY() < chest.point.y + 1.05);
+            this.aimAt({ x: chest.point.x + 0.5, y: chest.point.y + 0.85, z: chest.point.z + 0.5 },
+                `shaft-chest:${key(chest.point)}`);
+            return;
+        }
+        Client.setKey('space', false);
         if (chest.obstacleKey !== obstacleKey) {
             chest.obstacleKey = obstacleKey;
             chest.progressAt = now;
@@ -1637,6 +1766,11 @@ class ScathaMacro extends ModuleBase {
         const eyeHeight = Player.getPlayer().getEyePosition().y() - Player.getY();
         const overlapping = this.overlappingChest();
         const escapingChest = overlapping && key(overlapping) === key(chest.point);
+        if (escapingChest && chest.resume.state === 'DESCEND') {
+            chest.approach = null;
+            chest.progressAt = now;
+            return;
+        }
         if (!job.points) {
             const target = job.target;
             for (let budget = 0; budget < 64 && job.index < job.queue.length && job.index < 1024; budget++) {
