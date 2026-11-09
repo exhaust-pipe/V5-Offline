@@ -119,9 +119,11 @@ class ScathaMacro extends ModuleBase {
             }
         }).triggerIfCanceled(true);
         this.on('packetReceived', (packet) => {
+            if (!this.enabled) return;
+            const goblinResume = this.goblinResume;
             const chest = this.state === 'CHEST' ? this.chest :
-                this.goblinResume?.state === 'CHEST' ? this.goblinResume.chestContext : null;
-            if (!chest?.clickedAt) return;
+                goblinResume && goblinResume.state === 'CHEST' ? goblinResume.chestContext : null;
+            if (!chest || !chest.clickedAt || !chest.point) return;
             const data = getLevelParticleData(packet);
             if (data.particle?.getType() !== net.minecraft.core.particles.ParticleTypes.CRIT) return;
             const point = chest.point;
@@ -135,9 +137,10 @@ class ScathaMacro extends ModuleBase {
         for (const event of ['chestsolve', 'chestopen']) {
             registerSkyblockEvent(event, () => {
                 if (!this.enabled) return;
+                const goblinResume = this.goblinResume;
                 const chest = this.state === 'CHEST' ? this.chest :
-                    this.goblinResume?.state === 'CHEST' ? this.goblinResume.chestContext : null;
-                if (chest?.clickedAt) chest.opened = true;
+                    goblinResume && goblinResume.state === 'CHEST' ? goblinResume.chestContext : null;
+                if (chest && chest.clickedAt) chest.opened = true;
             });
         }
         registerSkyblockEvent('fasttravellocked', () => {
