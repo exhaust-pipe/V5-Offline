@@ -5,7 +5,7 @@ import { ModuleBase } from '../../utils/ModuleBase';
 import { ClientboundLevelParticlesPacket, getLevelParticleData } from '../../utils/Packets';
 import { getLookingAt, getVisiblePoint, testPointNative } from '../../utils/Raytrace';
 import { registerSkyblockEvent } from '../../utils/SkyblockEvents';
-import { getArea, getPickaxeAbilityStatus } from '../../utils/TabListUtils';
+import { getArea } from '../../utils/TabListUtils';
 import { Mouse } from '../../utils/Ungrab';
 import Pathfinder from '../../utils/pathfinder/PathFinder';
 import { Aote } from '../../utils/pathfinder/PathWalker/PathAote';
@@ -77,8 +77,6 @@ const isInLavaScanRegion = (point) => LAVA_SCAN_CENTERS.some(([x, z]) =>
     Math.abs(point.x - x) < LAVA_SCAN_HALF_SIZE && Math.abs(point.z - z) < LAVA_SCAN_HALF_SIZE
 );
 const ABILITY_STATES = new Set(['FORWARD', 'BACKWARD', 'TURN', 'DESCEND']);
-const ABILITY_FALLBACK_COOLDOWN_MS = 200000;
-const ABILITY_RETRY_DELAY_MS = 5000;
 const HOTM_PERKS = ['Efficient Miner', 'Mole'];
 const HOTM_OPEN_TIMEOUT_MS = 10000;
 const HOTM_PERK_TIMEOUT_MS = 4000;
@@ -149,8 +147,14 @@ class ScathaMacro extends ModuleBase {
         registerSkyblockEvent('death', () => {
             if (this.enabled) this.switchLobby('death');
         });
-        registerSkyblockEvent('abilityready', () => {
-            if (this.enabled && this.useTunnelVision) this.abilityFromChat = true;
+        registerSkyblockEvent('abilityready', (event) => {
+            if (!this.enabled || !this.useTunnelVision) return;
+            const message = cleanChat(event.message.getUnformattedText());
+            // Other pickaxe abilities share the ready event. Only activate Tunnel Vision.
+            const tunnelVisionReady = /^(?:(?:Your|Pickaxe Ability:)\s+)?Tunnel Vision(?:\s+ability)?\s+is now available!$/i.test(message);
+            this.abilityFromChat = tunnelVisionReady;
+            this.abilityUseAt = tunnelVisionReady ? Date.now() + this.delay(this.actionDelay) : 0;
+            this.abilityClickPending = false;
         });
         for (const event of ['abilityused', 'abilitycooldown']) {
             registerSkyblockEvent(event, () => {
@@ -158,7 +162,6 @@ class ScathaMacro extends ModuleBase {
                 this.abilityFromChat = false;
                 this.abilityUseAt = 0;
                 this.abilityClickPending = false;
-                this.lastAbilityUseAt = Date.now();
             });
         }
         registerSkyblockEvent('emptydrill', () => {
@@ -200,10 +203,10 @@ class ScathaMacro extends ModuleBase {
             );
         };
         slider('Mining Y', 'targetY', 31, 40, 31, 'Feet height of the 1x2 tunnel. Applied when starting a new lobby.');
-        slider('Mining Slot', 'miningSlot', 1, 9, 1, 'Hotbar slot containing the mining tool.');
-        slider('Backward Mining Slot', 'backwardMiningSlot', 0, 9, 0, 'Mining tool for backward passes. 0 follows Mining Slot.');
-        slider('Attack Slot', 'attackSlot', 1, 9, 2, 'Hotbar slot containing the combat weapon.');
-        slider('Block Slot', 'blockSlot', 1, 9, 3, 'Hotbar slot containing full blocks for height recovery.');
+        slider('Mining Slot', 'miningSlot', 1, 8, 1, 'Hotbar slot containing the mining tool.');
+        slider('Backward Mining Slot', 'backwardMiningSlot', 0, 8, 0, 'Mining tool for backward passes. 0 follows Mining Slot.');
+        slider('Attack Slot', 'attackSlot', 1, 8, 2, 'Hotbar slot containing the combat weapon.');
+        slider('Block Slot', 'blockSlot', 1, 8, 3, 'Hotbar slot containing full blocks for height recovery.');
         this.useTunnelVision = false;
         this.addToggle(
             'Use Tunnel Vision',
@@ -221,7 +224,7 @@ class ScathaMacro extends ModuleBase {
                 this.autoToggleHotmPerks = value;
                 this.hotmPerksEnabled = null;
             },
-            'Disable Mole and Efficient Miner for forward mining, enable both for backward mining. Requires both perks unlocked.',
+            'When enabled, disable Mole and Efficient Miner for forward mining and turns, and enable them for backward mining, regardless of loadout. Requires both perks unlocked.',
             false
         );
         range('Forward Mining Time (s)', 'forwardTime', 10, 200, 60, 90, 'Random time before each backward pass. Combat and recovery pause this timer.');
@@ -253,7 +256,6 @@ class ScathaMacro extends ModuleBase {
         this.abilityFromChat = false;
         this.abilityUseAt = 0;
         this.abilityClickPending = false;
-        this.lastAbilityUseAt = 0;
         this.resetLobby();
         this.miningSpeed = MiningUtils.getMiningSpeed('Crystal Hollows');
         if (getArea() === 'Crystal Hollows' && Math.abs(Player.getY() - this.tunnelY) <= 0.12) {
@@ -401,7 +403,9 @@ class ScathaMacro extends ModuleBase {
         if (state === 'COOLDOWN') this.cooldownY = Player.getY();
         this.progressPoint = null;
         this.progressAt = this.readyAt;
-        if (this.autoToggleHotmPerks && (state === 'FORWARD' || state === 'BACKWARD')) {
+        // Always enforce the required HOTM perk state while auto-toggle is enabled,
+        // regardless of whether different loadouts are used for mining directions.
+        if (this.autoToggleHotmPerks && (state === 'FORWARD' || state === 'BACKWARD' || state === 'TURN')) {
             const enabled = state === 'BACKWARD';
             if (this.hotmPerksEnabled !== enabled) {
                 this.hotmRequest = {
@@ -704,7 +708,7 @@ class ScathaMacro extends ModuleBase {
             case 'TURN':
                 if (!this.turnGoal) {
                     this.turnOrigin = center({ ...position(), y: this.tunnelY });
-                    this.turnGoal = this.offset(this.turnOrigin, this.turnDirection(), randomInt(4, 6));
+                    this.turnGoal = this.offset(this.turnOrigin, this.turnDirection(), randomInt(5, 7));
                 }
                 this.randomizeCorridor();
                 break;
@@ -766,6 +770,8 @@ class ScathaMacro extends ModuleBase {
     switchLoadout(number, nextState, transitionDelay = this.actionDelay) {
         if (nextState === 'WAIT_WORM') transitionDelay = 0;
         if (this.currentLoadout === number) return this.setState(nextState, transitionDelay);
+        // A loadout switch replaces the entire HOTM tree, invalidating the
+        // current perk state. Unchanged loadouts keep the verified state.
         this.hotmPerksEnabled = null;
         this.loadoutRequest = { number, nextState, transitionDelay, phase: 'OPEN', attempts: 0, dueAt: 0 };
         this.setState('LOADOUT', transitionDelay);
@@ -1782,18 +1788,15 @@ class ScathaMacro extends ModuleBase {
     }
 
     useMiningAbility() {
-        if (!this.useTunnelVision || !ABILITY_STATES.has(this.state)) {
+        // Do not infer readiness from elapsed time or the generic tab-list status:
+        // those cannot confirm that Tunnel Vision is the selected ability.
+        if (!this.useTunnelVision || !ABILITY_STATES.has(this.state) || !this.abilityFromChat) {
             this.abilityUseAt = 0;
             this.abilityClickPending = false;
             return false;
         }
         const now = Date.now();
-        if (!this.abilityUseAt) {
-            if (now - this.lastAbilityUseAt < ABILITY_RETRY_DELAY_MS) return false;
-            const available = /\bavailable\b/i.test(getPickaxeAbilityStatus());
-            if (!available && !this.abilityFromChat && this.lastAbilityUseAt && now - this.lastAbilityUseAt < ABILITY_FALLBACK_COOLDOWN_MS) return false;
-            this.abilityUseAt = now + this.delay(this.actionDelay);
-        }
+        if (!this.abilityUseAt) this.abilityUseAt = now + this.delay(this.actionDelay);
         if (now < this.abilityUseAt) return false;
         const looking = getLookingAt(4.5);
         if (looking && isChest(blockName(looking))) return false;
@@ -1804,7 +1807,6 @@ class ScathaMacro extends ModuleBase {
         }
         if (Client.getMinecraft().gameMode.isDestroying() || !this.selectSlot(this.getMiningSlot())) return true;
         Client.rightClick();
-        this.lastAbilityUseAt = now;
         this.abilityFromChat = false;
         this.abilityUseAt = 0;
         this.abilityClickPending = false;
