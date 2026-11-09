@@ -5,7 +5,7 @@ import { ModuleBase } from '../../utils/ModuleBase';
 import { ClientboundLevelParticlesPacket, getLevelParticleData } from '../../utils/Packets';
 import { getLookingAt, getVisiblePoint, testPointNative } from '../../utils/Raytrace';
 import { registerSkyblockEvent } from '../../utils/SkyblockEvents';
-import { getArea } from '../../utils/TabListUtils';
+import { getArea, getPickaxeAbilityStatus } from '../../utils/TabListUtils';
 import { Mouse } from '../../utils/Ungrab';
 import Pathfinder from '../../utils/pathfinder/PathFinder';
 import { Aote } from '../../utils/pathfinder/PathWalker/PathAote';
@@ -77,6 +77,8 @@ const isInLavaScanRegion = (point) => LAVA_SCAN_CENTERS.some(([x, z]) =>
     Math.abs(point.x - x) < LAVA_SCAN_HALF_SIZE && Math.abs(point.z - z) < LAVA_SCAN_HALF_SIZE
 );
 const ABILITY_STATES = new Set(['FORWARD', 'BACKWARD', 'TURN', 'DESCEND']);
+const ABILITY_FALLBACK_COOLDOWN_MS = 200000;
+const ABILITY_RETRY_DELAY_MS = 5000;
 const HOTM_PERKS = ['Efficient Miner', 'Mole'];
 const HOTM_OPEN_TIMEOUT_MS = 10000;
 const HOTM_PERK_TIMEOUT_MS = 4000;
@@ -147,14 +149,8 @@ class ScathaMacro extends ModuleBase {
         registerSkyblockEvent('death', () => {
             if (this.enabled) this.switchLobby('death');
         });
-        registerSkyblockEvent('abilityready', (event) => {
-            if (!this.enabled || !this.useTunnelVision) return;
-            const message = cleanChat(event.message.getUnformattedText());
-            // Other pickaxe abilities share the ready event. Only activate Tunnel Vision.
-            const tunnelVisionReady = /^(?:(?:Your|Pickaxe Ability:)\s+)?Tunnel Vision(?:\s+ability)?\s+is now available!$/i.test(message);
-            this.abilityFromChat = tunnelVisionReady;
-            this.abilityUseAt = tunnelVisionReady ? Date.now() + this.delay(this.actionDelay) : 0;
-            this.abilityClickPending = false;
+        registerSkyblockEvent('abilityready', () => {
+            if (this.enabled && this.useTunnelVision) this.abilityFromChat = true;
         });
         for (const event of ['abilityused', 'abilitycooldown']) {
             registerSkyblockEvent(event, () => {
@@ -162,6 +158,7 @@ class ScathaMacro extends ModuleBase {
                 this.abilityFromChat = false;
                 this.abilityUseAt = 0;
                 this.abilityClickPending = false;
+                this.lastAbilityUseAt = Date.now();
             });
         }
         registerSkyblockEvent('emptydrill', () => {
@@ -256,6 +253,7 @@ class ScathaMacro extends ModuleBase {
         this.abilityFromChat = false;
         this.abilityUseAt = 0;
         this.abilityClickPending = false;
+        this.lastAbilityUseAt = 0;
         this.resetLobby();
         this.miningSpeed = MiningUtils.getMiningSpeed('Crystal Hollows');
         if (getArea() === 'Crystal Hollows' && Math.abs(Player.getY() - this.tunnelY) <= 0.12) {
@@ -1788,15 +1786,18 @@ class ScathaMacro extends ModuleBase {
     }
 
     useMiningAbility() {
-        // Do not infer readiness from elapsed time or the generic tab-list status:
-        // those cannot confirm that Tunnel Vision is the selected ability.
-        if (!this.useTunnelVision || !ABILITY_STATES.has(this.state) || !this.abilityFromChat) {
+        if (!this.useTunnelVision || !ABILITY_STATES.has(this.state)) {
             this.abilityUseAt = 0;
             this.abilityClickPending = false;
             return false;
         }
         const now = Date.now();
-        if (!this.abilityUseAt) this.abilityUseAt = now + this.delay(this.actionDelay);
+        if (!this.abilityUseAt) {
+            if (now - this.lastAbilityUseAt < ABILITY_RETRY_DELAY_MS) return false;
+            const available = /\bavailable\b/i.test(getPickaxeAbilityStatus());
+            if (!available && !this.abilityFromChat && this.lastAbilityUseAt && now - this.lastAbilityUseAt < ABILITY_FALLBACK_COOLDOWN_MS) return false;
+            this.abilityUseAt = now + this.delay(this.actionDelay);
+        }
         if (now < this.abilityUseAt) return false;
         const looking = getLookingAt(4.5);
         if (looking && isChest(blockName(looking))) return false;
@@ -1807,6 +1808,7 @@ class ScathaMacro extends ModuleBase {
         }
         if (Client.getMinecraft().gameMode.isDestroying() || !this.selectSlot(this.getMiningSlot())) return true;
         Client.rightClick();
+        this.lastAbilityUseAt = now;
         this.abilityFromChat = false;
         this.abilityUseAt = 0;
         this.abilityClickPending = false;
