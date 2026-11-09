@@ -401,8 +401,8 @@ class ScathaMacro extends ModuleBase {
         if (state === 'COOLDOWN') this.cooldownY = Player.getY();
         this.progressPoint = null;
         this.progressAt = this.readyAt;
-        // Always enforce the required HOTM perk state while auto-toggle is enabled,
-        // regardless of whether different loadouts are used for mining directions.
+        // Perk toggling is controlled only by its setting and the mining state;
+        // loadout changes do not invalidate this verified state.
         if (this.autoToggleHotmPerks && (state === 'FORWARD' || state === 'BACKWARD' || state === 'TURN')) {
             const enabled = state === 'BACKWARD';
             if (this.hotmPerksEnabled !== enabled) {
@@ -768,9 +768,8 @@ class ScathaMacro extends ModuleBase {
     switchLoadout(number, nextState, transitionDelay = this.actionDelay) {
         if (nextState === 'WAIT_WORM') transitionDelay = 0;
         if (this.currentLoadout === number) return this.setState(nextState, transitionDelay);
-        // A loadout switch replaces the entire HOTM tree, invalidating the
-        // current perk state. Unchanged loadouts keep the verified state.
-        this.hotmPerksEnabled = null;
+        // Loadout switching is independent of automatic HOTM perk toggling.
+        // Preserve the last verified perk state across all loadout changes.
         this.loadoutRequest = { number, nextState, transitionDelay, phase: 'OPEN', attempts: 0, dueAt: 0 };
         this.setState('LOADOUT', transitionDelay);
     }
