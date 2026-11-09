@@ -70,6 +70,9 @@ const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_TUNNEL_HALF_LENGTH = 32;
 const WORM_TUNNEL_HALF_WIDTH = 1.5;
 const FORWARD_STOP_DISTANCE = 2;
+const BACKWARD_ARRIVAL_DISTANCE = 0.45;
+const TUNNEL_RETURN_ALIGN_MAX_DISTANCE = 6;
+const TUNNEL_RETURN_ALIGN_TIMEOUT_MS = 6000;
 // Search for source lava only in four square horizontal regions; the Y=46..64 bounds are unchanged.
 const LAVA_SCAN_CENTERS = [[565, 565], [465, 535], [470, 500], [565, 490]];
 const LAVA_SCAN_HALF_SIZE = 30;
@@ -1539,24 +1542,31 @@ class ScathaMacro extends ModuleBase {
     mineBackward() {
         const coordinate = this.lane.axis === 'x' ? Player.getX() : Player.getZ();
         const remaining = (coordinate - this.forwardStart[this.lane.axis]) * this.lane.sign;
-        if (remaining <= 0.45) return this.switchLoadout(this.forwardLoadout, 'RETURN');
+        if (remaining <= BACKWARD_ARRIVAL_DISTANCE) return this.switchLoadout(this.forwardLoadout, 'RETURN');
         const direction = { ...this.lane, sign: -this.lane.sign };
+        // Never scan beyond the return point. Bedrock on the far side of the
+        // original start is not an obstacle to this backward pass.
+        const scanDistance = Math.max(0, Math.min(
+            FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2,
+            remaining - BACKWARD_ARRIVAL_DISTANCE
+        ));
         const overlapping = this.overlappingChest();
         if (overlapping) return this.openChest(overlapping);
         if (this.backwardObstacle) {
-            const blocker = this.blockingAhead(direction, FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2);
+            const blocker = this.blockingAhead(direction, scanDistance);
             if (blocker && !blocker.unknown && isChest(blockName(blocker)) && !this.openedChests.has(key(blocker))) return this.openChest(blocker);
             this.clearForwardObstacles(direction, 'backwardObstacle');
             return;
         }
         if (!this.selectSlot(this.getMiningSlot())) return;
-        const obstacle = this.blockingAhead(direction, FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2);
+        const obstacle = this.blockingAhead(direction, scanDistance);
         if (obstacle) {
             if (obstacle.unknown) {
                 this.stopControls();
                 return this.checkProgress(10000);
             }
-            if (isChest(blockName(obstacle)) && !this.openedChests.has(key(obstacle))) return this.openChest(obstacle);
+            const obstacleName = blockName(obstacle);
+            if (isChest(obstacleName) && !this.openedChests.has(key(obstacle))) return this.openChest(obstacle);
             if (!this.isForwardTunnelBlock(obstacle)) {
                 this.backwardBlocked = null;
                 Client.setKey('leftclick', false);
@@ -1564,17 +1574,20 @@ class ScathaMacro extends ModuleBase {
                 this.moveAlongLane(direction);
                 return this.checkProgress(15000);
             }
-            if (blockName(obstacle) === 'minecraft:bedrock') return this.switchLobby('Bedrock blocks backward mining');
             Client.stopMovement();
             Client.setKey('leftclick', false);
             const now = Date.now();
             const obstacleKey = key(obstacle);
             const blocked = this.backwardBlocked;
-            if (!blocked || blocked.key !== obstacleKey || (coordinate - blocked.coordinate) * direction.sign > 0.05) {
-                this.backwardBlocked = { key: obstacleKey, coordinate, dueAt: now + this.delay(this.actionDelay) };
+            if (!blocked || blocked.key !== obstacleKey || blocked.name !== obstacleName ||
+                (coordinate - blocked.coordinate) * direction.sign > 0.05) {
+                this.backwardBlocked = { key: obstacleKey, name: obstacleName, coordinate, dueAt: now + this.delay(this.actionDelay) };
             } else if (now >= blocked.dueAt) {
                 this.backwardBlocked = null;
-                this.backwardObstacle = { target: { ...obstacle, name: blockName(obstacle), aim: null }, candidates: null };
+                // Recheck after the action delay, including bedrock. A one-tick
+                // collision or a block beyond the stop point must not cause a lobby hop.
+                if (obstacleName === 'minecraft:bedrock') return this.switchLobby('Bedrock blocks backward mining');
+                this.backwardObstacle = { target: { ...obstacle, name: obstacleName, aim: null }, candidates: null };
                 this.mineTarget = null;
                 this.clearForwardObstacles(direction, 'backwardObstacle');
                 return;
@@ -1748,7 +1761,7 @@ class ScathaMacro extends ModuleBase {
         const now = Date.now();
         if (!mining) {
             const name = point && blockName(point);
-            if (name && !AIR.has(name) && name !== HARDSTONE && name !== 'minecraft:bedrock' && !isChest(name)) {
+            if (name && !AIR.has(name) && name !== 'minecraft:bedrock' && !isChest(name)) {
                 if (!this.freeMiningTarget || this.freeMiningTarget.key !== key(point) || this.freeMiningTarget.name !== name) {
                     this.freeMiningTarget = this.createMineTarget(point, name);
                 }
@@ -1767,7 +1780,7 @@ class ScathaMacro extends ModuleBase {
                 this.switchLobby('A tunnel block did not break within its mining timeout');
                 return false;
             }
-            if (mining.name !== HARDSTONE && mining.attemptMs >= mining.retryAfterMs) {
+            if (mining.attemptMs >= mining.retryAfterMs) {
                 Client.setKey('leftclick', false);
                 mining.attemptMs = 0;
                 mining.retryPending = true;
@@ -2404,7 +2417,7 @@ class ScathaMacro extends ModuleBase {
     }
 
     returnToSnapshot(snapshot, after) {
-        this.returnJob = { snapshot, after, result: null };
+        this.returnJob = { snapshot, after, result: null, alignmentAttempted: false, alignment: null };
         this.setState('RESUME_PATH');
     }
 
@@ -2416,12 +2429,84 @@ class ScathaMacro extends ModuleBase {
             job.result = true;
             return;
         }
+        // Worm combat may leave us beside the narrow tunnel. Walk straight
+        // back onto its centerline first, so pathfinding starts inside it.
+        if (!job.alignmentAttempted && (job.after === 'COOLDOWN' || job.after === 'COMBAT_RESUME')) {
+            job.alignmentAttempted = true;
+            job.alignment = this.createTunnelReturnAlignment(point);
+            if (job.alignment) return;
+        }
+        this.startPath([[Math.floor(point.x), Math.floor(point.y) - 1, Math.floor(point.z)]], job);
+    }
+
+    createTunnelReturnAlignment(returnPoint) {
+        const search = this.wormSearch;
+        const here = position();
+        if (!search || !this.lane || !Player.getPlayer().onGround() ||
+            Math.abs(here.y - this.tunnelY) > 0.25 || Math.abs(returnPoint.y - this.tunnelY) > 0.25) return null;
+
+        const axis = search.crossAxis;
+        const delta = search.cross - here[axis];
+        if (Math.abs(delta) > TUNNEL_RETURN_ALIGN_MAX_DISTANCE) return null;
+        const goal = { ...here, y: this.tunnelY };
+        goal[axis] = search.cross;
+        const direction = { axis, sign: Math.sign(delta) };
+        const world = World.getWorld();
+        // Only try the direct movement when the whole short route has room
+        // for two blocks of player height and solid supporting floor.
+        for (let step = 0; step <= Math.abs(delta) + 0.5; step += 0.5) {
+            const test = this.offset(here, direction, Math.min(step, Math.abs(delta)));
+            test.y = this.tunnelY;
+            const floor = new BP(Math.floor(test.x), Math.floor(test.y) - 1, Math.floor(test.z));
+            if (!this.passable(test) || !this.passable({ ...test, y: test.y + 1 }) ||
+                !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) return null;
+        }
+        if (Math.abs(delta) > 0.2 && this.blockingAhead(direction, Math.abs(delta))) return null;
+        return { point: goal, startedAt: Date.now(), lastProgressAt: Date.now(), lastDistance: flatDistance(goal) };
+    }
+
+    tickTunnelReturnAlignment(job) {
+        const alignment = job.alignment;
+        const now = Date.now();
+        const distance = flatDistance(alignment.point);
+        if (now - alignment.startedAt > TUNNEL_RETURN_ALIGN_TIMEOUT_MS ||
+            !Player.getPlayer().onGround() || Math.abs(Player.getY() - this.tunnelY) > 0.25) {
+            return this.fallbackTunnelReturnPath(job);
+        }
+        if (distance > 0.2) {
+            const axis = this.wormSearch.crossAxis;
+            const direction = { axis, sign: Math.sign(alignment.point[axis] - position()[axis]) };
+            if (direction.sign === 0 || this.blockingAhead(direction, Math.min(distance, 0.8)))
+                return this.fallbackTunnelReturnPath(job);
+            if (distance < alignment.lastDistance - 0.05) {
+                alignment.lastDistance = distance;
+                alignment.lastProgressAt = now;
+            } else if (now - alignment.lastProgressAt > 1500) return this.fallbackTunnelReturnPath(job);
+            Client.setKey('leftclick', false);
+            setKeysForStraightLineCoords(alignment.point.x, alignment.point.y, alignment.point.z, false);
+            return;
+        }
+        Client.stopMovement();
+        const target = calculateAbsoluteAngles({ ...job.snapshot.point, y: Player.getY() + 1.4 });
+        this.aimAt({ yaw: target.yaw, pitch: 0 }, 'return:face');
+        if (this.rotation.motion?.targetId !== 'return:face' || !this.rotation.motion.complete ||
+            Math.abs(wrapTo180(Player.getYaw() - target.yaw)) > 3 || Math.abs(Player.getPitch()) > 3) return;
+        job.alignment = null;
+        const point = job.snapshot.point;
+        this.startPath([[Math.floor(point.x), Math.floor(point.y) - 1, Math.floor(point.z)]], job);
+    }
+
+    fallbackTunnelReturnPath(job) {
+        this.stopControls();
+        job.alignment = null;
+        const point = job.snapshot.point;
         this.startPath([[Math.floor(point.x), Math.floor(point.y) - 1, Math.floor(point.z)]], job);
     }
 
     tickReturnPath() {
         const job = this.returnJob;
         if (job.result === false || Date.now() - this.startedAt > 60000) return this.switchLobby('Could not return to the mining position');
+        if (job.alignment) return this.tickTunnelReturnAlignment(job);
         if (job.result !== true) {
             if (!Pathfinder.isPathing()) this.startReturnPath();
             return;
