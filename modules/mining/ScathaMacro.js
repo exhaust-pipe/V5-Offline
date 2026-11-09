@@ -36,6 +36,7 @@ const blockName = (point) => World.getBlockAt(point.x, point.y, point.z)?.type?.
 const key = (point) => `${point.x},${point.y},${point.z}`;
 const isChest = (name) => name === 'minecraft:chest' || name === 'minecraft:trapped_chest';
 const WORM_SPAWN_TIMEOUT_MS = 60000;
+const WORM_CONFIRM_DELAY_MS = 500;
 const WORM_DISAPPEAR_GRACE_MS = 5000;
 const WORM_COMBAT_OPTIONS = { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true, ignoreArmorStandPickable: true };
 // Stop moving in shafts and while solving chests. Ordinary tunnel mining may
@@ -264,6 +265,7 @@ class ScathaMacro extends ModuleBase {
             this.wormSearch = null;
             this.wormLastStandPosition = null;
             this.wormTargetUuid = null;
+            this.wormConfirmation = null;
             this.wormTargets = [];
             this.wormCandidates?.clear();
             this.wormNametags?.clear();
@@ -298,6 +300,7 @@ class ScathaMacro extends ModuleBase {
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
+        this.wormConfirmation = null;
         this.wormTargets = [];
         this.wormCandidates = new Map();
         this.wormNametags = new Map();
@@ -538,6 +541,7 @@ class ScathaMacro extends ModuleBase {
             const elapsed = Date.now() - this.guiPausedAt;
             this.startedAt += elapsed;
             if (this.state === 'WAIT_WORM' && this.wormWarningAt) this.wormWarningAt += elapsed;
+            if (this.state === 'WAIT_WORM' && this.wormConfirmation) this.wormConfirmation.startedAt += elapsed;
             if (this.state === 'WORM' && this.wormLastSeenAt) this.wormLastSeenAt += elapsed;
             this.forwardUntil += elapsed;
             this.progressAt += elapsed;
@@ -655,6 +659,7 @@ class ScathaMacro extends ModuleBase {
                 this.randomizeCorridor();
                 break;
             case 'WAIT_WORM':
+                this.wormConfirmation = null;
                 this.wormTargets = [];
                 this.wormMissingAt = 0;
                 break;
@@ -1955,6 +1960,7 @@ class ScathaMacro extends ModuleBase {
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
+        this.wormConfirmation = null;
         this.wormCandidates.clear();
         this.wormNametags.clear();
         if (this.state === 'LOADOUT') {
@@ -1988,11 +1994,13 @@ class ScathaMacro extends ModuleBase {
         }
     }
 
-    findWormTargets() {
+    findWormTargets(requireFresh = false) {
         if (!this.wormSearch) return [];
 
         const now = Date.now();
         const available = new Map();
+        const freshSegments = new Map();
+        const freshNametags = new Map();
         const updatedCandidates = new Map();
         let nearestApproachPoint = null;
         let nearestApproachDistance = Infinity;
@@ -2009,14 +2017,17 @@ class ScathaMacro extends ModuleBase {
                 // A visible worm nametag means combat is still in progress even
                 // if its player-head stand is temporarily missing.
                 this.wormLastSeenAt = now;
-                this.wormNametags.set(uuid, {
+                const marker = {
                     point: { x: stand.getX(), y: stand.getY(), z: stand.getZ() },
                     seenAt: now,
-                });
+                };
+                this.wormNametags.set(uuid, marker);
+                freshNametags.set(uuid, marker);
             }
 
             if (!this.isWormSegment(stand)) continue;
             available.set(uuid, stand);
+            freshSegments.set(uuid, stand);
             updatedCandidates.set(uuid, { target: stand, seenAt: now });
 
             // Remember actual coordinates separately from entity wrappers:
@@ -2051,9 +2062,9 @@ class ScathaMacro extends ModuleBase {
         let nearest = null;
         let nearestDistanceSq = Infinity;
         const maxDistanceSq = WORM_NAMETAG_HEAD_MAX_DISTANCE ** 2;
-        for (const marker of this.wormNametags.values()) {
+        for (const marker of (requireFresh ? freshNametags : this.wormNametags).values()) {
             const point = new Vec3d(marker.point.x, marker.point.y, marker.point.z);
-            for (const segment of available.values()) {
+            for (const segment of (requireFresh ? freshSegments : available).values()) {
                 try {
                     const distanceSq = segment.toMC().getBoundingBox().distanceToSqr(point);
                     if (distanceSq > maxDistanceSq || distanceSq >= nearestDistanceSq) continue;
@@ -2106,15 +2117,33 @@ class ScathaMacro extends ModuleBase {
 
     waitForWorm() {
         if (!this.combatResume) return this.stop('Missing combat return position.');
-        const targets = this.findWormTargets();
-        if (targets.length) {
-            this.wormTargetUuid = CombatBot.getTargetUuid(targets[0]);
-            this.wormTargets = [targets[0]];
-            this.setState('WORM', 0);
-            this.message('&aWorm spawned. Starting combat.');
-            return this.fightWorm();
+
+        const now = Date.now();
+        const verifying = !!this.wormConfirmation && now - this.wormConfirmation.startedAt >= WORM_CONFIRM_DELAY_MS;
+        // Require a current nametag-to-head match for the second sample.
+        // The previous entity caches are only used for preliminary detection.
+        const targets = this.findWormTargets(verifying);
+        const target = targets[0] || null;
+        const uuid = target ? CombatBot.getTargetUuid(target) : null;
+
+        if (verifying) {
+            if (uuid && uuid === this.wormConfirmation.uuid) {
+                this.wormTargetUuid = uuid;
+                this.wormTargets = [target];
+                this.wormConfirmation = null;
+                this.setState('WORM', 0);
+                this.message('&aWorm confirmed. Starting combat.');
+                return this.fightWorm();
+            }
+            // Restart the 500 ms check for a new head, or wait until one returns.
+            this.wormConfirmation = uuid ? { uuid, startedAt: now } : null;
+        } else if (!this.wormConfirmation && uuid) {
+            this.wormConfirmation = { uuid, startedAt: now };
         }
-        if (Date.now() - this.wormWarningAt >= WORM_SPAWN_TIMEOUT_MS) return this.switchLobby('No Stoneworm or Scatha appeared within 60 seconds');
+
+        if (now - this.wormWarningAt >= WORM_SPAWN_TIMEOUT_MS) return this.switchLobby('No Stoneworm or Scatha appeared within 60 seconds');
+        // Approach the latest observed head while confirmation is pending or
+        // its nametag is hidden. Movement never waits for a second sample.
         return this.approachLastWormPosition();
     }
 
@@ -2174,6 +2203,7 @@ class ScathaMacro extends ModuleBase {
         this.wormSearch = null;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
+        this.wormConfirmation = null;
         this.wormTargets = [];
         this.wormCandidates.clear();
         this.wormNametags.clear();
