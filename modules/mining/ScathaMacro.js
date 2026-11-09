@@ -1059,8 +1059,8 @@ class ScathaMacro extends ModuleBase {
         }
         if (Date.now() - this.startedAt > 120000) return this.switchLobby('Entry shaft descent timed out');
         if (!this.alignLavaColumn()) return;
-        const point = { x: Math.floor(Player.getX()), y: Math.floor(Player.getY() - 0.05), z: Math.floor(Player.getZ()) };
-        if (point.y < this.tunnelY) return;
+        // Use the actual supporting block: walls/fences can extend above their block Y.
+        const point = this.miningBlockBelowPlayer();
         if (blockName(point) === 'minecraft:bedrock') return this.switchLobby('Bedrock blocks the entry shaft');
         this.mineBlock(point, true);
     }
@@ -1294,6 +1294,26 @@ class ScathaMacro extends ModuleBase {
         return state.getFluidState().isEmpty() && state.getCollisionShape(world, pos).isEmpty();
     }
 
+    miningBlockBelowPlayer(offset = 0.05) {
+        const feetY = Player.getY();
+        const point = { x: Math.floor(Player.getX()), y: Math.floor(feetY - offset), z: Math.floor(Player.getZ()) };
+        if (!AIR.has(blockName(point))) return point;
+        const below = { ...point, y: point.y - 1 };
+        if (!this.loaded(below)) return point;
+        const world = World.getWorld();
+        const pos = new BP(below.x, below.y, below.z);
+        const bounds = Player.getPlayer().getBoundingBox();
+        // Walls, fences and similar blocks can support the player 1.5 blocks above their base.
+        // Their block above is air even though the player is standing on their collision shape.
+        for (const box of world.getBlockState(pos).getCollisionShape(world, pos).toAabbs()) {
+            if (box.maxY <= 1 || Math.abs(below.y + box.maxY - feetY) > 0.12) continue;
+            if (bounds.maxX <= below.x + box.minX || bounds.minX >= below.x + box.maxX ||
+                bounds.maxZ <= below.z + box.minZ || bounds.minZ >= below.z + box.maxZ) continue;
+            return below;
+        }
+        return point;
+    }
+
     scanTunnel(y, direction, origin = position()) {
         let run = 0;
         const side = { axis: direction.axis === 'x' ? 'z' : 'x', sign: 1 };
@@ -1420,6 +1440,17 @@ class ScathaMacro extends ModuleBase {
             z: Math.max(point.z + 0.1, Math.min(point.z + 0.9, eye.z())),
         });
         if (closest) return closest;
+        const world = World.getWorld();
+        const pos = new BP(point.x, point.y, point.z);
+        // A partial block may have no selectable surface at the cube center.
+        for (const box of world.getBlockState(pos).getCollisionShape(world, pos).toAabbs()) {
+            const aim = trace({
+                x: point.x + (box.minX + box.maxX) / 2,
+                y: point.y + (box.minY + box.maxY) / 2,
+                z: point.z + (box.minZ + box.maxZ) / 2,
+            });
+            if (aim) return aim;
+        }
         const visible = getVisiblePoint(point.x, point.y, point.z);
         return visible ? trace({ x: visible[0], y: visible[1], z: visible[2] }) : null;
     }
@@ -1762,6 +1793,8 @@ class ScathaMacro extends ModuleBase {
             retryPending: false,
             lastTick: now,
             changedAt: now + Math.min(expectedMs, 150),
+            aim: null,
+            nextAimCheckAt: now + 350,
         };
     }
 
@@ -1861,11 +1894,19 @@ class ScathaMacro extends ModuleBase {
         const mining = this.mineTarget;
         // Stay inside the selected face until the server changes it; a timer alone can abandon slow gemstones.
         const wobble = vertical ? 0 : 0.12 * Math.sin(now / 300);
-        const aim = aimPoint || { x: point.x + 0.5, y: point.y + 0.5 + wobble, z: point.z + 0.5 };
+        const aim = aimPoint || mining.aim || { x: point.x + 0.5, y: point.y + 0.5 + wobble, z: point.z + 0.5 };
         this.aimAt(aim, `mine:${mining.key}`);
         const looking = getLookingAt(4.5);
         const onTarget = looking && looking.x === point.x && looking.y === point.y && looking.z === point.z;
         if (!onTarget) {
+            // Only ray-trace alternatives after the default aim has settled and missed.
+            if (!aimPoint && now >= mining.nextAimCheckAt) {
+                const angles = calculateAbsoluteAngles(aim);
+                if (Math.abs(wrapTo180(Player.getYaw() - angles.yaw)) < 4 && Math.abs(Player.getPitch() - angles.pitch) < 4) {
+                    mining.aim = this.getMiningAim(point);
+                    mining.nextAimCheckAt = now + 600;
+                }
+            }
             Client.setKey('leftclick', false);
             mining.attemptMs = 0;
             mining.lastTick = now;
@@ -2697,15 +2738,16 @@ class ScathaMacro extends ModuleBase {
             this.recovery = null;
             return this.returnToSnapshot(snapshot, after);
         }
-        const supportName = blockName(foot);
+        const support = this.miningBlockBelowPlayer(0.01);
+        const supportName = blockName(support);
         if (supportName?.endsWith('_slab')) {
-            this.mineBlock(foot, true);
+            this.mineBlock(support, true);
             return;
         }
         if (y > recovery.goalY + 0.12) {
             if (foot.y < recovery.goalY) return;
             if (supportName === 'minecraft:bedrock') return this.switchLobby('Bedrock prevents downward recovery');
-            this.mineBlock(foot, true);
+            this.mineBlock(support, true);
             return;
         }
         if (!player.onGround()) {
