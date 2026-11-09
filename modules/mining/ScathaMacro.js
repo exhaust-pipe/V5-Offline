@@ -70,6 +70,8 @@ const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_TUNNEL_HALF_LENGTH = 32;
 const WORM_TUNNEL_HALF_WIDTH = 1.5;
 const FORWARD_STOP_DISTANCE = 2;
+const LANE_CORRECTION_MIN = 0.29;
+const LANE_CORRECTION_MAX = 0.71;
 const BACKWARD_ARRIVAL_DISTANCE = 0.45;
 const TUNNEL_RETURN_ALIGN_MAX_DISTANCE = 6;
 const TUNNEL_RETURN_ALIGN_TIMEOUT_MS = 6000;
@@ -1195,12 +1197,16 @@ class ScathaMacro extends ModuleBase {
         this.laneStart[this.lane.axis] = point[this.lane.axis];
     }
 
+    inLaneRange(coordinate, laneCenter) {
+        const laneBlock = Math.floor(laneCenter);
+        return coordinate >= laneBlock + LANE_CORRECTION_MIN && coordinate <= laneBlock + LANE_CORRECTION_MAX;
+    }
+
     moveAlongLane(direction, origin = this.laneStart, facing = this.lane) {
         const other = direction.axis === 'x' ? 'z' : 'x';
         const coordinate = position()[other];
-        const laneBlock = Math.floor(origin[other]);
         const deviation = Math.abs(coordinate - origin[other]);
-        if (coordinate < laneBlock + 0.29 || coordinate > laneBlock + 0.71) this.correctingLane = true;
+        if (!this.inLaneRange(coordinate, origin[other])) this.correctingLane = true;
         else if (deviation <= 0.15) this.correctingLane = false;
         if (this.correctingLane) {
             const goal = this.offset(position(), direction, 0.35);
@@ -2450,19 +2456,29 @@ class ScathaMacro extends ModuleBase {
         if (Math.abs(delta) > TUNNEL_RETURN_ALIGN_MAX_DISTANCE) return null;
         const goal = { ...here, y: this.tunnelY };
         goal[axis] = search.cross;
+        const alignment = { point: goal, startedAt: Date.now(), lastProgressAt: Date.now(), lastDistance: flatDistance(goal) };
+        // Already within the normal mining corridor's no-correction range:
+        // turn toward the return point without moving to the exact center.
+        if (this.inLaneRange(here[axis], search.cross)) return alignment;
+
         const direction = { axis, sign: Math.sign(delta) };
+        const laneBlock = Math.floor(search.cross);
+        const nearestEdge = direction.sign > 0
+            ? laneBlock + LANE_CORRECTION_MIN
+            : laneBlock + LANE_CORRECTION_MAX;
+        const travel = Math.abs(nearestEdge - here[axis]);
         const world = World.getWorld();
-        // Only try the direct movement when the whole short route has room
-        // for two blocks of player height and solid supporting floor.
-        for (let step = 0; step <= Math.abs(delta) + 0.5; step += 0.5) {
-            const test = this.offset(here, direction, Math.min(step, Math.abs(delta)));
+        // Check only as far as the nearest point inside the no-correction
+        // range, not all the way to the center of the tunnel.
+        for (let step = 0; step <= travel + 0.5; step += 0.5) {
+            const test = this.offset(here, direction, Math.min(step, travel));
             test.y = this.tunnelY;
             const floor = new BP(Math.floor(test.x), Math.floor(test.y) - 1, Math.floor(test.z));
             if (!this.passable(test) || !this.passable({ ...test, y: test.y + 1 }) ||
                 !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) return null;
         }
-        if (Math.abs(delta) > 0.2 && this.blockingAhead(direction, Math.abs(delta))) return null;
-        return { point: goal, startedAt: Date.now(), lastProgressAt: Date.now(), lastDistance: flatDistance(goal) };
+        if (this.blockingAhead(direction, travel)) return null;
+        return alignment;
     }
 
     tickTunnelReturnAlignment(job) {
@@ -2473,8 +2489,8 @@ class ScathaMacro extends ModuleBase {
             !Player.getPlayer().onGround() || Math.abs(Player.getY() - this.tunnelY) > 0.25) {
             return this.fallbackTunnelReturnPath(job);
         }
-        if (distance > 0.2) {
-            const axis = this.wormSearch.crossAxis;
+        const axis = this.wormSearch.crossAxis;
+        if (!this.inLaneRange(position()[axis], this.wormSearch.cross)) {
             const direction = { axis, sign: Math.sign(alignment.point[axis] - position()[axis]) };
             if (direction.sign === 0 || this.blockingAhead(direction, Math.min(distance, 0.8)))
                 return this.fallbackTunnelReturnPath(job);
