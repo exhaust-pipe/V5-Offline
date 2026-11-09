@@ -2504,9 +2504,12 @@ class ScathaMacro extends ModuleBase {
         }
         Client.stopMovement();
         const target = calculateAbsoluteAngles({ ...job.snapshot.point, y: Player.getY() + 1.4 });
-        this.aimAt({ yaw: target.yaw, pitch: 0 }, 'return:face');
+        // Match the +/-3 degree yaw variation used by forward/backward mining.
+        // Keep one offset per alignment so the target does not jitter each tick.
+        alignment.faceYaw ??= target.yaw + random(-3, 3);
+        this.aimAt({ yaw: alignment.faceYaw, pitch: 0 }, 'return:face');
         if (this.rotation.motion?.targetId !== 'return:face' || !this.rotation.motion.complete ||
-            Math.abs(wrapTo180(Player.getYaw() - target.yaw)) > 3 || Math.abs(Player.getPitch()) > 3) return;
+            Math.abs(wrapTo180(Player.getYaw() - alignment.faceYaw)) > 3 || Math.abs(Player.getPitch()) > 3) return;
         job.alignment = null;
         const point = job.snapshot.point;
         this.startPath([[Math.floor(point.x), Math.floor(point.y) - 1, Math.floor(point.z)]], job);
