@@ -2514,16 +2514,15 @@ class ScathaMacro extends ModuleBase {
             Math.abs(wrapTo180(Player.getYaw() - alignment.faceYaw)) > 3 || Math.abs(Player.getPitch()) > 3) return;
         job.alignment = null;
         const point = job.snapshot.point;
-        const axis = this.wormSearch.axis;
-        const sign = Math.sign(point[axis] - position()[axis]);
+        const returnAxis = this.wormSearch.axis;
+        const sign = Math.sign(point[returnAxis] - position()[returnAxis]);
         if (!sign) return this.fallbackTunnelReturnPath(job);
-        const now = Date.now();
         job.directReturn = {
             yaw: alignment.faceYaw,
-            direction: { axis, sign },
+            direction: { axis: returnAxis, sign },
             startedAt: now,
             lastProgressAt: now,
-            lastRemaining: (point[axis] - position()[axis]) * sign,
+            lastRemaining: (point[returnAxis] - position()[returnAxis]) * sign,
         };
     }
 
