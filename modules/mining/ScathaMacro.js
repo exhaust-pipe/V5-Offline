@@ -164,6 +164,7 @@ class ScathaMacro extends ModuleBase {
                     State: () => this.state,
                     'Tunnel Y': () => this.tunnelY ?? this.targetY,
                     Direction: () => (this.lane ? `${this.lane.sign > 0 ? '+' : '-'}${this.lane.axis.toUpperCase()}` : 'None'),
+                    'Worm spawns': () => this.wormSpawns ?? 0,
                     'Lobby intensity': () => `${this.lobbyIntensity ?? 0}/${this.lobbyThreshold}`,
                     'Exit intensity': () => `${this.exitIntensity ?? 0}/${this.exitThreshold}`,
                 },
@@ -224,6 +225,7 @@ class ScathaMacro extends ModuleBase {
         this.restoreMouseOnDisable = !Client.isUngrabbed();
         Mouse.ungrab();
         this.generation++;
+        this.wormSpawns = 0;
         this.lobbyIntensity = 0;
         this.exitIntensity = 0;
         this.nextDecay = Date.now() + 10000;
@@ -313,6 +315,8 @@ class ScathaMacro extends ModuleBase {
         this.openedChests = new Set();
         this.forwardStart = null;
         this.forwardObstacle = null;
+        this.backwardObstacle = null;
+        this.backwardBlocked = null;
         this.forwardRemaining = null;
         this.turnPending = false;
         this.lavaCandidates = [];
@@ -335,6 +339,7 @@ class ScathaMacro extends ModuleBase {
         this.rotation = null;
         this.forwardAligned = false;
         this.forwardBlocked = null;
+        this.backwardBlocked = null;
         this.correctingLane = false;
         this.freeMiningTarget = null;
     }
@@ -650,6 +655,8 @@ class ScathaMacro extends ModuleBase {
             case 'BACKWARD':
                 this.backwardYaw = this.yaw(this.lane) + random(-3, 3);
                 this.backwardPitch = random(-15, -7);
+                this.backwardObstacle = null;
+                this.backwardBlocked = null;
                 break;
             case 'TURN':
                 if (!this.turnGoal) {
@@ -1138,8 +1145,8 @@ class ScathaMacro extends ModuleBase {
     scanTunnel(y, direction, origin = position()) {
         let run = 0;
         const side = { axis: direction.axis === 'x' ? 'z' : 'x', sign: 1 };
-        for (let step = 1; step <= 24; step++) {
-            if (step > 20 && run === 0) break;
+        for (let step = 1; step <= 34; step++) {
+            if (step > 30 && run === 0) break;
             const point = this.offset({ x: Math.floor(origin.x), y: Math.floor(y), z: Math.floor(origin.z) }, direction, step);
             const column = [
                 { ...point, y: point.y - 1 },
@@ -1184,7 +1191,7 @@ class ScathaMacro extends ModuleBase {
                 this.stopControls();
                 return this.checkProgress(10000);
             }
-            if (scan.open) return this.switchLobby('No five-column enclosed tunnel starts within the next 20 blocks');
+            if (scan.open) return this.switchLobby('No five-column enclosed tunnel starts within the next 30 blocks');
             this.nextTunnelCheck = Date.now() + 5000;
         }
         if (Date.now() >= this.forwardUntil) return this.beginBackward(false);
@@ -1271,7 +1278,7 @@ class ScathaMacro extends ModuleBase {
         return point[other] === Math.floor(this.laneStart[other]) && (point.y === floorY || point.y === floorY + 1);
     }
 
-    exposedForwardBlocks() {
+    exposedForwardBlocks(direction = this.lane) {
         const origin = position();
         const eye = Player.getPlayer().getEyePosition();
         const world = World.getWorld();
@@ -1285,7 +1292,7 @@ class ScathaMacro extends ModuleBase {
             for (let y = floorY; y <= floorY + 1; y++) {
                 for (let z = minZ; z <= maxZ; z++) {
                     const point = { x, y, z };
-                    if ((point[this.lane.axis] + 0.5 - origin[this.lane.axis]) * this.lane.sign <= 0 || !this.loaded(point)) continue;
+                    if ((point[direction.axis] + 0.5 - origin[direction.axis]) * direction.sign <= 0 || !this.loaded(point)) continue;
                     const distance = Math.hypot(
                         Math.max(x - eye.x(), 0, eye.x() - x - 1),
                         Math.max(y - eye.y(), 0, eye.y() - y - 1),
@@ -1296,7 +1303,7 @@ class ScathaMacro extends ModuleBase {
                     if (
                         !name ||
                         AIR.has(name) ||
-                        name === HARDSTONE ||
+                        (name === HARDSTONE && direction.sign === this.lane.sign) ||
                         name === 'minecraft:bedrock' ||
                         this.passable(point) ||
                         (isChest(name) && this.openedChests.has(key(point)))
@@ -1313,8 +1320,8 @@ class ScathaMacro extends ModuleBase {
         return candidates.sort((a, b) => b.distance - a.distance);
     }
 
-    clearForwardObstacles() {
-        const job = this.forwardObstacle;
+    clearForwardObstacles(direction = this.lane, obstacleField = 'forwardObstacle') {
+        const job = this[obstacleField];
         Client.stopMovement();
         Client.setKey('shift', false);
         if (job.target && !this.isForwardTunnelBlock(job.target)) {
@@ -1331,7 +1338,8 @@ class ScathaMacro extends ModuleBase {
             }
             const name = blockName(point);
             if (name === 'minecraft:bedrock') {
-                this.beginBackward(true);
+                if (obstacleField === 'backwardObstacle') this.switchLobby('Bedrock blocks backward mining');
+                else this.beginBackward(true);
                 return false;
             }
             if (isChest(name) && !this.openedChests.has(key(point))) {
@@ -1342,7 +1350,7 @@ class ScathaMacro extends ModuleBase {
                 point.aim ??= this.getMiningAim(point);
                 if (point.aim) {
                     this.mineBlock(point, true, point.aim);
-                    if (this.state === 'FORWARD') this.checkProgress(this.mineTarget ? this.mineTarget.timeoutMs : 15000);
+                    if (this.state === 'FORWARD' || this.state === 'BACKWARD') this.checkProgress(this.mineTarget ? this.mineTarget.timeoutMs : 15000);
                     return false;
                 }
             }
@@ -1352,7 +1360,7 @@ class ScathaMacro extends ModuleBase {
             this.progressAt = Date.now();
         }
         Client.setKey('leftclick', false);
-        job.candidates ??= this.exposedForwardBlocks();
+        job.candidates ??= this.exposedForwardBlocks(direction);
         for (let budget = 0; budget < 2 && job.candidates.length; budget++) {
             const point = job.candidates.pop();
             if (!this.isForwardTunnelBlock(point) || blockName(point) !== point.name) continue;
@@ -1369,9 +1377,11 @@ class ScathaMacro extends ModuleBase {
         }
         if (job.candidates.length) return false;
         this.stopControls();
-        this.forwardObstacle = null;
-        this.forwardPitch = null;
-        this.forwardYaw = null;
+        this[obstacleField] = null;
+        if (obstacleField === 'forwardObstacle') {
+            this.forwardPitch = null;
+            this.forwardYaw = null;
+        }
         this.mineTarget = null;
         this.progressAt = Date.now();
         return true;
@@ -1389,7 +1399,48 @@ class ScathaMacro extends ModuleBase {
         const coordinate = this.lane.axis === 'x' ? Player.getX() : Player.getZ();
         const remaining = (coordinate - this.forwardStart[this.lane.axis]) * this.lane.sign;
         if (remaining <= 0.45) return this.switchLoadout(this.forwardLoadout, 'RETURN');
+        const direction = { ...this.lane, sign: -this.lane.sign };
+        const overlapping = this.overlappingChest();
+        if (overlapping) return this.openChest(overlapping);
+        if (this.backwardObstacle) {
+            const blocker = this.blockingAhead(direction, FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2);
+            if (blocker && !blocker.unknown && isChest(blockName(blocker)) && !this.openedChests.has(key(blocker))) return this.openChest(blocker);
+            this.clearForwardObstacles(direction, 'backwardObstacle');
+            return;
+        }
         if (!this.selectSlot(this.miningSlot)) return;
+        const obstacle = this.blockingAhead(direction, FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2);
+        if (obstacle) {
+            if (obstacle.unknown) {
+                this.stopControls();
+                return this.checkProgress(10000);
+            }
+            if (isChest(blockName(obstacle)) && !this.openedChests.has(key(obstacle))) return this.openChest(obstacle);
+            if (!this.isForwardTunnelBlock(obstacle)) {
+                this.backwardBlocked = null;
+                Client.setKey('leftclick', false);
+                this.correctingLane = true;
+                this.moveAlongLane(direction);
+                return this.checkProgress(15000);
+            }
+            if (blockName(obstacle) === 'minecraft:bedrock') return this.switchLobby('Bedrock blocks backward mining');
+            Client.stopMovement();
+            Client.setKey('leftclick', false);
+            const now = Date.now();
+            const obstacleKey = key(obstacle);
+            const blocked = this.backwardBlocked;
+            if (!blocked || blocked.key !== obstacleKey || (coordinate - blocked.coordinate) * direction.sign > 0.05) {
+                this.backwardBlocked = { key: obstacleKey, coordinate, dueAt: now + this.delay(this.actionDelay) };
+            } else if (now >= blocked.dueAt) {
+                this.backwardBlocked = null;
+                this.backwardObstacle = { target: { ...obstacle, name: blockName(obstacle), aim: null }, candidates: null };
+                this.mineTarget = null;
+                this.clearForwardObstacles(direction, 'backwardObstacle');
+                return;
+            }
+            return this.checkProgress(15000);
+        }
+        this.backwardBlocked = null;
         this.aimAt({ yaw: this.backwardYaw, pitch: this.backwardPitch });
         if (Math.abs(wrapTo180(Player.getYaw() - this.backwardYaw)) > 3 || Math.abs(Player.getPitch() - this.backwardPitch) > 2) {
             Client.stopMovement();
@@ -1397,7 +1448,7 @@ class ScathaMacro extends ModuleBase {
             this.checkProgress(15000);
             return;
         }
-        this.moveAlongLane({ ...this.lane, sign: -this.lane.sign });
+        this.moveAlongLane(direction);
         if (!this.holdMiningAttack(getLookingAt(4.5))) return;
         this.checkProgress(this.freeMiningTarget ? this.freeMiningTarget.timeoutMs : 15000);
     }
@@ -1957,6 +2008,7 @@ class ScathaMacro extends ModuleBase {
             maxY: this.tunnelY + 3,
         };
         this.wormWarningAt = Date.now();
+        this.wormSpawns++;
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
