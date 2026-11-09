@@ -9,6 +9,7 @@ import { getArea, getPickaxeAbilityStatus } from '../../utils/TabListUtils';
 import { Mouse } from '../../utils/Ungrab';
 import Pathfinder from '../../utils/pathfinder/PathFinder';
 import { Aote } from '../../utils/pathfinder/PathWalker/PathAote';
+import { GuiStability } from '../../utils/player/GuiStability';
 import { clickSlot, closeInventory, getGuiName, setItemSlot } from '../../utils/player/Inventory';
 import { setKeysForStraightLineCoords } from '../../utils/player/Movement';
 import { applyToPlayer, clampPitch } from '../../utils/player/RotationGCD';
@@ -78,6 +79,9 @@ const isInLavaScanRegion = (point) => LAVA_SCAN_CENTERS.some(([x, z]) =>
 const ABILITY_STATES = new Set(['FORWARD', 'BACKWARD', 'TURN', 'DESCEND']);
 const ABILITY_FALLBACK_COOLDOWN_MS = 200000;
 const ABILITY_RETRY_DELAY_MS = 5000;
+const HOTM_PERKS = ['Efficient Miner', 'Mole'];
+const HOTM_OPEN_TIMEOUT_MS = 10000;
+const HOTM_PERK_TIMEOUT_MS = 4000;
 const cleanChat = (text) =>
     String(ChatLib.removeFormatting(String(text)))
         .replace(/[\u200b-\u200d\ufeff]/g, '')
@@ -147,7 +151,7 @@ class ScathaMacro extends ModuleBase {
         });
         for (const event of ['abilityused', 'abilitycooldown']) {
             registerSkyblockEvent(event, () => {
-                if (!this.enabled || !this.useTunnelVision || !ABILITY_STATES.has(this.state) || Player.getHeldItemIndex() !== this.miningSlot - 1) return;
+                if (!this.enabled || !this.useTunnelVision || !ABILITY_STATES.has(this.state) || Player.getHeldItemIndex() !== this.getMiningSlot() - 1) return;
                 this.abilityFromChat = false;
                 this.abilityUseAt = 0;
                 this.abilityClickPending = false;
@@ -194,6 +198,7 @@ class ScathaMacro extends ModuleBase {
         };
         slider('Mining Y', 'targetY', 31, 40, 31, 'Feet height of the 1x2 tunnel. Applied when starting a new lobby.');
         slider('Mining Slot', 'miningSlot', 1, 9, 1, 'Hotbar slot containing the mining tool.');
+        slider('Backward Mining Slot', 'backwardMiningSlot', 0, 9, 0, 'Mining tool for backward passes. 0 follows Mining Slot.');
         slider('Attack Slot', 'attackSlot', 1, 9, 2, 'Hotbar slot containing the combat weapon.');
         slider('Block Slot', 'blockSlot', 1, 9, 3, 'Hotbar slot containing full blocks for height recovery.');
         this.useTunnelVision = false;
@@ -206,6 +211,16 @@ class ScathaMacro extends ModuleBase {
         slider('Forward Loadout', 'forwardLoadout', 1, 12, 1, 'Loadout number for forward mining. Mining Spread must be 0.');
         slider('Backward Loadout', 'backwardLoadout', 1, 12, 2, 'Loadout number for backward mining. Maximize Mining Spread.');
         slider('Combat Loadout', 'combatLoadout', 1, 12, 3, 'Loadout number used to kill Stoneworms and Scathas.');
+        this.autoToggleHotmPerks = false;
+        this.addToggle(
+            'Auto Toggle HOTM Perks',
+            (value) => {
+                this.autoToggleHotmPerks = value;
+                this.hotmPerksEnabled = null;
+            },
+            'Disable Mole and Efficient Miner for forward mining, enable both for backward mining. Requires both perks unlocked.',
+            false
+        );
         range('Forward Mining Time (s)', 'forwardTime', 10, 200, 60, 90, 'Random time before each backward pass. Combat and recovery pause this timer.');
         range('UI Click Delay (ms)', 'clickDelay', 100, 2000, 200, 400, 'Random delay before inventory clicks and chest interactions.');
         range('Action Delay (ms)', 'actionDelay', 500, 5000, 1000, 3000, 'Random delay between macro states.');
@@ -260,7 +275,8 @@ class ScathaMacro extends ModuleBase {
         this.generation++;
         try {
             this.stopActivities();
-            if (this.state === 'LOADOUT') closeInventory();
+            if (this.state === 'LOADOUT' || this.hotmRequest) closeInventory();
+            this.hotmRequest = null;
             this.state = 'IDLE';
             this.loadoutRequest = null;
             this.combatResume = null;
@@ -295,6 +311,8 @@ class ScathaMacro extends ModuleBase {
         this.lane = null;
         this.currentLoadout = null;
         this.loadoutRequest = null;
+        this.hotmRequest = null;
+        this.hotmPerksEnabled = null;
         this.combatResume = null;
         this.wormOrigin = null;
         this.wormSearch = null;
@@ -366,6 +384,8 @@ class ScathaMacro extends ModuleBase {
     }
 
     setState(state, transitionDelay = this.actionDelay) {
+        if (this.hotmRequest && /heart of the mountain/i.test(String(getGuiName() || ''))) closeInventory();
+        this.hotmRequest = null;
         this.stopActivities();
         this.heightCheckAt = 0;
         this.mineTarget = null;
@@ -378,6 +398,20 @@ class ScathaMacro extends ModuleBase {
         if (state === 'COOLDOWN') this.cooldownY = Player.getY();
         this.progressPoint = null;
         this.progressAt = this.readyAt;
+        if (this.autoToggleHotmPerks && (state === 'FORWARD' || state === 'BACKWARD')) {
+            const enabled = state === 'BACKWARD';
+            if (this.hotmPerksEnabled !== enabled) {
+                this.hotmRequest = {
+                    enabled,
+                    phase: 'OPEN',
+                    dueAt: 0,
+                    attempts: 0,
+                    clickAttempts: {},
+                    missingSince: 0,
+                    stability: new GuiStability(),
+                };
+            }
+        }
     }
 
     aimAt(target, targetId = null) {
@@ -463,6 +497,11 @@ class ScathaMacro extends ModuleBase {
         motion.complete = progress === 1;
     }
 
+    getMiningSlot() {
+        const backward = this.state === 'BACKWARD' || (this.state === 'CHEST' && this.chest?.resume?.state === 'BACKWARD');
+        return backward ? this.backwardMiningSlot || this.miningSlot : this.miningSlot;
+    }
+
     selectSlot(slot) {
         if (Player.getHeldItemIndex() === slot - 1) return true;
         Client.setKey('leftclick', false);
@@ -536,7 +575,7 @@ class ScathaMacro extends ModuleBase {
         if (this.state === 'LOADOUT' && this.loadoutRequest?.nextState === 'WAIT_WORM') this.findWormTargets();
         if (this.state === 'LOADOUT' && this.loadoutRequest?.nextState === 'WAIT_GOBLIN') this.lockGoblinTarget();
         if (Date.now() < this.readyAt) return;
-        if (Client.isInGui() && this.state !== 'LOADOUT') {
+        if (Client.isInGui() && this.state !== 'LOADOUT' && !this.hotmRequest) {
             this.stopActivities();
             if (!this.guiPausedAt) this.guiPausedAt = Date.now();
             if (Date.now() - this.guiPausedAt > 30000) this.stop('Close the open screen before restarting.');
@@ -556,6 +595,7 @@ class ScathaMacro extends ModuleBase {
             }
             this.guiPausedAt = 0;
         }
+        if (this.hotmRequest) return this.tickHotm();
         if (!this.initialized) {
             this.initialized = true;
             this.startState();
@@ -723,6 +763,7 @@ class ScathaMacro extends ModuleBase {
     switchLoadout(number, nextState, transitionDelay = this.actionDelay) {
         if (nextState === 'WAIT_WORM') transitionDelay = 0;
         if (this.currentLoadout === number) return this.setState(nextState, transitionDelay);
+        this.hotmPerksEnabled = null;
         this.loadoutRequest = { number, nextState, transitionDelay, phase: 'OPEN', attempts: 0, dueAt: 0 };
         this.setState('LOADOUT', transitionDelay);
     }
@@ -790,6 +831,100 @@ class ScathaMacro extends ModuleBase {
         this.currentLoadout = request.number;
         this.loadoutRequest = null;
         this.setState(request.nextState, request.transitionDelay);
+    }
+
+    findHotmPerks(container) {
+        const items = container.getItems() || [];
+        const perks = {};
+        for (let slot = 0; slot < items.length - 36; slot++) {
+            const item = items[slot];
+            if (!item) continue;
+            const name = cleanChat(item.getName());
+            if (!HOTM_PERKS.includes(name)) continue;
+            const status = (item.getLore() || []).map(cleanChat).find((line) => /^(ENABLED|DISABLED)$/i.test(line));
+            perks[name] = { slot, enabled: status ? /^ENABLED$/i.test(status) : null };
+        }
+        return perks;
+    }
+
+    retryHotm(request, reason) {
+        if (request.attempts >= 3) return this.stop(`Could not toggle HOTM perks: ${reason}. Check /hotm and unlock both perks.`);
+        request.phase = 'OPEN';
+        request.dueAt = Date.now() + this.delay(this.actionDelay);
+        request.missingSince = 0;
+        request.stability.reset();
+    }
+
+    tickHotm() {
+        const request = this.hotmRequest;
+        if (!request) return;
+        const now = Date.now();
+        Client.stopMovement();
+        Client.setKey('leftclick', false);
+        Client.setKey('rightclick', false);
+        if (now < request.dueAt) return;
+        if (request.phase === 'OPEN') {
+            request.attempts++;
+            closeInventory();
+            ChatLib.command('hotm');
+            request.phase = 'WAIT';
+            request.sentAt = now;
+            request.dueAt = now + this.delay(this.clickDelay);
+            request.stability.reset();
+            return;
+        }
+        const container = Player.getContainer();
+        const guiOpen = container && /heart of the mountain/i.test(String(getGuiName() || ''));
+        if (!guiOpen) {
+            request.stability.reset();
+            if (now - request.sentAt >= HOTM_OPEN_TIMEOUT_MS) this.retryHotm(request, 'the HOTM menu did not open');
+            return;
+        }
+        if (!request.stability.update()) return;
+        if (request.phase === 'WAIT') {
+            request.phase = 'CHECK';
+            request.dueAt = now + this.delay(this.clickDelay);
+            return;
+        }
+
+        const perks = this.findHotmPerks(container);
+        if (request.phase === 'VERIFY') {
+            const perk = perks[request.clickedName];
+            if (perk?.enabled === request.enabled) {
+                request.phase = 'CHECK';
+                request.dueAt = now + this.delay(this.clickDelay);
+            } else if (now - request.clickedAt >= HOTM_PERK_TIMEOUT_MS) {
+                if (!perk || perk.enabled === null) return this.retryHotm(request, `cannot read ${request.clickedName}`);
+                request.phase = 'CHECK';
+                request.dueAt = now + this.delay(this.clickDelay);
+            }
+            return;
+        }
+
+        const missing = HOTM_PERKS.find((name) => !perks[name] || perks[name].enabled === null);
+        if (missing) {
+            if (!request.missingSince) request.missingSince = now;
+            if (now - request.missingSince >= HOTM_PERK_TIMEOUT_MS)
+                this.retryHotm(request, `cannot find or read ${missing}`);
+            return;
+        }
+        request.missingSince = 0;
+        const name = HOTM_PERKS.find((name) => perks[name].enabled !== request.enabled);
+        if (!name) {
+            closeInventory();
+            this.hotmPerksEnabled = request.enabled;
+            this.hotmRequest = null;
+            this.readyAt = now + this.delay(this.actionDelay);
+            return;
+        }
+        request.clickAttempts[name] = (request.clickAttempts[name] || 0) + 1;
+        if (request.clickAttempts[name] > 3) return this.stop(`Could not verify HOTM perk ${name} after three right-clicks.`);
+        if (!clickSlot(perks[name].slot, false, 'RIGHT')) return this.retryHotm(request, `could not click ${name}`);
+        request.clickedName = name;
+        request.clickedAt = now;
+        request.sentAt = now;
+        request.phase = 'VERIFY';
+        request.dueAt = now + this.delay(this.clickDelay);
     }
 
     scanLava() {
@@ -1408,7 +1543,7 @@ class ScathaMacro extends ModuleBase {
             this.clearForwardObstacles(direction, 'backwardObstacle');
             return;
         }
-        if (!this.selectSlot(this.miningSlot)) return;
+        if (!this.selectSlot(this.getMiningSlot())) return;
         const obstacle = this.blockingAhead(direction, FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2);
         if (obstacle) {
             if (obstacle.unknown) {
@@ -1664,7 +1799,7 @@ class ScathaMacro extends ModuleBase {
             this.abilityClickPending = true;
             return true;
         }
-        if (Client.getMinecraft().gameMode.isDestroying() || !this.selectSlot(this.miningSlot)) return true;
+        if (Client.getMinecraft().gameMode.isDestroying() || !this.selectSlot(this.getMiningSlot())) return true;
         Client.rightClick();
         this.lastAbilityUseAt = now;
         this.abilityFromChat = false;
@@ -1682,7 +1817,7 @@ class ScathaMacro extends ModuleBase {
         }
         if (name === 'minecraft:bedrock') return;
         if (isChest(name) && !this.openedChests.has(key(point))) return this.openChest(point);
-        if (!this.selectSlot(this.miningSlot)) return;
+        if (!this.selectSlot(this.getMiningSlot())) return;
         const now = Date.now();
         const target = this.mineTarget;
         if (target && (target.key !== key(point) || target.name !== name)) {
