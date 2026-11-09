@@ -1400,7 +1400,7 @@ class ScathaMacro extends ModuleBase {
                 this.moveAlongLane(this.lane);
                 return this.checkProgress(15000);
             }
-            if (blockName(obstacle) === 'minecraft:bedrock') return this.beginBackward(true);
+            if (blockName(obstacle) === 'minecraft:bedrock') return this.handleForwardBedrock();
             Client.stopMovement();
             const now = Date.now();
             const coordinate = position()[this.lane.axis];
@@ -1522,7 +1522,7 @@ class ScathaMacro extends ModuleBase {
             const name = blockName(point);
             if (name === 'minecraft:bedrock') {
                 if (obstacleField === 'backwardObstacle') this.switchLobby('Bedrock blocks backward mining');
-                else this.beginBackward(true);
+                else this.handleForwardBedrock();
                 return false;
             }
             if (isChest(name) && !this.openedChests.has(key(point))) {
@@ -1568,6 +1568,18 @@ class ScathaMacro extends ModuleBase {
         this.mineTarget = null;
         this.progressAt = Date.now();
         return true;
+    }
+
+    handleForwardBedrock() {
+        // A short forward pass does not need a backward mining pass before turning.
+        if (this.forwardStart && flatDistance(this.forwardStart) < 10) {
+            this.forwardObstacle = null;
+            this.forwardBlocked = null;
+            this.turnPending = false;
+            this.turnGoal = null;
+            return this.setState('TURN', 0);
+        }
+        return this.beginBackward(true);
     }
 
     beginBackward(atBoundary) {
@@ -1710,7 +1722,7 @@ class ScathaMacro extends ModuleBase {
             this.setLaneStart(position());
             this.turnGoal = null;
             this.turnPending = false;
-            return this.setState('FORWARD');
+            return this.setState('FORWARD', 0);
         }
         const result = this.mineCorridor(this.turnDirection(), this.tunnelY, this.turnOrigin, this.turnGoal);
         if (result === 'BEDROCK') this.switchLobby('Bedrock also blocks the lane change');
