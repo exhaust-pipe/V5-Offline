@@ -340,6 +340,7 @@ class ScathaMacro extends ModuleBase {
         this.safePoint = null;
         this.guiPausedAt = 0;
         this.cooldownY = null;
+        this.cooldownUntil = 0;
         this.openedChests = new Set();
         this.forwardStart = null;
         this.forwardObstacle = null;
@@ -721,10 +722,6 @@ class ScathaMacro extends ModuleBase {
                 this.wormConfirmation = null;
                 this.wormTargets = [];
                 this.wormMissingAt = 0;
-                break;
-            case 'COOLDOWN':
-                this.cooldownUntil = Date.now() + this.cooldownDuration;
-                this.cooldownY = Player.getY();
                 break;
             case 'RESUME_PATH':
                 this.startReturnPath();
@@ -1956,7 +1953,6 @@ class ScathaMacro extends ModuleBase {
             forwardStart: this.forwardStart,
             forwardRemaining:
                 forward && this.initialized ? Math.max(0, this.forwardUntil - Date.now()) : forward || resumingForward ? this.forwardRemaining : null,
-            cooldownRemaining: this.state === 'COOLDOWN' ? (this.initialized ? Math.max(0, this.cooldownUntil - Date.now()) : this.cooldownDuration) : null,
             recoveryElapsed: this.recovery ? Date.now() - this.recovery.startedAt : null,
             recoveryContext: this.recovery,
             chestContext: this.chest,
@@ -1976,7 +1972,7 @@ class ScathaMacro extends ModuleBase {
             this.recovery.startedAt = Date.now() - snapshot.recoveryElapsed;
             this.recovery.pillar = null;
         }
-        if (snapshot.cooldownRemaining !== null) this.cooldownDuration = snapshot.cooldownRemaining;
+        if (snapshot.state === 'COOLDOWN' && Date.now() >= this.cooldownUntil) return this.tickCooldown();
         if (snapshot.state === 'LOADOUT') return this.switchLoadout(snapshot.loadout.number, snapshot.loadout.nextState, transitionDelay);
         const loadout = snapshot.state === 'BACKWARD' ? this.backwardLoadout : snapshot.currentLoadout || this.forwardLoadout;
         this.switchLoadout(loadout, snapshot.state, transitionDelay);
@@ -2223,6 +2219,7 @@ class ScathaMacro extends ModuleBase {
             maxY: this.tunnelY + 3,
         };
         this.wormWarningAt = Date.now();
+        this.cooldownUntil = 0;
         this.wormSpawns++;
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
@@ -2342,7 +2339,10 @@ class ScathaMacro extends ModuleBase {
                 }
             }
         }
-        if (nearest) this.wormLastSeenAt = now;
+        if (nearest) {
+            this.wormLastSeenAt = now;
+            if (!this.cooldownUntil) this.cooldownUntil = now + randomInt(25000, 35000);
+        }
         return nearest ? [nearest] : [];
     }
 
@@ -2452,10 +2452,10 @@ class ScathaMacro extends ModuleBase {
         if (now - Math.max(this.wormMissingAt, this.wormLastSeenAt) < WORM_DISAPPEAR_GRACE_MS) {
             return this.approachLastWormPosition();
         }
-        this.cooldownDuration = randomInt(25000, 35000);
+        const cooldownPending = now < this.cooldownUntil;
         this.waitBeforeReturn = Math.random() < 0.5;
-        if (this.waitBeforeReturn) this.setState('COOLDOWN');
-        else this.returnToSnapshot(this.combatResume, 'COOLDOWN');
+        if (this.waitBeforeReturn && cooldownPending) this.setState('COOLDOWN', 0);
+        else this.returnToSnapshot(this.combatResume, cooldownPending && !this.waitBeforeReturn ? 'COOLDOWN' : 'COMBAT_RESUME');
     }
 
     tickCooldown() {
@@ -2467,6 +2467,7 @@ class ScathaMacro extends ModuleBase {
     finishCombat() {
         const snapshot = this.combatResume;
         this.combatResume = null;
+        this.cooldownUntil = 0;
         this.wormSearch = null;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
@@ -2663,8 +2664,10 @@ class ScathaMacro extends ModuleBase {
         }
         if (!this.walkTo(job.snapshot.point)) return;
         this.returnJob = null;
-        if (job.after === 'COOLDOWN') this.setState('COOLDOWN');
-        else if (job.after === 'COMBAT_RESUME') this.finishCombat();
+        if (job.after === 'COOLDOWN') {
+            if (Date.now() < this.cooldownUntil) this.setState('COOLDOWN', 0);
+            else this.finishCombat();
+        } else if (job.after === 'COMBAT_RESUME') this.finishCombat();
         else this.restore(job.snapshot);
     }
 
