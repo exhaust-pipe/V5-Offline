@@ -591,7 +591,12 @@ class ScathaMacro extends ModuleBase {
         if (Client.isInGui() && this.state !== 'LOADOUT' && !this.hotmRequest) {
             this.stopActivities();
             if (!this.guiPausedAt) this.guiPausedAt = Date.now();
-            if (Date.now() - this.guiPausedAt > 30000) this.stop('Close the open screen before restarting.');
+            if (Date.now() - this.guiPausedAt > 30000) {
+                const guiName = getGuiName();
+                const guiClass = Client.currentGui.getClassName();
+                const guiInfo = guiName ? `"${guiName}" (${guiClass})` : guiClass;
+                this.stop(`Close the open screen before restarting. Open GUI: ${guiInfo}.`);
+            }
             return;
         }
         if (this.guiPausedAt) {
