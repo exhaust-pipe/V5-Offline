@@ -2219,7 +2219,7 @@ class ScathaMacro extends ModuleBase {
             maxY: this.tunnelY + 3,
         };
         this.wormWarningAt = Date.now();
-        this.cooldownUntil = 0;
+        this.cooldownUntil = this.wormWarningAt + randomInt(25000, 35000);
         this.wormSpawns++;
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
@@ -2339,10 +2339,7 @@ class ScathaMacro extends ModuleBase {
                 }
             }
         }
-        if (nearest) {
-            this.wormLastSeenAt = now;
-            if (!this.cooldownUntil) this.cooldownUntil = now + randomInt(25000, 35000);
-        }
+        if (nearest) this.wormLastSeenAt = now;
         return nearest ? [nearest] : [];
     }
 
