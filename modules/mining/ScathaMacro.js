@@ -109,6 +109,9 @@ class ScathaMacro extends ModuleBase {
         this.ownsCombat = false;
         this.returnOriginalSlot = null;
         this.restoreMouseOnDisable = false;
+        // Keep lifetime counters across disables, like the overlay runtime.
+        this.wormSpawns = 0;
+        this.scathaKills = 0;
         this.initSettings();
         this.bindToggleKey();
         this.on('tick', () => this.tick());
@@ -116,6 +119,9 @@ class ScathaMacro extends ModuleBase {
         this.on('worldUnload', () => this.onWorldUnload());
         this.on('chat', (event) => {
             const message = cleanChat(event.message.getUnformattedText());
+            if (this.enabled && /^CHARM! You charmed the Scatha and received \d[\d,]* Scatha Shards?!$/i.test(message)) {
+                this.scathaKills++;
+            }
             if (/^You hear the sound of something approaching(?:\.{3}|\u2026)?$/i.test(message)) return this.interruptForWorm();
             const goblin = message.match(/^A (Golden|Diamond) Goblin has spawned!$/i);
             if (goblin) return this.interruptForGoblin(goblin[1].toLowerCase());
@@ -179,6 +185,7 @@ class ScathaMacro extends ModuleBase {
                     'Tunnel Y': () => this.tunnelY ?? this.targetY,
                     Direction: () => (this.lane ? `${this.lane.sign > 0 ? '+' : '-'}${this.lane.axis.toUpperCase()}` : 'None'),
                     'Worm spawns': () => this.wormSpawns ?? 0,
+                    'Scatha kills': () => this.scathaKills ?? 0,
                     'Lobby intensity': () => `${this.lobbyIntensity ?? 0}/${this.lobbyThreshold}`,
                     'Exit intensity': () => `${this.exitIntensity ?? 0}/${this.exitThreshold}`,
                 },
@@ -247,10 +254,17 @@ class ScathaMacro extends ModuleBase {
     onEnable() {
         if (!Player.getPlayer() || !World.isLoaded()) return this.stop('Join SkyBlock before starting.');
         if (CombatBot.enabled || Pathfinder.isPathing()) return this.stop('Stop the active Combat Bot or path before starting.');
+        const inventory = Player.getInventory();
+        for (const slot of new Set([this.miningSlot, this.backwardMiningSlot || this.miningSlot])) {
+            const item = inventory?.getStackInSlot(slot - 1);
+            if (!MiningUtils.isMiningTool(item)) {
+                const itemName = item ? cleanChat(item.getName()) : 'empty';
+                return this.stop(`Mining slot ${slot} must contain a mining tool (found: ${itemName}).`);
+            }
+        }
         this.restoreMouseOnDisable = !Client.isUngrabbed();
         Mouse.ungrab();
         this.generation++;
-        this.wormSpawns = 0;
         this.lobbyIntensity = 0;
         this.exitIntensity = 0;
         this.nextDecay = Date.now() + 10000;

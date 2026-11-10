@@ -1209,6 +1209,10 @@ export const MiningUtils = {
                 });
         });
     },
+    isMiningTool: function (item) {
+        // Use the same item-name whitelist as Mining Bot's best-tool detection.
+        return !!(item && ToolFinder.matchTool(ChatLib.removeFormatting(String(item.getName()))));
+    },
     getDrills: function () {
         let bestTool = ToolFinder.findBest();
         if (!bestTool) {
