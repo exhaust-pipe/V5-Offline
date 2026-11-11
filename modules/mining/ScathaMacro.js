@@ -1680,7 +1680,7 @@ class ScathaMacro extends ModuleBase {
     returnToFace() {
         setKeysForStraightLineCoords(this.breakPoint.x, this.breakPoint.y, this.breakPoint.z, false);
         if (this.tryReturnTeleport()) return;
-        if (!this.walkTo(this.breakPoint)) return;
+        if (!this.walkTo(this.breakPoint, () => this.returnToSnapshot({ ...this.snapshot(), point: { ...this.breakPoint } }, 'RETURN_RESUME'))) return;
         if (this.turnPending) {
             this.turnGoal = null;
             return this.setState('TURN');
