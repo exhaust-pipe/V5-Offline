@@ -1946,22 +1946,27 @@ class ScathaMacro extends ModuleBase {
         this.holdMiningAttack(point, mining);
     }
 
-    walkTo(point) {
+    walkTo(point, onStuck) {
         if (flatDistance(point) <= 0.3) {
             this.stopControls();
             return true;
         }
         this.aimAt({ ...point, y: Player.getY() + 1.4 });
         setKeysForStraightLineCoords(point.x, point.y, point.z, false);
-        this.checkProgress(15000);
+        this.checkProgress(15000, onStuck);
         return false;
     }
 
-    checkProgress(timeout) {
-        if (!this.progressPoint || flatDistance(this.progressPoint) > 0.2) {
-            this.progressPoint = position();
-            this.progressAt = Date.now();
-        } else if (Date.now() - this.progressAt > timeout) this.switchLobby('Movement or mining stopped making progress');
+    checkProgress(timeout, onStuck, tracker = this) {
+        if (!tracker.progressPoint || flatDistance(tracker.progressPoint) > 0.2) {
+            tracker.progressPoint = position();
+            tracker.progressAt = Date.now();
+        } else if (Date.now() - tracker.progressAt > timeout) {
+            if (onStuck) onStuck();
+            else this.switchLobby('Movement or mining stopped making progress');
+            return true;
+        }
+        return false;
     }
 
     snapshot() {
@@ -2531,7 +2536,7 @@ class ScathaMacro extends ModuleBase {
         if (Math.abs(delta) > TUNNEL_RETURN_ALIGN_MAX_DISTANCE) return null;
         const goal = { ...here, y: this.tunnelY };
         goal[axis] = search.cross;
-        const alignment = { point: goal, startedAt: Date.now(), lastProgressAt: Date.now(), lastDistance: flatDistance(goal) };
+        const alignment = { point: goal, startedAt: Date.now() };
         // Already within the normal mining corridor's no-correction range:
         // turn toward the return point without moving to the exact center.
         if (this.inLaneRange(here[axis], search.cross)) return alignment;
@@ -2569,10 +2574,7 @@ class ScathaMacro extends ModuleBase {
             const direction = { axis, sign: Math.sign(alignment.point[axis] - position()[axis]) };
             if (direction.sign === 0 || this.blockingAhead(direction, Math.min(distance, 0.8)))
                 return this.fallbackTunnelReturnPath(job);
-            if (distance < alignment.lastDistance - 0.05) {
-                alignment.lastDistance = distance;
-                alignment.lastProgressAt = now;
-            } else if (now - alignment.lastProgressAt > 1500) return this.fallbackTunnelReturnPath(job);
+            if (this.checkProgress(1500, () => this.fallbackTunnelReturnPath(job), alignment)) return;
             Client.setKey('leftclick', false);
             setKeysForStraightLineCoords(alignment.point.x, alignment.point.y, alignment.point.z, false);
             return;
@@ -2594,8 +2596,6 @@ class ScathaMacro extends ModuleBase {
             yaw: alignment.faceYaw,
             direction: { axis: returnAxis, sign },
             startedAt: now,
-            lastProgressAt: now,
-            lastRemaining: (point[returnAxis] - position()[returnAxis]) * sign,
         };
     }
 
@@ -2632,12 +2632,7 @@ class ScathaMacro extends ModuleBase {
             !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) {
             return this.fallbackTunnelReturnPath(job);
         }
-        if (remaining < direct.lastRemaining - 0.05) {
-            direct.lastRemaining = remaining;
-            direct.lastProgressAt = now;
-        } else if (now - direct.lastProgressAt > TUNNEL_DIRECT_RETURN_STALL_MS) {
-            return this.fallbackTunnelReturnPath(job);
-        }
+        if (this.checkProgress(TUNNEL_DIRECT_RETURN_STALL_MS, () => this.fallbackTunnelReturnPath(job), direct)) return;
 
         // Keep the single +/-3 degree yaw chosen during alignment, and press
         // W directly instead of asking Pathfinder to navigate the tunnel.
@@ -2656,6 +2651,7 @@ class ScathaMacro extends ModuleBase {
         this.stopControls();
         job.alignment = null;
         job.directReturn = null;
+        this.progressPoint = null;
         const point = job.snapshot.point;
         this.startPath([[Math.floor(point.x), Math.floor(point.y) - 1, Math.floor(point.z)]], job);
     }
@@ -2681,7 +2677,7 @@ class ScathaMacro extends ModuleBase {
             Pathfinder.resetPath();
             this.ownsPath = false;
         }
-        if (!this.walkTo(job.snapshot.point)) return;
+        if (!this.walkTo(job.snapshot.point, () => this.fallbackTunnelReturnPath(job))) return;
         this.returnJob = null;
         if (job.after === 'COOLDOWN') {
             if (Date.now() < this.cooldownUntil) this.setState('COOLDOWN', 0);
