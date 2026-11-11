@@ -1,3 +1,4 @@
+import { OverlayManager } from '../../gui/OverlayUtils';
 import { ArmorStandEntity, BP, ClipContext, Direction, Vec3d } from '../../utils/Constants';
 import { calculateAbsoluteAngles, offsetPitch, wrapTo180 } from '../../utils/Math';
 import { MiningUtils } from '../../utils/MiningUtils';
@@ -109,9 +110,6 @@ class ScathaMacro extends ModuleBase {
         this.ownsCombat = false;
         this.returnOriginalSlot = null;
         this.restoreMouseOnDisable = false;
-        // Keep lifetime counters across disables, like the overlay runtime.
-        this.wormSpawns = 0;
-        this.scathaKills = 0;
         this.initSettings();
         this.bindToggleKey();
         this.on('tick', () => this.tick());
@@ -120,7 +118,7 @@ class ScathaMacro extends ModuleBase {
         this.on('chat', (event) => {
             const message = cleanChat(event.message.getUnformattedText());
             if (this.enabled && /^CHARM! You charmed the Scatha and received \d[\d,]* Scatha Shards?!$/i.test(message)) {
-                this.scathaKills++;
+                OverlayManager.incrementTrackedValue(this.oid, 'scathaKills');
             }
             if (/^You hear the sound of something approaching(?:\.{3}|\u2026)?$/i.test(message)) return this.interruptForWorm();
             const goblin = message.match(/^A (Golden|Diamond) Goblin has spawned!$/i);
@@ -184,13 +182,18 @@ class ScathaMacro extends ModuleBase {
                     State: () => this.state,
                     'Tunnel Y': () => this.tunnelY ?? this.targetY,
                     Direction: () => (this.lane ? `${this.lane.sign > 0 ? '+' : '-'}${this.lane.axis.toUpperCase()}` : 'None'),
-                    'Worm spawns': () => this.wormSpawns ?? 0,
-                    'Scatha kills': () => this.scathaKills ?? 0,
+                    'Worm spawns': () => OverlayManager.getTrackedValue(this.oid, 'wormSpawns', 0),
+                    'Scatha kills': () => OverlayManager.getTrackedValue(this.oid, 'scathaKills', 0),
                     'Lobby intensity': () => `${this.lobbyIntensity ?? 0}/${this.lobbyThreshold}`,
                     'Exit intensity': () => `${this.exitIntensity ?? 0}/${this.exitThreshold}`,
                 },
             },
-        ]);
+        ], {
+            sessionTrackedValues: {
+                wormSpawns: 0,
+                scathaKills: 0,
+            },
+        });
     }
 
     initSettings() {
@@ -2239,7 +2242,7 @@ class ScathaMacro extends ModuleBase {
         };
         this.wormWarningAt = Date.now();
         this.cooldownUntil = this.wormWarningAt + randomInt(25000, 35000);
-        this.wormSpawns++;
+        OverlayManager.incrementTrackedValue(this.oid, 'wormSpawns');
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
