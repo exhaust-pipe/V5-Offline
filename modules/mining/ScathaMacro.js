@@ -242,6 +242,7 @@ class ScathaMacro extends ModuleBase {
             false
         );
         range('Forward Mining Time (s)', 'forwardTime', 10, 200, 60, 90, 'Random time before each backward pass. Combat and recovery pause this timer.');
+        slider('Skip Backward Under (blocks)', 'skipBackwardUnder', 0, 20, 10, 'Skip backward mining and turn immediately when the forward distance is below this value. 0 always mines backward.');
         range('UI Click Delay (ms)', 'clickDelay', 100, 2000, 200, 400, 'Random delay before inventory clicks and chest interactions.');
         range('Action Delay (ms)', 'actionDelay', 500, 5000, 1000, 3000, 'Random delay between macro states.');
         range('Rotation Time (ms)', 'rotationTime', 100, 1000, 150, 300, 'Random duration of non-linear mining, turning, movement, and chest rotations.');
@@ -1419,7 +1420,7 @@ class ScathaMacro extends ModuleBase {
                 this.moveAlongLane(this.lane);
                 return this.checkProgress(15000);
             }
-            if (blockName(obstacle) === 'minecraft:bedrock') return this.handleForwardBedrock();
+            if (blockName(obstacle) === 'minecraft:bedrock') return this.beginBackward(true);
             Client.stopMovement();
             const now = Date.now();
             const coordinate = position()[this.lane.axis];
@@ -1541,7 +1542,7 @@ class ScathaMacro extends ModuleBase {
             const name = blockName(point);
             if (name === 'minecraft:bedrock') {
                 if (obstacleField === 'backwardObstacle') this.switchLobby('Bedrock blocks backward mining');
-                else this.handleForwardBedrock();
+                else this.beginBackward(true);
                 return false;
             }
             if (isChest(name) && !this.openedChests.has(key(point))) {
@@ -1589,19 +1590,16 @@ class ScathaMacro extends ModuleBase {
         return true;
     }
 
-    handleForwardBedrock() {
-        // A short forward pass does not need a backward mining pass before turning.
-        if (this.forwardStart && flatDistance(this.forwardStart) < 10) {
+    beginBackward(atBoundary) {
+        // A short forward pass can turn directly, whether it ended on time or at bedrock.
+        // A threshold of zero disables skipping backward mining entirely.
+        if (this.skipBackwardUnder > 0 && this.forwardStart && flatDistance(this.forwardStart) < this.skipBackwardUnder) {
             this.forwardObstacle = null;
             this.forwardBlocked = null;
             this.turnPending = false;
             this.turnGoal = null;
             return this.setState('TURN', 0);
         }
-        return this.beginBackward(true);
-    }
-
-    beginBackward(atBoundary) {
         this.forwardObstacle = null;
         this.breakPoint = position();
         this.breakPoint.y = this.tunnelY;
