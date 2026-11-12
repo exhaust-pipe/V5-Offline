@@ -1884,7 +1884,7 @@ class ScathaMacro extends ModuleBase {
         Client.setKey('leftclick', false);
         Client.setKey('shift', false);
         Client.setKey('sprint', false);
-        this.checkProgress(15000);
+        this.checkProgress(15000, () => this.fallbackReturnToPath(), this.returnProgress);
         if (this.state !== 'RETURN') return true;
         if (this.rotation.motion?.targetId !== 'return:aote' || Math.abs(wrapTo180(Player.getYaw() - target.yaw)) > 0.5 || Math.abs(Player.getPitch()) > 0.5)
             return true;
