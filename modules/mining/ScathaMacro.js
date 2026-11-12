@@ -14,7 +14,7 @@ import { GuiStability } from '../../utils/player/GuiStability';
 import { clickSlot, closeInventory, getGuiName, setItemSlot } from '../../utils/player/Inventory';
 import { setKeysForStraightLineCoords } from '../../utils/player/Movement';
 import { applyToPlayer, clampPitch } from '../../utils/player/RotationGCD';
-import { getRotationCurveOffset, Rotations } from '../../utils/player/Rotations';
+import { getRotationCurveOffset, RotationModule, Rotations } from '../../utils/player/Rotations';
 import { CombatBot } from '../combat/CombatBot';
 
 const HORIZONTAL_STATES = new Set(['FORWARD', 'BACKWARD', 'RETURN', 'TURN', 'ALIGN']);
@@ -202,7 +202,7 @@ class ScathaMacro extends ModuleBase {
         };
         const range = (title, field, min, max, low, high, description) => {
             this[field] = { low, high };
-            this.addRangeSlider(
+            return this.addRangeSlider(
                 title,
                 min,
                 max,
@@ -245,7 +245,47 @@ class ScathaMacro extends ModuleBase {
         slider('Skip Backward Under (blocks)', 'skipBackwardUnder', 0, 20, 10, 'Skip backward mining and turn immediately when the forward distance is below this value. 0 always mines backward.');
         range('UI Click Delay (ms)', 'clickDelay', 100, 2000, 200, 400, 'Random delay before inventory clicks and chest interactions.');
         range('Action Delay (ms)', 'actionDelay', 500, 5000, 1000, 3000, 'Random delay between macro states.');
-        range('Rotation Time (ms)', 'rotationTime', 100, 1000, 150, 300, 'Random duration of non-linear mining, turning, movement, and chest rotations.');
+        this.overrideRotationSpeed = false;
+        this.scathaRotationSpeed = 400;
+        let rotationSpeedSlider;
+        this.addToggle(
+            'Override Rotation Speed',
+            (value) => {
+                this.overrideRotationSpeed = !!value;
+                rotationSpeedSlider.visible = this.overrideRotationSpeed;
+            },
+            'Use a Scatha Macro-specific rotation speed instead of the global setting.',
+            false
+        );
+        rotationSpeedSlider = this.addSlider(
+            'Scatha Rotation Speed',
+            30, 60, 40,
+            (value) => (this.scathaRotationSpeed = value * 10),
+            'Degrees per second.'
+        );
+        rotationSpeedSlider.visible = this.overrideRotationSpeed;
+
+        this.switchForwardPitch = true;
+        this.fixedForwardPitch = null;
+        let forwardRotationTimeSlider;
+        this.addToggle(
+            'Switch Forward Pitch',
+            (value) => {
+                this.switchForwardPitch = !!value;
+                forwardRotationTimeSlider.visible = this.switchForwardPitch;
+                this.forwardPitch = null;
+                this.forwardYaw = null;
+                this.forwardAligned = false;
+                if (!this.switchForwardPitch && this.fixedForwardPitch === null) this.fixedForwardPitch = random(15, 20);
+            },
+            'Alternate between upward and downward mining pitches. When disabled, hold one downward pitch between 15 and 20 degrees.',
+            true
+        );
+        forwardRotationTimeSlider = range(
+            'Forward Rotation Time (ms)', 'forwardRotationTime', 100, 1000, 150, 300,
+            'Random duration of forward-mining pitch changes when Switch Forward Pitch is enabled.'
+        );
+        forwardRotationTimeSlider.visible = this.switchForwardPitch;
         slider('Lobby Failsafe Threshold', 'lobbyThreshold', 1, 1000, 200, 'Chat Mention and Player Grief intensity. Switching lobbies clears this counter.');
         slider('Exit Failsafe Threshold', 'exitThreshold', 1, 1000, 200, 'All other failsafe events. Stops the macro when reached.');
         slider('Intensity Decay per 10s', 'intensityDecay', 0, 50, 5, 'Subtract this amount from both counters every 10 seconds.');
@@ -453,6 +493,8 @@ class ScathaMacro extends ModuleBase {
                 this.forwardYaw = null;
                 this.forwardPitch.from = this.rotation.pitch;
                 this.forwardPitch.startedAt = this.rotation.updatedAt;
+                this.forwardPitch.lastAt = this.rotation.updatedAt;
+                this.forwardPitch.initialDistance = Math.abs(this.forwardPitch.target - this.rotation.pitch);
                 this.forwardPitch.complete = false;
             }
         }
@@ -462,70 +504,112 @@ class ScathaMacro extends ModuleBase {
 
     updateRotation() {
         const rotation = this.rotation;
-        if (!rotation || !Player.getPlayer() || !World.isLoaded() || Client.isInGui()) return;
+        if (!rotation || !Player.getPlayer() || !World.isLoaded()) return;
+        if (Client.isInGui()) {
+            // The shared rotation controller otherwise continues to turn behind open GUIs.
+            if (!rotation.target.forward && Rotations.active) Rotations.stop();
+            return;
+        }
         const now = Date.now();
         rotation.updatedAt = now;
         if (rotation.target.forward) {
+            if (Rotations.active) Rotations.stop();
             rotation.motion = null;
             if (!this.forwardPitch) return;
-            if (!this.forwardYaw || (this.forwardAligned && now >= this.forwardYaw.startedAt + this.forwardYaw.duration)) {
+            if (!this.forwardYaw || (this.forwardAligned && this.forwardYaw.complete && now >= this.forwardYaw.nextAt)) {
+                const target = this.yaw(this.lane) + random(-3, 3);
                 this.forwardYaw = {
-                    from: this.forwardYaw?.target ?? rotation.yaw,
-                    target: this.yaw(this.lane) + random(-3, 3),
-                    startedAt: now,
-                    duration: this.delay(this.rotationTime),
+                    target,
+                    initialDistance: Math.abs(wrapTo180(target - rotation.yaw)),
+                    lastAt: now,
                     curveSeed: random(0, Math.PI * 2),
+                    complete: false,
+                    nextAt: 0,
                 };
             }
-            for (const [axis, motion] of [
-                ['yaw', this.forwardYaw],
-                ['pitch', this.forwardPitch],
-            ]) {
+            this.advanceForwardAxis(rotation, this.forwardYaw, 'yaw', now);
+            if (this.forwardYaw.complete && !this.forwardYaw.nextAt) this.forwardYaw.nextAt = now + randomInt(200, 400);
+
+            if (this.switchForwardPitch) {
+                // Forward Rotation Time applies only to alternating mining pitches.
+                const motion = this.forwardPitch;
                 const progress = Math.max(0, Math.min(1, (now - motion.startedAt) / motion.duration));
                 const eased = progress * progress * (3 - 2 * progress);
-                const delta = axis === 'yaw' ? wrapTo180(motion.target - motion.from) : motion.target - motion.from;
-                const curve = getRotationCurveOffset(eased, Math.abs(delta), motion.curveSeed);
-                rotation[axis] = motion.from + delta * eased + (axis === 'yaw' ? curve.x : curve.y);
+                const curve = getRotationCurveOffset(eased, Math.abs(motion.target - motion.from), motion.curveSeed);
+                rotation.pitch = clampPitch(motion.from + (motion.target - motion.from) * eased + curve.y);
                 motion.complete = progress === 1;
+            } else {
+                // A fixed downward pitch still uses the global/overridden rotation speed to align.
+                this.advanceForwardAxis(rotation, this.forwardPitch, 'pitch', now);
+            }
+            applyToPlayer(rotation.yaw, rotation.pitch);
+            if (this.switchForwardPitch && this.forwardAligned && this.forwardPitch.complete) {
+                this.setForwardPitch(!this.preferHead);
             }
         } else {
             const target = Number.isFinite(rotation.target.yaw) ? rotation.target : calculateAbsoluteAngles(rotation.target);
-            this.updateTimedRotation(rotation, target, now);
-        }
-        applyToPlayer(rotation.yaw, rotation.pitch);
-        if (rotation.target.forward && this.forwardAligned && this.forwardPitch.complete) {
-            this.setForwardPitch(!this.preferHead);
+            this.updateSpeedRotation(rotation, target);
         }
     }
 
-    updateTimedRotation(rotation, target, now) {
+    advanceForwardAxis(rotation, motion, axis, now) {
+        const delta = axis === 'yaw' ? wrapTo180(motion.target - rotation.yaw) : motion.target - rotation.pitch;
+        const distance = Math.abs(delta);
+        if (distance <= 0.1 || RotationModule.rotationMode === 'Instant') {
+            rotation[axis] = motion.target;
+            motion.complete = true;
+        } else {
+            const elapsed = Math.max(0, (now - motion.lastAt) / 1000);
+            const speed = this.overrideRotationSpeed ? this.scathaRotationSpeed : RotationModule.ROTATION_SPEED;
+            const damping = Math.min(distance / RotationModule.DAMPING_DIST, 1);
+            const ratio = Math.min(1, ((speed * Math.sqrt(damping) + 10) * elapsed) / distance);
+            if (ratio >= 1) {
+                rotation[axis] = motion.target;
+                motion.complete = true;
+            } else {
+                const progress = motion.initialDistance > 0 ? Math.max(0, Math.min(1, 1 - distance / motion.initialDistance)) : 1;
+                const curve = RotationModule.rotationMode === 'Linear'
+                    ? { x: 0, y: 0 }
+                    : getRotationCurveOffset(progress, motion.initialDistance, motion.curveSeed);
+                rotation[axis] += delta * ratio + (axis === 'yaw' ? curve.x : curve.y) * ratio;
+                if (axis === 'pitch') rotation.pitch = clampPitch(rotation.pitch);
+                motion.complete = false;
+            }
+        }
+        motion.lastAt = now;
+    }
+
+    updateSpeedRotation(rotation, target) {
+        rotation.yaw = Player.getYaw();
+        rotation.pitch = Player.getPitch();
+        const yaw = rotation.yaw + wrapTo180(target.yaw - rotation.yaw);
+        const pitch = clampPitch(target.pitch);
         let motion = rotation.motion;
         if (
             !motion ||
             motion.targetId !== rotation.targetId ||
-            (motion.complete && (Math.abs(wrapTo180(target.yaw - motion.yaw)) > 0.1 || Math.abs(target.pitch - motion.pitch) > 0.1))
+            (motion.complete && (Math.abs(wrapTo180(yaw - motion.yaw)) > 0.1 || Math.abs(pitch - motion.pitch) > 0.1))
         ) {
-            motion = {
-                targetId: rotation.targetId,
-                fromYaw: rotation.yaw,
-                fromPitch: rotation.pitch,
-                yaw: rotation.yaw + wrapTo180(target.yaw - rotation.yaw),
-                pitch: clampPitch(target.pitch),
-                startedAt: now,
-                duration: this.delay(this.rotationTime),
-                curveSeed: random(0, Math.PI * 2),
-                complete: false,
-            };
+            motion = { targetId: rotation.targetId, yaw, pitch, started: false, complete: false };
             rotation.motion = motion;
         }
-        const progress = Math.max(0, Math.min(1, (now - motion.startedAt) / motion.duration));
-        const eased = progress * progress * (3 - 2 * progress);
-        const yaw = motion.yaw - motion.fromYaw;
-        const pitch = motion.pitch - motion.fromPitch;
-        const curve = getRotationCurveOffset(eased, Math.hypot(yaw, pitch), motion.curveSeed);
-        rotation.yaw = motion.fromYaw + yaw * eased + curve.x;
-        rotation.pitch = clampPitch(motion.fromPitch + pitch * eased + curve.y);
-        motion.complete = progress === 1;
+        if (motion.complete) return;
+
+        if (motion.started && !Rotations.active) {
+            // The shared controller clears its request once it reaches the target.
+            // Preserve the completion flag used by return/attack movement checks.
+            if (Math.hypot(wrapTo180(yaw - rotation.yaw), pitch - rotation.pitch) <= 0.75) {
+                motion.complete = true;
+                return;
+            }
+        }
+
+        const options = this.overrideRotationSpeed ? { rotationSpeed: this.scathaRotationSpeed } : {};
+        if (Rotations.lookAtAngles(yaw, pitch, options)) {
+            motion.started = true;
+            motion.yaw = yaw;
+            motion.pitch = pitch;
+        }
     }
 
     getMiningSlot() {
@@ -727,6 +811,7 @@ class ScathaMacro extends ModuleBase {
                 this.forwardRemaining = null;
                 this.nextTunnelCheck = 0;
                 this.preferHead = Math.random() < 0.5;
+                this.fixedForwardPitch = random(15, 20);
                 break;
             case 'BACKWARD':
                 this.backwardYaw = this.yaw(this.lane) + random(-3, 3);
@@ -1805,11 +1890,18 @@ class ScathaMacro extends ModuleBase {
 
     setForwardPitch(head) {
         this.preferHead = head;
+        const from = this.rotation?.pitch ?? Player.getPitch();
+        const target = this.switchForwardPitch
+            ? (head ? random(5, 10) : random(15, 20))
+            : (this.fixedForwardPitch ??= random(15, 20));
+        const now = Date.now();
         this.forwardPitch = {
-            from: this.rotation?.pitch ?? Player.getPitch(),
-            target: head ? random(5, 10) : random(15, 20),
-            startedAt: Date.now(),
-            duration: this.delay(this.rotationTime),
+            from,
+            target,
+            startedAt: now,
+            lastAt: now,
+            initialDistance: Math.abs(target - from),
+            duration: this.switchForwardPitch ? this.delay(this.forwardRotationTime) : 0,
             curveSeed: random(0, Math.PI * 2),
             complete: false,
         };
