@@ -70,6 +70,7 @@ const WORM_NAMETAG_GRACE_MS = 3000;
 const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_TUNNEL_HALF_LENGTH = 32;
 const WORM_TUNNEL_HALF_WIDTH = 1.5;
+const BACKWARD_STOP_DISTANCE = 2;
 const LANE_CORRECTION_MIN = 0.29;
 const LANE_CORRECTION_MAX = 0.71;
 const BACKWARD_ARRIVAL_DISTANCE = 0.45;
@@ -198,7 +199,7 @@ class ScathaMacro extends ModuleBase {
     initSettings() {
         const slider = (title, field, min, max, value, description) => {
             this[field] = value;
-            this.addSlider(title, min, max, value, (input) => (this[field] = Math.max(min, Math.min(max, Math.round(input)))), description);
+            return this.addSlider(title, min, max, value, (input) => (this[field] = Math.max(min, Math.min(max, Math.round(input)))), description);
         };
         const range = (title, field, min, max, low, high, description) => {
             this[field] = { low, high };
@@ -241,7 +242,6 @@ class ScathaMacro extends ModuleBase {
             false
         );
         range('Forward Mining Time (s)', 'forwardTime', 10, 200, 60, 90, 'Random time before each backward pass. Combat and recovery pause this timer.');
-        slider('Forward Block Distance (blocks)', 'forwardBlockDistance', 0, 5, 3, 'Distance to stop and clear blocks during forward mining. 0 keeps moving forward without stopping for obstacles.');
         slider('Skip Backward Under (blocks)', 'skipBackwardUnder', 0, 20, 10, 'Skip backward mining and turn immediately when the forward distance is below this value. 0 always mines backward.');
         range('UI Click Delay (ms)', 'clickDelay', 100, 2000, 200, 400, 'Random delay before inventory clicks and chest interactions.');
         range('Action Delay (ms)', 'actionDelay', 500, 5000, 1000, 3000, 'Random delay between macro states.');
@@ -268,11 +268,13 @@ class ScathaMacro extends ModuleBase {
         this.switchForwardPitch = true;
         this.fixedForwardPitch = null;
         let forwardRotationTimeSlider;
+        let forwardBlockDistanceSlider;
         this.addToggle(
             'Switch Forward Pitch',
             (value) => {
                 this.switchForwardPitch = !!value;
                 forwardRotationTimeSlider.visible = this.switchForwardPitch;
+                forwardBlockDistanceSlider.visible = this.switchForwardPitch;
                 this.forwardPitch = null;
                 this.forwardYaw = null;
                 this.forwardAligned = false;
@@ -289,6 +291,11 @@ class ScathaMacro extends ModuleBase {
             'Random duration of forward-mining pitch changes when Switch Forward Pitch is enabled.'
         );
         forwardRotationTimeSlider.visible = this.switchForwardPitch;
+        forwardBlockDistanceSlider = slider(
+            'Forward Block Distance (blocks)', 'forwardBlockDistance', 0, 5, 3,
+            'How far ahead to stop for blocks during forward mining. 0 disables early stopping, but still clears blocks that obstruct movement.'
+        );
+        forwardBlockDistanceSlider.visible = this.switchForwardPitch;
         slider('Lobby Failsafe Threshold', 'lobbyThreshold', 1, 1000, 200, 'Chat Mention and Player Grief intensity. Switching lobbies clears this counter.');
         slider('Exit Failsafe Threshold', 'exitThreshold', 1, 1000, 200, 'All other failsafe events. Stops the macro when reached.');
         slider('Intensity Decay per 10s', 'intensityDecay', 0, 50, 5, 'Subtract this amount from both counters every 10 seconds.');
@@ -1452,13 +1459,8 @@ class ScathaMacro extends ModuleBase {
     }
 
     mineForward() {
-        if (this.forwardBlockDistance === 0) {
-            this.forwardObstacle = null;
-            this.forwardBlocked = null;
-        }
-        const obstacleScanDistance = this.forwardBlockDistance > 0
-            ? Math.max(0, this.forwardBlockDistance - Player.getPlayer().getBbWidth() / 2)
-            : 0;
+        const earlyStopDistance = this.switchForwardPitch ? this.forwardBlockDistance : 0;
+        const obstacleScanDistance = Math.max(0.05, earlyStopDistance - Player.getPlayer().getBbWidth() / 2);
         const overlapping = this.overlappingChest();
         if (overlapping) return this.openChest(overlapping);
         if (this.forwardObstacle) {
@@ -1498,7 +1500,7 @@ class ScathaMacro extends ModuleBase {
         }
         const looking = getLookingAt(4.5);
         if (looking && isChest(blockName(looking)) && !this.openedChests.has(key(looking))) return this.openChest(looking);
-        const obstacle = obstacleScanDistance > 0 ? this.blockingAhead(this.lane, obstacleScanDistance) : null;
+        const obstacle = this.blockingAhead(this.lane, obstacleScanDistance);
         if (obstacle) {
             if (obstacle.unknown) {
                 this.stopControls();
@@ -1513,7 +1515,7 @@ class ScathaMacro extends ModuleBase {
                 return this.checkProgress(15000);
             }
             if (blockName(obstacle) === 'minecraft:bedrock') return this.beginBackward(true);
-            if (this.forwardBlockDistance > 4 && !this.getMiningAim(obstacle)) {
+            if (earlyStopDistance > 4 && !this.getMiningAim(obstacle)) {
                 this.forwardBlocked = null;
                 this.moveAlongLane(this.lane);
                 if (!this.holdMiningAttack(looking)) return;
@@ -1713,7 +1715,7 @@ class ScathaMacro extends ModuleBase {
         // Never scan beyond the return point. Bedrock on the far side of the
         // original start is not an obstacle to this backward pass.
         const scanDistance = Math.max(0, Math.min(
-            FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2,
+            BACKWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2,
             remaining - BACKWARD_ARRIVAL_DISTANCE
         ));
         const overlapping = this.overlappingChest();
