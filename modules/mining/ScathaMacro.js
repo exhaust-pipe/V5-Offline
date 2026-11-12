@@ -69,6 +69,7 @@ const WORM_NAMETAG_HEAD_MAX_DISTANCE = 2;
 const WORM_APPROACH_STOP_DISTANCE = 3.5;
 const WORM_NAMETAG_GRACE_MS = 3000;
 const WORM_SEGMENT_GRACE_MS = 1500;
+const WORM_DEBUG_INTERVAL_MS = 2000;
 const WORM_TUNNEL_HALF_LENGTH = 32;
 const WORM_TUNNEL_HALF_WIDTH = 1.5;
 const BACKWARD_STOP_DISTANCE = 2;
@@ -300,6 +301,13 @@ class ScathaMacro extends ModuleBase {
         slider('Lobby Failsafe Threshold', 'lobbyThreshold', 1, 1000, 200, 'Chat Mention and Player Grief intensity. Switching lobbies clears this counter.');
         slider('Exit Failsafe Threshold', 'exitThreshold', 1, 1000, 200, 'All other failsafe events. Stops the macro when reached.');
         slider('Intensity Decay per 10s', 'intensityDecay', 0, 50, 5, 'Subtract this amount from both counters every 10 seconds.');
+        this.wormDebug = false;
+        this.addToggle(
+            'Worm Detection Debug',
+            (value) => (this.wormDebug = !!value),
+            'Report WAIT_WORM armor stands, player-head segments, nametags, proximity matches, UUIDs and confirmation failures in chat.',
+            false
+        );
     }
 
     delay(range) {
@@ -403,6 +411,9 @@ class ScathaMacro extends ModuleBase {
         this.wormTargets = [];
         this.wormCandidates = new Map();
         this.wormNametags = new Map();
+        this.wormDebugScan = null;
+        this.wormDebugLastAt = 0;
+        this.wormDebugLastEvent = null;
         this.returnJob = null;
         this.recovery = null;
         this.chest = null;
@@ -2539,6 +2550,9 @@ class ScathaMacro extends ModuleBase {
         this.wormConfirmation = null;
         this.wormCandidates.clear();
         this.wormNametags.clear();
+        this.wormDebugScan = null;
+        this.wormDebugLastAt = 0;
+        this.wormDebugLastEvent = null;
         if (this.state === 'LOADOUT') {
             this.currentLoadout = null;
             closeInventory();
@@ -2582,8 +2596,13 @@ class ScathaMacro extends ModuleBase {
         let nearestApproachDistance = Infinity;
         let nearestStandPoint = null;
         let nearestStandDistance = Infinity;
+        const debug = this.wormDebug && this.state === 'WAIT_WORM'
+            ? { scanned: 0, inBounds: 0, withinTwoBlocks: 0, closestSq: Infinity, pairErrors: 0 }
+            : null;
         for (const stand of World.getAllEntitiesOfType(ArmorStandEntity)) {
+            if (debug) debug.scanned++;
             if (!this.inWormSearchBounds({ x: stand.getX(), y: stand.getY(), z: stand.getZ() })) continue;
+            if (debug) debug.inBounds++;
             const uuid = CombatBot.getTargetUuid(stand);
             if (!uuid) continue;
 
@@ -2643,16 +2662,72 @@ class ScathaMacro extends ModuleBase {
             for (const segment of (requireFresh ? freshSegments : available).values()) {
                 try {
                     const distanceSq = segment.toMC().getBoundingBox().distanceToSqr(point);
+                    if (debug) {
+                        debug.closestSq = Math.min(debug.closestSq, distanceSq);
+                        if (distanceSq <= maxDistanceSq) debug.withinTwoBlocks++;
+                    }
                     if (distanceSq > maxDistanceSq || distanceSq >= nearestDistanceSq) continue;
                     nearestDistanceSq = distanceSq;
                     nearest = segment;
                 } catch (error) {
                     // The stand may unload while matching entities.
+                    if (debug) debug.pairErrors++;
                 }
             }
         }
+        if (debug) {
+            this.wormDebugScan = {
+                ...debug,
+                fresh: requireFresh,
+                heads: freshSegments.size,
+                nametags: freshNametags.size,
+                cachedHeads: available.size,
+                cachedNametags: this.wormNametags.size,
+                matchedUuid: nearest ? CombatBot.getTargetUuid(nearest) : null,
+            };
+        }
         if (nearest) this.wormLastSeenAt = now;
         return nearest ? [nearest] : [];
+    }
+
+
+    reportWormDebug(now, stage, expectedUuid = null, observedUuid = null) {
+        if (!this.wormDebug || this.state !== 'WAIT_WORM' || !this.wormDebugScan) return;
+        const scan = this.wormDebugScan;
+        let reason = '';
+        if (stage === 'verify-failed') {
+            if (!scan.nametags) reason = 'no fresh Worm nametag';
+            else if (!scan.heads) reason = 'no fresh player-head stand';
+            else if (!scan.withinTwoBlocks) reason = scan.pairErrors
+                ? 'no pair within 2 blocks (bounding-box check errors)'
+                : 'nametag/head distance exceeds 2 blocks';
+            else if (!observedUuid) reason = 'no selected target UUID';
+            else if (observedUuid !== expectedUuid) reason = 'head UUID changed';
+            else reason = 'second confirmation unsuccessful';
+        }
+        const event = `${stage}:${reason}:${expectedUuid || ''}:${observedUuid || ''}`;
+        if (stage === 'waiting') {
+            if (now - this.wormDebugLastAt < WORM_DEBUG_INTERVAL_MS) return;
+        } else if (event === this.wormDebugLastEvent && now - this.wormDebugLastAt < WORM_DEBUG_INTERVAL_MS) {
+            return;
+        }
+        this.wormDebugLastAt = now;
+        this.wormDebugLastEvent = event;
+
+        const shortId = (uuid) => uuid ? String(uuid).slice(0, 8) : '-';
+        const closest = Number.isFinite(scan.closestSq) ? Math.sqrt(scan.closestSq).toFixed(2) : '-';
+        const goal = this.wormLastStandPosition;
+        const distance = goal && this.wormSearch
+            ? Math.abs(goal[this.wormSearch.axis] - position()[this.wormSearch.axis]).toFixed(1)
+            : '-';
+        this.message(
+            `&8[Worm Debug] &7${stage} ${scan.fresh ? '[fresh]' : '[cached]'} ` +
+            `stands=${scan.scanned}/${scan.inBounds} heads=${scan.heads}/${scan.cachedHeads} ` +
+            `tags=${scan.nametags}/${scan.cachedNametags} pairs<=2=${scan.withinTwoBlocks} ` +
+            `nearest=${closest} match=${shortId(scan.matchedUuid)} ` +
+            `expected=${shortId(expectedUuid)} actual=${shortId(observedUuid)} ` +
+            `approach=${distance}${reason ? ` reason=${reason}` : ''}`
+        );
     }
 
     approachLastWormPosition() {
@@ -2704,6 +2779,7 @@ class ScathaMacro extends ModuleBase {
 
         if (verifying) {
             if (uuid && uuid === this.wormConfirmation.uuid) {
+                this.reportWormDebug(now, 'verified', this.wormConfirmation.uuid, uuid);
                 this.wormTargetUuid = uuid;
                 this.wormTargets = [target];
                 this.wormConfirmation = null;
@@ -2712,10 +2788,13 @@ class ScathaMacro extends ModuleBase {
                 return this.fightWorm();
             }
             // Restart the 500 ms check for a new head, or wait until one returns.
+            this.reportWormDebug(now, 'verify-failed', this.wormConfirmation.uuid, uuid);
             this.wormConfirmation = uuid ? { uuid, startedAt: now } : null;
         } else if (!this.wormConfirmation && uuid) {
             this.wormConfirmation = { uuid, startedAt: now };
+            this.reportWormDebug(now, 'first-match', uuid, uuid);
         }
+        this.reportWormDebug(now, 'waiting', this.wormConfirmation?.uuid || null, uuid);
 
         if (now - this.wormWarningAt >= WORM_SPAWN_TIMEOUT_MS) return this.switchLobby('No Stoneworm or Scatha appeared within 60 seconds');
         // Approach the latest observed head while confirmation is pending or
