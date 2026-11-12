@@ -2720,13 +2720,14 @@ class ScathaMacro extends ModuleBase {
         const distance = goal && this.wormSearch
             ? Math.abs(goal[this.wormSearch.axis] - position()[this.wormSearch.axis]).toFixed(1)
             : '-';
+        const reasonSuffix = reason ? ' reason=' + reason : '';
         this.message(
             `&8[Worm Debug] &7${stage} ${scan.fresh ? '[fresh]' : '[cached]'} ` +
             `stands=${scan.scanned}/${scan.inBounds} heads=${scan.heads}/${scan.cachedHeads} ` +
             `tags=${scan.nametags}/${scan.cachedNametags} pairs<=2=${scan.withinTwoBlocks} ` +
             `nearest=${closest} match=${shortId(scan.matchedUuid)} ` +
             `expected=${shortId(expectedUuid)} actual=${shortId(observedUuid)} ` +
-            `approach=${distance}${reason ? ` reason=${reason}` : ''}`
+            `approach=${distance}${reasonSuffix}`
         );
     }
 
