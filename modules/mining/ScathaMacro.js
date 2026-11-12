@@ -37,6 +37,7 @@ const flatDistance = (point) => Math.hypot(Player.getX() - point.x, Player.getZ(
 const blockName = (point) => World.getBlockAt(point.x, point.y, point.z)?.type?.getRegistryName();
 const key = (point) => `${point.x},${point.y},${point.z}`;
 const isChest = (name) => name === 'minecraft:chest' || name === 'minecraft:trapped_chest';
+const CHEST_OVERLAP_CONFIRM_MS = 1200;
 const WORM_SPAWN_TIMEOUT_MS = 60000;
 const WORM_CONFIRM_DELAY_MS = 500;
 const WORM_DISAPPEAR_GRACE_MS = 5000;
@@ -717,6 +718,7 @@ class ScathaMacro extends ModuleBase {
             this.progressAt += elapsed;
             if (this.chest) {
                 this.chest.progressAt += elapsed;
+                if (this.chest.overlapClickedAt) this.chest.overlapClickedAt += elapsed;
                 if (this.chest.approach) this.chest.approach.startedAt += elapsed;
             }
             this.guiPausedAt = 0;
@@ -2127,7 +2129,16 @@ class ScathaMacro extends ModuleBase {
     }
 
     openChest(point) {
-        this.chest = { point: { ...point }, resume: this.snapshot(), clickedAt: 0, particleAt: 0, opened: false, dueAt: 0, progressAt: Date.now() };
+        this.chest = {
+            point: { ...point },
+            resume: this.snapshot(),
+            clickedAt: 0,
+            overlapClickedAt: 0,
+            particleAt: 0,
+            opened: false,
+            dueAt: 0,
+            progressAt: Date.now(),
+        };
         this.setState('CHEST', 0);
     }
 
@@ -2143,8 +2154,27 @@ class ScathaMacro extends ModuleBase {
         const overlapping = this.overlappingChest();
         const descentChest = chest.resume.state === 'DESCEND' &&
             Math.floor(Player.getX()) === chest.point.x && Math.floor(Player.getZ()) === chest.point.z;
-        if (overlapping && key(overlapping) === key(chest.point) && !descentChest)
+        if (overlapping && key(overlapping) === key(chest.point) && !descentChest) {
+            Client.stopMovement();
+            Client.setKey('leftclick', false);
+            if (!chest.overlapClickedAt) {
+                if (!chest.overlapAim) {
+                    const visible = getVisiblePoint(chest.point.x, chest.point.y, chest.point.z);
+                    chest.overlapAim = visible
+                        ? { x: visible[0], y: visible[1], z: visible[2] }
+                        : { x: chest.point.x + 0.5, y: chest.point.y + 0.85, z: chest.point.z + 0.5 };
+                }
+                this.aimAt(chest.overlapAim, `overlap-chest:${key(chest.point)}`);
+                const angles = calculateAbsoluteAngles(chest.overlapAim);
+                if (Math.abs(wrapTo180(Player.getYaw() - angles.yaw)) > 3 || Math.abs(Player.getPitch() - angles.pitch) > 3) return;
+                Client.rightClick();
+                chest.clickedAt = now;
+                chest.overlapClickedAt = now;
+                chest.progressAt = now;
+            }
+            if (now - chest.overlapClickedAt < CHEST_OVERLAP_CONFIRM_MS) return;
             return this.approachChest(chest.point);
+        }
         if (now - chest.progressAt > Math.max(25000, this.mineTarget ? this.mineTarget.timeoutMs : 0))
             return this.switchLobby('Treasure chest stopped making progress');
         const player = Player.getPlayer();
