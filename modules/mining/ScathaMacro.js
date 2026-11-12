@@ -276,7 +276,10 @@ class ScathaMacro extends ModuleBase {
                 this.forwardPitch = null;
                 this.forwardYaw = null;
                 this.forwardAligned = false;
-                if (!this.switchForwardPitch && this.fixedForwardPitch === null) this.fixedForwardPitch = random(15, 20);
+                if (!this.switchForwardPitch) {
+                    this.fixedForwardPitch ??= random(15, 20);
+                    this.fixedForwardYaw ??= this.lane ? this.yaw(this.lane) + random(-3, 3) : null;
+                }
             },
             'Alternate between upward and downward mining pitches. When disabled, hold one downward pitch between 15 and 20 degrees.',
             true
@@ -490,7 +493,10 @@ class ScathaMacro extends ModuleBase {
             Rotations.stop();
             this.rotation = { yaw: Player.getYaw(), pitch: Player.getPitch(), updatedAt: Date.now() };
             if (target.forward && this.forwardPitch) {
-                this.forwardYaw = null;
+                this.forwardYaw.from = this.rotation.yaw;
+                this.forwardYaw.lastAt = this.rotation.updatedAt;
+                this.forwardYaw.initialDistance = Math.abs(wrapTo180(this.forwardYaw.target - this.rotation.yaw));
+                this.forwardYaw.complete = false;
                 this.forwardPitch.from = this.rotation.pitch;
                 this.forwardPitch.startedAt = this.rotation.updatedAt;
                 this.forwardPitch.lastAt = this.rotation.updatedAt;
@@ -515,35 +521,28 @@ class ScathaMacro extends ModuleBase {
         if (rotation.target.forward) {
             if (Rotations.active) Rotations.stop();
             rotation.motion = null;
-            if (!this.forwardPitch) return;
-            if (!this.forwardYaw || (this.forwardAligned && this.forwardYaw.complete && now >= this.forwardYaw.nextAt)) {
-                const target = this.yaw(this.lane) + random(-3, 3);
-                this.forwardYaw = {
-                    target,
-                    initialDistance: Math.abs(wrapTo180(target - rotation.yaw)),
-                    lastAt: now,
-                    curveSeed: random(0, Math.PI * 2),
-                    complete: false,
-                    nextAt: 0,
-                };
-            }
-            this.advanceForwardAxis(rotation, this.forwardYaw, 'yaw', now);
-            if (this.forwardYaw.complete && !this.forwardYaw.nextAt) this.forwardYaw.nextAt = now + randomInt(200, 400);
-
+            if (!this.forwardPitch || !this.forwardYaw) return;
             if (this.switchForwardPitch) {
-                // Forward Rotation Time applies only to alternating mining pitches.
-                const motion = this.forwardPitch;
-                const progress = Math.max(0, Math.min(1, (now - motion.startedAt) / motion.duration));
+                // Pitch and yaw share one randomized duration, easing curve, and start time.
+                // The yaw offset changes only when the pitch switches, never independently.
+                const pitch = this.forwardPitch;
+                const yaw = this.forwardYaw;
+                const progress = Math.max(0, Math.min(1, (now - pitch.startedAt) / pitch.duration));
                 const eased = progress * progress * (3 - 2 * progress);
-                const curve = getRotationCurveOffset(eased, Math.abs(motion.target - motion.from), motion.curveSeed);
-                rotation.pitch = clampPitch(motion.from + (motion.target - motion.from) * eased + curve.y);
-                motion.complete = progress === 1;
+                const yawDelta = wrapTo180(yaw.target - yaw.from);
+                const pitchDelta = pitch.target - pitch.from;
+                const curve = getRotationCurveOffset(eased, Math.hypot(yawDelta, pitchDelta), pitch.curveSeed);
+                rotation.yaw = yaw.from + yawDelta * eased + curve.x;
+                rotation.pitch = clampPitch(pitch.from + pitchDelta * eased + curve.y);
+                yaw.complete = pitch.complete = progress === 1;
             } else {
-                // A fixed downward pitch still uses the global/overridden rotation speed to align.
+                // Fixed random yaw and pitch for the whole forward pass.
+                // Both axes use global/overridden rotation speed only for initial alignment.
+                this.advanceForwardAxis(rotation, this.forwardYaw, 'yaw', now);
                 this.advanceForwardAxis(rotation, this.forwardPitch, 'pitch', now);
             }
             applyToPlayer(rotation.yaw, rotation.pitch);
-            if (this.switchForwardPitch && this.forwardAligned && this.forwardPitch.complete) {
+            if (this.switchForwardPitch && this.forwardAligned && this.forwardPitch.complete && this.forwardYaw.complete) {
                 this.setForwardPitch(!this.preferHead);
             }
         } else {
@@ -812,6 +811,7 @@ class ScathaMacro extends ModuleBase {
                 this.nextTunnelCheck = 0;
                 this.preferHead = Math.random() < 0.5;
                 this.fixedForwardPitch = random(15, 20);
+                this.fixedForwardYaw = this.yaw(this.lane) + random(-3, 3);
                 break;
             case 'BACKWARD':
                 this.backwardYaw = this.yaw(this.lane) + random(-3, 3);
@@ -1890,19 +1890,35 @@ class ScathaMacro extends ModuleBase {
 
     setForwardPitch(head) {
         this.preferHead = head;
-        const from = this.rotation?.pitch ?? Player.getPitch();
-        const target = this.switchForwardPitch
+        const now = Date.now();
+        const duration = this.switchForwardPitch ? this.delay(this.forwardRotationTime) : 0;
+        const curveSeed = random(0, Math.PI * 2);
+        const pitchFrom = this.rotation?.pitch ?? Player.getPitch();
+        const pitchTarget = this.switchForwardPitch
             ? (head ? random(5, 10) : random(15, 20))
             : (this.fixedForwardPitch ??= random(15, 20));
-        const now = Date.now();
+        const yawFrom = this.rotation?.yaw ?? Player.getYaw();
+        const yawTarget = this.switchForwardPitch
+            ? this.yaw(this.lane) + random(-3, 3)
+            : (this.fixedForwardYaw ??= this.yaw(this.lane) + random(-3, 3));
         this.forwardPitch = {
-            from,
-            target,
+            from: pitchFrom,
+            target: pitchTarget,
             startedAt: now,
             lastAt: now,
-            initialDistance: Math.abs(target - from),
-            duration: this.switchForwardPitch ? this.delay(this.forwardRotationTime) : 0,
-            curveSeed: random(0, Math.PI * 2),
+            initialDistance: Math.abs(pitchTarget - pitchFrom),
+            duration,
+            curveSeed,
+            complete: false,
+        };
+        this.forwardYaw = {
+            from: yawFrom,
+            target: yawTarget,
+            startedAt: now,
+            lastAt: now,
+            initialDistance: Math.abs(wrapTo180(yawTarget - yawFrom)),
+            duration,
+            curveSeed,
             complete: false,
         };
     }
