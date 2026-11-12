@@ -70,7 +70,6 @@ const WORM_NAMETAG_GRACE_MS = 3000;
 const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_TUNNEL_HALF_LENGTH = 32;
 const WORM_TUNNEL_HALF_WIDTH = 1.5;
-const FORWARD_STOP_DISTANCE = 2;
 const LANE_CORRECTION_MIN = 0.29;
 const LANE_CORRECTION_MAX = 0.71;
 const BACKWARD_ARRIVAL_DISTANCE = 0.45;
@@ -242,6 +241,7 @@ class ScathaMacro extends ModuleBase {
             false
         );
         range('Forward Mining Time (s)', 'forwardTime', 10, 200, 60, 90, 'Random time before each backward pass. Combat and recovery pause this timer.');
+        slider('Forward Block Distance (blocks)', 'forwardBlockDistance', 0, 5, 3, 'Distance to stop and clear blocks during forward mining. 0 keeps moving forward without stopping for obstacles.');
         slider('Skip Backward Under (blocks)', 'skipBackwardUnder', 0, 20, 10, 'Skip backward mining and turn immediately when the forward distance is below this value. 0 always mines backward.');
         range('UI Click Delay (ms)', 'clickDelay', 100, 2000, 200, 400, 'Random delay before inventory clicks and chest interactions.');
         range('Action Delay (ms)', 'actionDelay', 500, 5000, 1000, 3000, 'Random delay between macro states.');
@@ -1367,10 +1367,17 @@ class ScathaMacro extends ModuleBase {
     }
 
     mineForward() {
+        if (this.forwardBlockDistance === 0) {
+            this.forwardObstacle = null;
+            this.forwardBlocked = null;
+        }
+        const obstacleScanDistance = this.forwardBlockDistance > 0
+            ? Math.max(0, this.forwardBlockDistance - Player.getPlayer().getBbWidth() / 2)
+            : 0;
         const overlapping = this.overlappingChest();
         if (overlapping) return this.openChest(overlapping);
         if (this.forwardObstacle) {
-            const blocker = this.blockingAhead(this.lane, FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2);
+            const blocker = this.blockingAhead(this.lane, obstacleScanDistance);
             if (blocker && !blocker.unknown && isChest(blockName(blocker)) && !this.openedChests.has(key(blocker))) return this.openChest(blocker);
             if (!this.clearForwardObstacles()) return;
         }
@@ -1406,7 +1413,7 @@ class ScathaMacro extends ModuleBase {
         }
         const looking = getLookingAt(4.5);
         if (looking && isChest(blockName(looking)) && !this.openedChests.has(key(looking))) return this.openChest(looking);
-        const obstacle = this.blockingAhead(this.lane, FORWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2);
+        const obstacle = obstacleScanDistance > 0 ? this.blockingAhead(this.lane, obstacleScanDistance) : null;
         if (obstacle) {
             if (obstacle.unknown) {
                 this.stopControls();
@@ -1421,6 +1428,12 @@ class ScathaMacro extends ModuleBase {
                 return this.checkProgress(15000);
             }
             if (blockName(obstacle) === 'minecraft:bedrock') return this.beginBackward(true);
+            if (this.forwardBlockDistance > 4 && !this.getMiningAim(obstacle)) {
+                this.forwardBlocked = null;
+                this.moveAlongLane(this.lane);
+                if (!this.holdMiningAttack(looking)) return;
+                return this.checkProgress(this.freeMiningTarget ? this.freeMiningTarget.timeoutMs : 15000);
+            }
             Client.stopMovement();
             const now = Date.now();
             const coordinate = position()[this.lane.axis];
@@ -1794,7 +1807,7 @@ class ScathaMacro extends ModuleBase {
         this.preferHead = head;
         this.forwardPitch = {
             from: this.rotation?.pitch ?? Player.getPitch(),
-            target: head ? random(5, 10) : random(15, 30),
+            target: head ? random(5, 10) : random(15, 20),
             startedAt: Date.now(),
             duration: this.delay(this.rotationTime),
             curveSeed: random(0, Math.PI * 2),
