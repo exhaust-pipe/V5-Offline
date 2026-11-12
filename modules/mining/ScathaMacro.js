@@ -90,6 +90,7 @@ const WORM_TUNNEL_HALF_WIDTH = 1.5;
 const BACKWARD_STOP_DISTANCE = 2;
 const LANE_CORRECTION_MIN = 0.29;
 const LANE_CORRECTION_MAX = 0.71;
+const LANE_CORRECTION_SETTLE_DISTANCE = 0.15;
 const BACKWARD_ARRIVAL_DISTANCE = 0.45;
 const RETURN_STALL_TIMEOUT_MS = 20000;
 const RETURN_TIMEOUT_MS = 120000;
@@ -1500,12 +1501,14 @@ class ScathaMacro extends ModuleBase {
         return coordinate >= laneBlock + LANE_CORRECTION_MIN && coordinate <= laneBlock + LANE_CORRECTION_MAX;
     }
 
+    needsLaneCorrection(coordinate, laneCenter, correcting = false) {
+        return !this.inLaneRange(coordinate, laneCenter) || (correcting && Math.abs(coordinate - laneCenter) > LANE_CORRECTION_SETTLE_DISTANCE);
+    }
+
     moveAlongLane(direction, origin = this.laneStart, facing = this.lane) {
         const other = direction.axis === 'x' ? 'z' : 'x';
         const coordinate = position()[other];
-        const deviation = Math.abs(coordinate - origin[other]);
-        if (!this.inLaneRange(coordinate, origin[other])) this.correctingLane = true;
-        else if (deviation <= 0.15) this.correctingLane = false;
+        this.correctingLane = this.needsLaneCorrection(coordinate, origin[other], this.correctingLane);
         if (this.correctingLane) {
             const goal = this.offset(position(), direction, 0.35);
             goal[other] = origin[other];
@@ -3183,15 +3186,30 @@ class ScathaMacro extends ModuleBase {
                   cross: origin?.[crossAxis] ?? Math.floor(snapshot.point[crossAxis]) + 0.5,
               }
             : null;
-        this.returnJob = { snapshot, after, tunnel, startedAt: Date.now(), result: null, alignmentAttempted: false, alignment: null };
+        this.returnJob = {
+            snapshot,
+            after,
+            tunnel,
+            yawOffset: random(-3, 3),
+            startedAt: Date.now(),
+            result: null,
+            alignmentAttempted: false,
+            alignment: null,
+        };
         this.setState('RESUME_PATH', after === 'RETURN_RESUME' ? 0 : this.actionDelay);
+    }
+
+    hasReachedReturnPoint(job) {
+        const point = job.snapshot.point;
+        if (flatDistance(point) >= 0.6 || Math.abs(Player.getY() - point.y) >= 0.25) return false;
+        return !job.tunnel || !this.needsLaneCorrection(position()[job.tunnel.crossAxis], job.tunnel.cross, job.alignment?.correctingLane);
     }
 
     startReturnPath() {
         const job = this.returnJob;
         if (!job) return this.stop('Missing return path.');
         const point = job.snapshot.point;
-        if (flatDistance(point) < 0.6 && Math.abs(Player.getY() - point.y) < 0.25) {
+        if (this.hasReachedReturnPoint(job)) {
             job.result = true;
             return;
         }
@@ -3205,55 +3223,54 @@ class ScathaMacro extends ModuleBase {
 
     createTunnelReturnAlignment(returnPoint, tunnel) {
         const here = position();
-        if (!tunnel || !Player.getPlayer().onGround() || Math.abs(returnPoint.y - this.tunnelY) > 0.25) return null;
+        if (!tunnel || Math.abs(returnPoint.y - this.tunnelY) > 0.25) return null;
 
         const axis = tunnel.crossAxis;
         const delta = tunnel.cross - here[axis];
         if (Math.abs(delta) > TUNNEL_RETURN_ALIGN_MAX_DISTANCE) return null;
-        const goal = { ...here };
+        const goal = { ...here, y: returnPoint.y };
         goal[axis] = tunnel.cross;
-        const alignment = { point: goal, startedAt: Date.now() };
-        // Already within the normal mining corridor's no-correction range:
-        // turn toward the return point without moving to the exact center.
-        if (this.inLaneRange(here[axis], tunnel.cross)) return alignment;
+        return { point: goal, startedAt: Date.now(), correctingLane: false };
+    }
 
-        const direction = { axis, sign: Math.sign(delta) };
-        const laneBlock = Math.floor(tunnel.cross);
-        const nearestEdge = direction.sign > 0 ? laneBlock + LANE_CORRECTION_MIN : laneBlock + LANE_CORRECTION_MAX;
-        const travel = Math.abs(nearestEdge - here[axis]);
+    canWalkTunnelReturn(direction, distance, y) {
+        const next = this.offset(position(), direction, distance);
+        next.y = y;
+        const floor = new BP(Math.floor(next.x), Math.floor(y) - 1, Math.floor(next.z));
         const world = World.getWorld();
-        // Check only as far as the nearest point inside the no-correction
-        // range, not all the way to the center of the tunnel.
-        for (let step = 0; step <= travel + 0.5; step += 0.5) {
-            const test = this.offset(here, direction, Math.min(step, travel));
-            const floor = new BP(Math.floor(test.x), Math.floor(test.y) - 1, Math.floor(test.z));
-            if (!this.passable(test) || !this.passable({ ...test, y: test.y + 1 }) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP))
-                return null;
-        }
-        if (this.blockingAhead(direction, travel)) return null;
-        return alignment;
+        return (
+            !this.blockingAhead(direction, distance) &&
+            this.passable(next) &&
+            this.passable({ ...next, y: y + 1 }) &&
+            world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)
+        );
     }
 
     tickTunnelReturnAlignment(job) {
         const alignment = job.alignment;
         const now = Date.now();
         const distance = flatDistance(alignment.point);
-        if (
-            now - alignment.startedAt > TUNNEL_RETURN_ALIGN_TIMEOUT_MS ||
-            !Player.getPlayer().onGround() ||
-            Math.abs(Player.getY() - alignment.point.y) > 0.25
-        ) {
+        if (now - alignment.startedAt > TUNNEL_RETURN_ALIGN_TIMEOUT_MS) return this.fallbackTunnelReturnPath(job);
+        if (!Player.getPlayer().onGround()) {
+            Client.stopMovement();
+            return;
+        }
+        if (Math.abs(Player.getY() - alignment.point.y) > 0.25) {
             return this.fallbackTunnelReturnPath(job);
         }
         const axis = job.tunnel.crossAxis;
-        if (!this.inLaneRange(position()[axis], job.tunnel.cross)) {
+        alignment.correctingLane = this.needsLaneCorrection(position()[axis], job.tunnel.cross, alignment.correctingLane);
+        if (alignment.correctingLane) {
             const direction = { axis, sign: Math.sign(alignment.point[axis] - position()[axis]) };
-            if (direction.sign === 0 || this.blockingAhead(direction, Math.min(distance, 0.8))) return this.fallbackTunnelReturnPath(job);
+            if (direction.sign === 0 || !this.canWalkTunnelReturn(direction, Math.min(distance, 0.6), alignment.point.y))
+                return this.fallbackTunnelReturnPath(job);
             if (this.checkProgress(1500, () => this.fallbackTunnelReturnPath(job), alignment)) return;
             Client.setKey('leftclick', false);
+            Client.setKey('shift', true);
             setKeysForStraightLineCoords(alignment.point.x, alignment.point.y, alignment.point.z, false);
             return;
         }
+        Client.setKey('shift', false);
         Client.stopMovement();
         const point = job.snapshot.point;
         const returnAxis = job.tunnel.axis;
@@ -3263,10 +3280,8 @@ class ScathaMacro extends ModuleBase {
             job.result = true;
             return;
         }
-        const target = calculateAbsoluteAngles({ ...job.snapshot.point, y: Player.getY() + 1.4 });
-        // Match the +/-3 degree yaw variation used by forward/backward mining.
-        // Keep one offset per alignment so the target does not jitter each tick.
-        alignment.faceYaw ??= target.yaw + random(-3, 3);
+        const direction = { axis: returnAxis, sign: Math.sign(delta) };
+        alignment.faceYaw ??= this.yaw(direction) + job.yawOffset;
         this.aimAt({ yaw: alignment.faceYaw, pitch: 0 }, 'return:face');
         if (
             this.rotation.motion?.targetId !== 'return:face' ||
@@ -3278,7 +3293,7 @@ class ScathaMacro extends ModuleBase {
         job.alignment = null;
         job.directReturn = {
             yaw: alignment.faceYaw,
-            direction: { axis: returnAxis, sign: Math.sign(delta) },
+            direction,
             startedAt: now,
         };
     }
@@ -3298,27 +3313,25 @@ class ScathaMacro extends ModuleBase {
             job.result = true;
             return;
         }
-        if (
-            now - direct.startedAt > TUNNEL_DIRECT_RETURN_TIMEOUT_MS ||
-            !Player.getPlayer().onGround() ||
-            Math.abs(Player.getY() - point.y) > 0.25 ||
-            !inTunnel ||
-            this.blockingAhead(direct.direction, Math.min(0.6, Math.max(0, remaining)))
-        ) {
+        if (now - direct.startedAt > TUNNEL_DIRECT_RETURN_TIMEOUT_MS || Math.abs(Player.getY() - point.y) > 0.25) {
             return this.fallbackTunnelReturnPath(job);
         }
-
-        // Avoid moving into unloaded blocks, obstacles, or missing floor.
-        const next = this.offset(position(), direct.direction, Math.min(0.6, remaining));
-        const floor = new BP(Math.floor(next.x), Math.floor(this.tunnelY) - 1, Math.floor(next.z));
-        const world = World.getWorld();
-        if (!this.passable(next) || !this.passable({ ...next, y: this.tunnelY + 1 }) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) {
-            return this.fallbackTunnelReturnPath(job);
+        if (!Player.getPlayer().onGround()) {
+            Client.stopMovement();
+            this.checkProgress(TUNNEL_DIRECT_RETURN_STALL_MS, () => this.fallbackTunnelReturnPath(job), direct);
+            return;
         }
+        if (!inTunnel) {
+            const alignment = this.createTunnelReturnAlignment(point, job.tunnel);
+            if (!alignment) return this.fallbackTunnelReturnPath(job);
+            Client.stopMovement();
+            job.alignment = alignment;
+            job.directReturn = null;
+            return;
+        }
+        if (!this.canWalkTunnelReturn(direct.direction, Math.min(0.6, Math.max(0, remaining)), point.y)) return this.fallbackTunnelReturnPath(job);
         if (this.checkProgress(TUNNEL_DIRECT_RETURN_STALL_MS, () => this.fallbackTunnelReturnPath(job), direct)) return;
 
-        // Keep the single +/-3 degree yaw chosen during alignment, and press
-        // W directly instead of asking Pathfinder to navigate the tunnel.
         this.aimAt({ yaw: direct.yaw, pitch: 0 }, 'return:face');
         Client.setKey('leftclick', false);
         Client.setKey('a', false);
@@ -3360,8 +3373,7 @@ class ScathaMacro extends ModuleBase {
 
     tickReturnPath() {
         const job = this.returnJob;
-        const point = job.snapshot.point;
-        if (flatDistance(point) < 0.6 && Math.abs(Player.getY() - point.y) < 0.25) {
+        if (this.hasReachedReturnPoint(job)) {
             job.alignment = null;
             job.directReturn = null;
             job.result = true;
