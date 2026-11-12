@@ -90,6 +90,8 @@ const BACKWARD_STOP_DISTANCE = 2;
 const LANE_CORRECTION_MIN = 0.29;
 const LANE_CORRECTION_MAX = 0.71;
 const BACKWARD_ARRIVAL_DISTANCE = 0.45;
+const RETURN_STALL_TIMEOUT_MS = 20000;
+const RETURN_TIMEOUT_MS = 120000;
 const TUNNEL_RETURN_ALIGN_MAX_DISTANCE = 6;
 const TUNNEL_RETURN_ALIGN_TIMEOUT_MS = 6000;
 const TUNNEL_DIRECT_RETURN_TIMEOUT_MS = 12000;
@@ -102,6 +104,11 @@ const LAVA_SCAN_CENTERS = [
     [565, 490],
 ];
 const LAVA_SCAN_HALF_SIZE = 30;
+const LAVA_REACH_TIMEOUT_MS = 20000;
+const LAVA_MAX_RESELECTS = 3;
+const LAVA_NEARBY_CANDIDATES = 5;
+const LAVA_TARGET_FILL = new RenderColor(255, 120, 20, 70);
+const LAVA_TARGET_WIRE = new RenderColor(255, 120, 20, 255);
 const isInLavaScanRegion = (point) =>
     LAVA_SCAN_CENTERS.some(([x, z]) => Math.abs(point.x - x) < LAVA_SCAN_HALF_SIZE && Math.abs(point.z - z) < LAVA_SCAN_HALF_SIZE);
 const ABILITY_STATES = new Set(['FORWARD', 'BACKWARD', 'TURN', 'DESCEND']);
@@ -134,6 +141,7 @@ class ScathaMacro extends ModuleBase {
         this.bindToggleKey();
         this.on('tick', () => this.tick());
         this.on('postRenderWorld', () => this.updateRotation());
+        this.on('postRenderWorld', () => this.renderLavaTarget());
         this.on('worldUnload', () => this.onWorldUnload());
         this.on('chat', (event) => {
             const message = cleanChat(event.message.getUnformattedText());
@@ -795,11 +803,18 @@ class ScathaMacro extends ModuleBase {
         if (this.guiPausedAt) {
             const elapsed = Date.now() - this.guiPausedAt;
             this.startedAt += elapsed;
+            if (['PATH_LAVA', 'ENTER_LAVA'].includes(this.state) && this.lavaTarget?.pathStartedAt != null) this.lavaTarget.pathStartedAt += elapsed;
             if (this.state === 'WAIT_WORM' && this.wormWarningAt) this.wormWarningAt += elapsed;
             if (this.state === 'WAIT_WORM' && this.wormConfirmation) this.wormConfirmation.startedAt += elapsed;
             if (this.state === 'WORM' && this.wormLastSeenAt) this.wormLastSeenAt += elapsed;
             this.forwardUntil += elapsed;
             this.progressAt += elapsed;
+            if (this.state === 'RESUME_PATH') {
+                for (const tracker of [this.returnJob, this.returnJob?.alignment, this.returnJob?.directReturn]) {
+                    if (tracker?.progressAt != null) tracker.progressAt += elapsed;
+                    if (tracker?.startedAt != null) tracker.startedAt += elapsed;
+                }
+            }
             if (this.chest) {
                 this.chest.progressAt += elapsed;
                 if (this.chest.overlapClickedAt) this.chest.overlapClickedAt += elapsed;
@@ -1193,35 +1208,54 @@ class ScathaMacro extends ModuleBase {
                 const z = point.z + dz;
                 const floor = new BP(x, y - 1, z);
                 if (!world.hasChunkAt(floor) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) continue;
-                if (this.passable({ x, y, z }) && this.passable({ x, y: y + 1, z })) goals.push([x, y - 1, z]);
+                if (this.passable({ x, y, z }) && this.passable({ x, y: y + 1, z })) goals.push([x + 0.5, y - 1, z + 0.5]);
             }
         }
         return goals;
     }
 
-    selectLavaTarget() {
-        if (!this.lavaCandidates.length || ++this.lavaAttempts > 8) {
-            this.switchLobby('Could not path to a lava pool');
-            return false;
-        }
-        const index = randomInt(0, this.lavaCandidates.length - 1);
-        const target = this.lavaCandidates.splice(index, 1)[0];
+    selectLavaTarget(reason = null) {
         const directions = [
             { axis: 'z', sign: 1 },
             { axis: 'x', sign: -1 },
             { axis: 'z', sign: -1 },
             { axis: 'x', sign: 1 },
         ];
-        const start = randomInt(0, directions.length - 1);
-        for (let i = 0; i < directions.length; i++) {
-            const direction = directions[(start + i) % directions.length];
-            if (!this.canStartTunnelBelowLava(target.point, direction)) continue;
-            this.lavaTarget = target;
-            this.lane = { ...direction, turnSign: Math.random() < 0.5 ? -1 : 1 };
-            return true;
+        let previous = this.lavaTarget?.point;
+        while (this.lavaCandidates.length && this.lavaAttempts <= LAVA_MAX_RESELECTS) {
+            if (this.lavaAttempts) this.lavaCandidates.sort((a, b) => flatDistance(center(a.point)) - flatDistance(center(b.point)));
+            const count = this.lavaAttempts ? Math.min(LAVA_NEARBY_CANDIDATES, this.lavaCandidates.length) : this.lavaCandidates.length;
+            const target = this.lavaCandidates.splice(randomInt(0, count - 1), 1)[0];
+            this.lavaAttempts++;
+            target.goals = this.lavaShoreGoals(target.point);
+            const start = randomInt(0, directions.length - 1);
+            for (let i = 0; target.goals.length && i < directions.length; i++) {
+                const direction = directions[(start + i) % directions.length];
+                if (!this.canStartTunnelBelowLava(target.point, direction)) continue;
+                this.lavaTarget = target;
+                this.lane = { ...direction, turnSign: Math.random() < 0.5 ? -1 : 1 };
+                const selection = previous
+                    ? `Switching lava target (${this.lavaAttempts - 1}/${LAVA_MAX_RESELECTS}): ${reason}; (${key(previous)}) ->`
+                    : 'Selected lava target:';
+                this.message(`&e${selection} (${key(target.point)}), direction ${direction.sign > 0 ? '+' : '-'}${direction.axis.toUpperCase()}.`);
+                return true;
+            }
+            this.message(`&eLava at (${key(target.point)}) failed the shore/shaft/direction precheck.`);
+            previous = target.point;
+            reason = 'Precheck failed';
         }
-        this.switchLobby('No viable mining direction below the selected lava pool');
+        const failure = this.lavaAttempts > LAVA_MAX_RESELECTS ? 'Lava target failed after three reselections' : 'No viable lava candidates remain';
+        this.switchLobby(reason ? `${failure}: ${reason}` : failure);
         return false;
+    }
+
+    renderLavaTarget() {
+        if (!this.lavaTarget || !World.isLoaded() || !['JUMP_CLIFF', 'PATH_LAVA'].includes(this.state)) return;
+        const { x, y, z } = this.lavaTarget.point;
+        const point = new Vec3d(x, y, z);
+        Render3D.drawStyledBox(point, LAVA_TARGET_FILL, LAVA_TARGET_WIRE, 3, false);
+        Render3D.drawTracer(point.add(0.5, 0.5, 0.5), LAVA_TARGET_WIRE, 2, false);
+        Render3D.drawText(`Lava (${x}, ${y}, ${z})`, point.add(0.5, 1.5, 0.5), 1.2, true, false, true);
     }
 
     canStartTunnelBelowLava(point, direction) {
@@ -1243,7 +1277,7 @@ class ScathaMacro extends ModuleBase {
         Client.setKey('space', aligned);
     }
 
-    startPath(goals, job) {
+    startPath(goals, job, options = {}) {
         const generation = this.generation;
         this.ownsPath = true;
         job.result = null;
@@ -1252,36 +1286,40 @@ class ScathaMacro extends ModuleBase {
             (success) => {
                 if (this.enabled && generation === this.generation && this.ownsPath) job.result = !!success;
             },
-            { allowWarpStarts: false, walkArrivalRadius: 0.8, silent: true }
+            { allowWarpStarts: false, walkArrivalRadius: 0.8, silent: true, ...options }
         );
     }
 
     startLavaPath() {
         if (!this.lavaTarget && !this.selectLavaTarget()) return;
-        this.startPath(this.lavaTarget.goals, this.lavaTarget);
+        this.lavaTarget.pathStartedAt ??= Date.now();
+        this.startPath(this.lavaTarget.goals, this.lavaTarget, { walkArrivalHeightTolerance: 1.5 });
     }
 
     tickLavaPath() {
-        if (this.lavaTarget.result === true) return this.setState('ENTER_LAVA');
-        // Pathfinder handles search timeouts, stalls and recalculation failures itself.
-        // Do not abandon a long but otherwise successful walk based on elapsed time.
-        if (this.lavaTarget.result === false || !Pathfinder.isPathing()) {
-            this.lavaTarget = null;
-            this.setState('PATH_LAVA');
-        }
+        const target = this.lavaTarget;
+        const atShore = target.goals.some(([x, y, z]) => flatDistance({ x, z }) <= 0.8 && Math.abs(Player.getY() - y - 1) <= 0.6);
+        const atLava = flatDistance(center(target.point)) <= 0.45 && Math.abs(Player.getY() - target.point.y) <= 1.5;
+        if (atShore || atLava) return this.setState('ENTER_LAVA', 0);
+        if (this.checkLavaTimeout()) return;
+        if (target.result !== null || !Pathfinder.isPathing()) this.setState('PATH_LAVA');
+    }
+
+    checkLavaTimeout() {
+        if (Date.now() - this.lavaTarget.pathStartedAt < LAVA_REACH_TIMEOUT_MS) return false;
+        if (this.selectLavaTarget('Could not reach lava within 20 seconds')) this.setState('PATH_LAVA');
+        return true;
     }
 
     enterLava() {
-        if (Date.now() - this.startedAt > 15000) {
-            this.lavaTarget = null;
-            return this.setState('PATH_LAVA');
-        }
-        if (this.alignLavaColumn() && Player.getY() <= this.lavaTarget.point.y + 1) this.setState('DESCEND');
+        if (this.alignLavaColumn() && Player.getY() <= this.lavaTarget.point.y + 1) return this.setState('DESCEND');
+        this.checkLavaTimeout();
     }
 
     alignLavaColumn() {
         const point = center(this.lavaTarget.point);
         const player = Player.getPlayer();
+        const enteringFromBelow = this.state === 'ENTER_LAVA' && Player.getY() < point.y;
         const bounds = player.getBoundingBox();
         const aligned =
             flatDistance(point) <= 0.1 &&
@@ -1292,13 +1330,13 @@ class ScathaMacro extends ModuleBase {
         if (aligned) Client.stopMovement();
         else {
             this.aimAt({ ...point, y: Player.getY() + 1 });
-            setKeysForStraightLineCoords(point.x, point.y, point.z, false);
+            setKeysForStraightLineCoords(point.x, point.y, point.z, enteringFromBelow);
         }
         Client.setKey('sprint', false);
         const world = World.getWorld();
         const floor = new BP(Math.floor(point.x), Math.floor(Player.getY() - 0.05), Math.floor(point.z));
         // Sneaking on the shore can prevent stepping off its edge into the shaft.
-        Client.setKey('shift', !aligned && (!player.onGround() || !world.getBlockState(floor).getCollisionShape(world, floor).isEmpty()));
+        Client.setKey('shift', !enteringFromBelow && !aligned && (!player.onGround() || !world.getBlockState(floor).getCollisionShape(world, floor).isEmpty()));
         const settled = aligned && Math.hypot(Player.getMotionX(), Player.getMotionZ()) < 0.02;
         if (!settled) Client.setKey('leftclick', false);
         return settled;
@@ -3034,7 +3072,7 @@ class ScathaMacro extends ModuleBase {
                   cross: origin?.[crossAxis] ?? Math.floor(snapshot.point[crossAxis]) + 0.5,
               }
             : null;
-        this.returnJob = { snapshot, after, tunnel, result: null, alignmentAttempted: false, alignment: null };
+        this.returnJob = { snapshot, after, tunnel, startedAt: Date.now(), result: null, alignmentAttempted: false, alignment: null };
         this.setState('RESUME_PATH', after === 'RETURN_RESUME' ? 0 : this.actionDelay);
     }
 
@@ -3211,7 +3249,17 @@ class ScathaMacro extends ModuleBase {
 
     tickReturnPath() {
         const job = this.returnJob;
-        if (job.result === false || Date.now() - this.startedAt > 60000) return this.switchLobby('Could not return to the mining position');
+        const point = job.snapshot.point;
+        if (flatDistance(point) < 0.6 && Math.abs(Player.getY() - point.y) < 0.25) {
+            job.alignment = null;
+            job.directReturn = null;
+            job.result = true;
+        }
+        if (job.result !== true) {
+            if (Date.now() - job.startedAt >= RETURN_TIMEOUT_MS) return this.switchLobby('Return timed out after 120 seconds');
+            if (this.checkProgress(RETURN_STALL_TIMEOUT_MS, () => this.switchLobby('Return stopped making progress for 20 seconds'), job)) return;
+        }
+        if (job.result === false) return this.setState('RESUME_PATH');
         if (job.alignment) return this.tickTunnelReturnAlignment(job);
         if (job.directReturn) return this.tickDirectTunnelReturn(job);
         if (job.result !== true) {
