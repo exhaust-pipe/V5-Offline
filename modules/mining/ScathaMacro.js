@@ -415,6 +415,9 @@ class ScathaMacro extends ModuleBase {
         this.forwardObstacle = null;
         this.backwardObstacle = null;
         this.backwardBlocked = null;
+        this.returnObstacle = null;
+        this.returnBlocked = null;
+        this.returnProgress = null;
         this.forwardRemaining = null;
         this.turnPending = false;
         this.lavaCandidates = [];
@@ -438,6 +441,7 @@ class ScathaMacro extends ModuleBase {
         this.forwardAligned = false;
         this.forwardBlocked = null;
         this.backwardBlocked = null;
+        this.returnBlocked = null;
         this.correctingLane = false;
         this.freeMiningTarget = null;
     }
@@ -827,6 +831,12 @@ class ScathaMacro extends ModuleBase {
                 this.backwardPitch = random(-15, -7);
                 this.backwardObstacle = null;
                 this.backwardBlocked = null;
+                break;
+            case 'RETURN':
+                this.returnObstacle = null;
+                this.returnBlocked = null;
+                // Track actual walking progress independently of mining target changes.
+                this.returnProgress = {};
                 break;
             case 'TURN':
                 if (!this.turnGoal) {
@@ -1638,12 +1648,15 @@ class ScathaMacro extends ModuleBase {
             const point = job.target;
             if (!this.loaded(point)) {
                 this.stopControls();
-                this.checkProgress(10000);
+                if (obstacleField === 'returnObstacle')
+                    this.checkProgress(10000, () => this.fallbackReturnToPath(), this.returnProgress);
+                else this.checkProgress(10000);
                 return false;
             }
             const name = blockName(point);
             if (name === 'minecraft:bedrock') {
-                if (obstacleField === 'backwardObstacle') this.switchLobby('Bedrock blocks backward mining');
+                if (obstacleField === 'returnObstacle') this.fallbackReturnToPath();
+                else if (obstacleField === 'backwardObstacle') this.switchLobby('Bedrock blocks backward mining');
                 else this.beginBackward(true);
                 return false;
             }
@@ -1778,14 +1791,78 @@ class ScathaMacro extends ModuleBase {
     }
 
     returnToFace() {
+        // Unlike forward/backward mining, RETURN used to walk straight into any
+        // newly generated tunnel obstruction and only attempt pathfinding later.
+        // Give mining a chance first, while retaining the old pathing fallback.
+        if (this.checkProgress(this.mineTarget ? this.mineTarget.timeoutMs : 15000,
+            () => this.fallbackReturnToPath(), this.returnProgress)) return;
+
+        const overlapping = this.overlappingChest();
+        if (overlapping) return this.openChest(overlapping);
+
+        const coordinate = position()[this.lane.axis];
+        const delta = this.breakPoint[this.lane.axis] - coordinate;
+        const direction = { axis: this.lane.axis, sign: Math.sign(delta) };
+        if (direction.sign && Math.abs(delta) > 0.3) {
+            // Do not clear beyond the destination, especially if there is
+            // bedrock just past the point where the return walk should stop.
+            const scanDistance = Math.max(0, Math.min(
+                BACKWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2,
+                Math.abs(delta) - 0.3
+            ));
+            if (this.returnObstacle) {
+                const blocker = this.blockingAhead(direction, scanDistance);
+                if (blocker && !blocker.unknown && isChest(blockName(blocker)) && !this.openedChests.has(key(blocker)))
+                    return this.openChest(blocker);
+                if (!this.clearForwardObstacles(direction, 'returnObstacle')) return;
+            }
+            const obstacle = this.blockingAhead(direction, scanDistance);
+            if (obstacle) {
+                if (obstacle.unknown) {
+                    Client.stopMovement();
+                    Client.setKey('leftclick', false);
+                    return;
+                }
+                const name = blockName(obstacle);
+                if (isChest(name) && !this.openedChests.has(key(obstacle))) return this.openChest(obstacle);
+                if (this.isForwardTunnelBlock(obstacle)) {
+                    Client.stopMovement();
+                    Client.setKey('leftclick', false);
+                    const now = Date.now();
+                    const blocked = this.returnBlocked;
+                    if (!blocked || blocked.key !== key(obstacle) || blocked.name !== name ||
+                        (coordinate - blocked.coordinate) * direction.sign > 0.05) {
+                        this.returnBlocked = {
+                            key: key(obstacle), name, coordinate,
+                            dueAt: now + this.delay(this.actionDelay),
+                        };
+                    } else if (now >= blocked.dueAt) {
+                        this.returnBlocked = null;
+                        if (name === 'minecraft:bedrock') return this.fallbackReturnToPath();
+                        this.returnObstacle = { target: { ...obstacle, name, aim: null }, candidates: null };
+                        this.mineTarget = null;
+                        this.clearForwardObstacles(direction, 'returnObstacle');
+                    }
+                    return;
+                }
+            }
+        }
+        this.returnBlocked = null;
+        Client.setKey('leftclick', false);
         setKeysForStraightLineCoords(this.breakPoint.x, this.breakPoint.y, this.breakPoint.z, false);
         if (this.tryReturnTeleport()) return;
-        if (!this.walkTo(this.breakPoint, () => this.returnToSnapshot({ ...this.snapshot(), point: { ...this.breakPoint } }, 'RETURN_RESUME'))) return;
+        if (!this.walkTo(this.breakPoint, () => this.fallbackReturnToPath())) return;
         if (this.turnPending) {
             this.turnGoal = null;
             return this.setState('TURN');
         }
         this.setState('FORWARD');
+    }
+
+    fallbackReturnToPath() {
+        this.returnObstacle = null;
+        this.returnBlocked = null;
+        this.returnToSnapshot({ ...this.snapshot(), point: { ...this.breakPoint } }, 'RETURN_RESUME');
     }
 
     tryReturnTeleport() {
