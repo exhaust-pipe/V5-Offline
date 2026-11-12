@@ -423,6 +423,7 @@ class ScathaMacro extends ModuleBase {
         this.lavaCandidates = [];
         this.lavaTarget = null;
         this.lavaAttempts = 0;
+        this.cliffAngles = null;
         this.areaMissingSince = 0;
         this.areaWarpGraceUntil = 0;
         this.goblinResume = null;
@@ -743,6 +744,8 @@ class ScathaMacro extends ModuleBase {
                 return this.tickLoadout();
             case 'SCAN_LAVA':
                 return this.scanLava();
+            case 'JUMP_CLIFF':
+                return this.jumpCliff();
             case 'PATH_LAVA':
                 return this.tickLavaPath();
             case 'ENTER_LAVA':
@@ -808,6 +811,12 @@ class ScathaMacro extends ModuleBase {
                 }
                 break;
             }
+            case 'JUMP_CLIFF':
+                this.cliffAngles = {
+                    yaw: Math.random() < 0.5 ? random(-180, -150) : random(150, 180),
+                    pitch: random(-30, 30),
+                };
+                break;
             case 'PATH_LAVA':
                 this.startLavaPath();
                 break;
@@ -1092,7 +1101,8 @@ class ScathaMacro extends ModuleBase {
         }
         if (this.scanChunks.length) return;
         if (!this.lavaCandidates.length) return this.switchLobby('No reachable source lava found between Y=46 and Y=64 in loaded chunks');
-        this.setState('PATH_LAVA');
+        if (!this.selectLavaTarget()) return;
+        this.setState('JUMP_CLIFF');
     }
 
     lavaShoreGoals(point) {
@@ -1116,6 +1126,51 @@ class ScathaMacro extends ModuleBase {
         return goals;
     }
 
+    selectLavaTarget() {
+        if (!this.lavaCandidates.length || ++this.lavaAttempts > 8) {
+            this.switchLobby('Could not path to a lava pool');
+            return false;
+        }
+        const index = randomInt(0, this.lavaCandidates.length - 1);
+        const target = this.lavaCandidates.splice(index, 1)[0];
+        const directions = [
+            { axis: 'z', sign: 1 },
+            { axis: 'x', sign: -1 },
+            { axis: 'z', sign: -1 },
+            { axis: 'x', sign: 1 },
+        ];
+        const start = randomInt(0, directions.length - 1);
+        for (let i = 0; i < directions.length; i++) {
+            const direction = directions[(start + i) % directions.length];
+            if (!this.canStartTunnelBelowLava(target.point, direction)) continue;
+            this.lavaTarget = target;
+            this.lane = { ...direction, turnSign: Math.random() < 0.5 ? -1 : 1 };
+            return true;
+        }
+        this.switchLobby('No viable mining direction below the selected lava pool');
+        return false;
+    }
+
+    canStartTunnelBelowLava(point, direction) {
+        // Validate the entire descending shaft before committing to a tunnel direction.
+        for (let y = point.y; y >= this.tunnelY; y--) {
+            const below = { ...point, y };
+            if (!this.loaded(below) || blockName(below) === 'minecraft:bedrock') return false;
+        }
+        const scan = this.scanTunnel(this.tunnelY, direction, point);
+        return !scan.unknown && !scan.open && !scan.boundary;
+    }
+
+    jumpCliff() {
+        if (Player.getY() < 80) return this.setState('PATH_LAVA', 0);
+        if (Date.now() - this.startedAt > 20000) return this.switchLobby('Could not jump below Y=80');
+        this.aimAt(this.cliffAngles, 'lava:jump');
+        const aligned = Math.abs(wrapTo180(Player.getYaw() - this.cliffAngles.yaw)) <= 3 &&
+            Math.abs(Player.getPitch() - this.cliffAngles.pitch) <= 3;
+        Client.setKey('w', aligned);
+        Client.setKey('space', aligned);
+    }
+
     startPath(goals, job) {
         const generation = this.generation;
         this.ownsPath = true;
@@ -1130,9 +1185,7 @@ class ScathaMacro extends ModuleBase {
     }
 
     startLavaPath() {
-        if (!this.lavaCandidates.length || ++this.lavaAttempts > 8) return this.switchLobby('Could not path to a lava pool');
-        const index = randomInt(0, this.lavaCandidates.length - 1);
-        this.lavaTarget = this.lavaCandidates.splice(index, 1)[0];
+        if (!this.lavaTarget && !this.selectLavaTarget()) return;
         this.startPath(this.lavaTarget.goals, this.lavaTarget);
     }
 
@@ -1140,12 +1193,17 @@ class ScathaMacro extends ModuleBase {
         if (this.lavaTarget.result === true) return this.setState('ENTER_LAVA');
         // Pathfinder handles search timeouts, stalls and recalculation failures itself.
         // Do not abandon a long but otherwise successful walk based on elapsed time.
-        if (this.lavaTarget.result === false) return this.setState('PATH_LAVA');
-        if (!Pathfinder.isPathing()) this.setState('PATH_LAVA');
+        if (this.lavaTarget.result === false || !Pathfinder.isPathing()) {
+            this.lavaTarget = null;
+            this.setState('PATH_LAVA');
+        }
     }
 
     enterLava() {
-        if (Date.now() - this.startedAt > 15000) return this.setState('PATH_LAVA');
+        if (Date.now() - this.startedAt > 15000) {
+            this.lavaTarget = null;
+            return this.setState('PATH_LAVA');
+        }
         if (this.alignLavaColumn() && Player.getY() <= this.lavaTarget.point.y + 1) this.setState('DESCEND');
     }
 
@@ -1307,8 +1365,7 @@ class ScathaMacro extends ModuleBase {
 
     align() {
         if (!this.walkTo(this.alignPoint)) return;
-        const axis = Math.random() < 0.5 ? 'x' : 'z';
-        this.lane = { axis, sign: Math.random() < 0.5 ? -1 : 1, turnSign: Math.random() < 0.5 ? -1 : 1 };
+        if (!this.lane) return this.switchLobby('No initial mining direction was selected');
         this.setLaneStart(position());
         this.turnGoal = null;
         this.setState('FORWARD');
