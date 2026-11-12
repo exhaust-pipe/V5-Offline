@@ -308,7 +308,7 @@ class ScathaMacro extends ModuleBase {
         this.addToggle(
             'Worm Detection Debug',
             (value) => (this.wormDebug = !!value),
-            'Report WAIT_WORM armor stands, player-head segments, nametags, proximity matches, UUIDs and confirmation failures in chat.',
+            'Report WAIT_WORM targets, verification failures, and nearby entity display names / TextDisplay server text in chat.',
             false
         );
     }
@@ -2738,7 +2738,36 @@ class ScathaMacro extends ModuleBase {
     }
 
 
-    // Diagnostic only: inspect entities near a head without the tunnel search limits.
+    // Read TextDisplay's server-synced text rather than its ordinary entity name.
+    // getText() and DATA_TEXT_ID are private in Minecraft's TextDisplay class.
+    getWormDebugTextDisplay(mc) {
+        try {
+            const field = mc.getClass().getDeclaredField('DATA_TEXT_ID');
+            field.setAccessible(true);
+            const accessor = field.get(null);
+            const component = mc.getEntityData().get(accessor);
+            return { text: component ? String(component.getString()) : '<null>', source: 'synced-data' };
+        } catch (fieldError) {
+            try {
+                const methods = mc.getClass().getDeclaredMethods();
+                for (const method of methods) {
+                    if (String(method.getName()) !== 'getText' || method.getParameterCount() !== 0) continue;
+                    method.setAccessible(true);
+                    const component = method.invoke(mc);
+                    return { text: component ? String(component.getString()) : '<null>', source: 'getText' };
+                }
+                return { text: null, source: 'unavailable: ' + String(fieldError) };
+            } catch (methodError) {
+                return {
+                    text: null,
+                    source: 'failed synced-data: ' + String(fieldError) + '; getText: ' + String(methodError),
+                };
+            }
+        }
+    }
+
+    // Diagnostic only: inspect server-backed entity names and displays near a head,
+    // without applying the tunnel bounds used by the real Worm detector.
     reportWormNearbyEntities(now) {
         if (!this.wormDebug || this.state !== 'WAIT_WORM') return;
         const scan = this.wormDebugScan;
@@ -2784,14 +2813,33 @@ class ScathaMacro extends ModuleBase {
                 } catch (error) {
                     componentText = '<error: ' + String(error) + '>';
                 }
+                const mc = entity.toMC();
                 const type = String(entity.getClassName());
                 const uuid = CombatBot.getTargetUuid(entity) || '-';
+                const getComponentText = (component) => component ? String(component.getString()) : '<null>';
+                let displayName = '<unavailable>';
+                let customName = '<unavailable>';
+                let customVisible = '<unavailable>';
+                let scoreboardName = '<unavailable>';
+                try { displayName = getComponentText(mc.getDisplayName()); }
+                catch (error) { displayName = '<error: ' + String(error) + '>'; }
+                try { customName = getComponentText(mc.getCustomName()); }
+                catch (error) { customName = '<error: ' + String(error) + '>'; }
+                try { customVisible = String(mc.isCustomNameVisible()); }
+                catch (error) { customVisible = '<error: ' + String(error) + '>'; }
+                try { scoreboardName = String(mc.getScoreboardName()); }
+                catch (error) { scoreboardName = '<error: ' + String(error) + '>'; }
+                const isTextDisplay = type.indexOf('TextDisplay') >= 0;
+                const displayText = isTextDisplay ? this.getWormDebugTextDisplay(mc) : null;
                 const wormName = /(?:^|[^a-z])(?:Scatha|Stoneworm)(?![a-z])/i;
-                const isWormName = wormName.test(cleanChat(name)) || wormName.test(cleanChat(componentText));
-                const isStand = entity.toMC() instanceof ArmorStandEntity;
+                const isWormName = [name, componentText, displayName, customName, displayText?.text]
+                    .some((text) => text && wormName.test(cleanChat(text)));
+                const isStand = mc instanceof ArmorStandEntity;
                 nearby.push({
                     point, distance: Math.sqrt(distanceSq), type, uuid, name, componentText,
-                    bounds: boundFailures(point), rank: isWormName ? 0 : (isStand ? 1 : 2),
+                    displayName, customName, customVisible, scoreboardName, displayText,
+                    bounds: boundFailures(point),
+                    rank: isWormName ? 0 : (isTextDisplay ? 1 : (isStand ? 2 : 3)),
                 });
             } catch (error) {
                 errors++;
@@ -2812,7 +2860,12 @@ class ScathaMacro extends ModuleBase {
                 ' uuid=' + entity.uuid +
                 ' pos=(' + point.x.toFixed(2) + ',' + point.y.toFixed(2) + ',' + point.z.toFixed(2) + ')' +
                 ' dist=' + entity.distance.toFixed(2) + ' bounds=' + entity.bounds +
-                ' name=' + format(entity.name) + ' component=' + format(entity.componentText)
+                ' name=' + format(entity.name) + ' component=' + format(entity.componentText) +
+                ' display=' + format(entity.displayName) + ' custom=' + format(entity.customName) +
+                ' visible=' + entity.customVisible + ' scoreboard=' + format(entity.scoreboardName) +
+                (entity.displayText
+                    ? ' text_display=' + format(entity.displayText.text) + ' text_source=' + format(entity.displayText.source)
+                    : '')
             );
         }
     }
