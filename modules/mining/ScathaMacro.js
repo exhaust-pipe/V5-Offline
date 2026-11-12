@@ -96,7 +96,6 @@ const RETURN_STALL_TIMEOUT_MS = 20000;
 const RETURN_TIMEOUT_MS = 120000;
 const TUNNEL_RETURN_ALIGN_MAX_DISTANCE = 6;
 const TUNNEL_RETURN_ALIGN_TIMEOUT_MS = 6000;
-const TUNNEL_DIRECT_RETURN_TIMEOUT_MS = 12000;
 const TUNNEL_DIRECT_RETURN_STALL_MS = 2000;
 // Search for source lava only in four square horizontal regions; the Y=46..64 bounds are unchanged.
 const LAVA_SCAN_CENTERS = [
@@ -3309,14 +3308,12 @@ class ScathaMacro extends ModuleBase {
         job.directReturn = {
             yaw: alignment.faceYaw,
             direction,
-            startedAt: now,
         };
     }
 
     tickDirectTunnelReturn(job) {
         const direct = job.directReturn;
         const point = job.snapshot.point;
-        const now = Date.now();
         const axis = direct.direction.axis;
         const remaining = (point[axis] - position()[axis]) * direct.direction.sign;
         const crossAxis = job.tunnel.crossAxis;
@@ -3328,7 +3325,7 @@ class ScathaMacro extends ModuleBase {
             job.result = true;
             return;
         }
-        if (now - direct.startedAt > TUNNEL_DIRECT_RETURN_TIMEOUT_MS || Math.abs(Player.getY() - point.y) > 0.25) {
+        if (Math.abs(Player.getY() - point.y) > 0.25) {
             return this.fallbackTunnelReturnPath(job);
         }
         if (!Player.getPlayer().onGround()) {
