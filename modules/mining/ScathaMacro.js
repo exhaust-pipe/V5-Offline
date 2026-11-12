@@ -1,7 +1,7 @@
 import { OverlayManager } from '../../gui/OverlayUtils';
 import { ArmorStandEntity, BP, ClipContext, Direction, Vec3d } from '../../utils/Constants';
 import { calculateAbsoluteAngles, offsetPitch, wrapTo180 } from '../../utils/Math';
-import { MiningUtils } from '../../utils/MiningUtils';
+import { MiningUtils, refuel } from '../../utils/MiningUtils';
 import { ModuleBase } from '../../utils/ModuleBase';
 import { ClientboundLevelParticlesPacket, getLevelParticleData } from '../../utils/Packets';
 import { getLookingAt, getVisiblePoint, testPointNative } from '../../utils/Raytrace';
@@ -41,11 +41,21 @@ const CHEST_OVERLAP_CONFIRM_MS = 1200;
 const WORM_SPAWN_TIMEOUT_MS = 60000;
 const WORM_CONFIRM_DELAY_MS = 500;
 const WORM_DISAPPEAR_GRACE_MS = 5000;
-const WORM_COMBAT_OPTIONS = { roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0, allowArmorStands: true, ignoreArmorStandPickable: true };
+const WORM_COMBAT_OPTIONS = {
+    roam: false,
+    allowWarpStarts: false,
+    travelClicks: false,
+    rightClickChance: 0,
+    allowArmorStands: true,
+    ignoreArmorStandPickable: true,
+};
 // Stop moving in shafts and while solving chests. Ordinary tunnel mining may
 // chase a fleeing goblin, then return to the saved mining position.
 const GOBLIN_STATIONARY_COMBAT_OPTIONS = {
-    roam: false, allowWarpStarts: false, travelClicks: false, rightClickChance: 0,
+    roam: false,
+    allowWarpStarts: false,
+    travelClicks: false,
+    rightClickChance: 0,
     tickTarget: (target) => {
         Client.stopMovement();
         if (!target) return;
@@ -55,13 +65,14 @@ const GOBLIN_STATIONARY_COMBAT_OPTIONS = {
     },
 };
 const GOBLIN_CHASE_COMBAT_OPTIONS = {
-    roam: false, allowWarpStarts: false, travelClicks: false,
-    rightClickChance: 0, blacklistOnPathFailure: false,
+    roam: false,
+    allowWarpStarts: false,
+    travelClicks: false,
+    rightClickChance: 0,
+    blacklistOnPathFailure: false,
 };
 const AREA_MISSING_CONFIRM_MS = 6000;
 const AREA_WARP_GRACE_MS = 10000;
-const GOBLIN_SPAWN_SEARCH_RADIUS = 10;
-const GOBLIN_CHASE_RADIUS = 14;
 const GOBLIN_MISSING_GRACE_MS = 2000;
 const GOBLIN_SPAWN_WAIT_MS = 12000;
 const GOBLIN_COMBAT_TIMEOUT_MS = 35000;
@@ -84,11 +95,15 @@ const TUNNEL_RETURN_ALIGN_TIMEOUT_MS = 6000;
 const TUNNEL_DIRECT_RETURN_TIMEOUT_MS = 12000;
 const TUNNEL_DIRECT_RETURN_STALL_MS = 2000;
 // Search for source lava only in four square horizontal regions; the Y=46..64 bounds are unchanged.
-const LAVA_SCAN_CENTERS = [[565, 565], [465, 535], [470, 500], [565, 490]];
+const LAVA_SCAN_CENTERS = [
+    [565, 565],
+    [465, 535],
+    [470, 500],
+    [565, 490],
+];
 const LAVA_SCAN_HALF_SIZE = 30;
-const isInLavaScanRegion = (point) => LAVA_SCAN_CENTERS.some(([x, z]) =>
-    Math.abs(point.x - x) < LAVA_SCAN_HALF_SIZE && Math.abs(point.z - z) < LAVA_SCAN_HALF_SIZE
-);
+const isInLavaScanRegion = (point) =>
+    LAVA_SCAN_CENTERS.some(([x, z]) => Math.abs(point.x - x) < LAVA_SCAN_HALF_SIZE && Math.abs(point.z - z) < LAVA_SCAN_HALF_SIZE);
 const ABILITY_STATES = new Set(['FORWARD', 'BACKWARD', 'TURN', 'DESCEND']);
 const ABILITY_FALLBACK_COOLDOWN_MS = 200000;
 const ABILITY_RETRY_DELAY_MS = 5000;
@@ -125,6 +140,10 @@ class ScathaMacro extends ModuleBase {
             if (this.enabled && /^CHARM! You charmed the Scatha and received \d[\d,]* Scatha Shards?!$/i.test(message)) {
                 OverlayManager.incrementTrackedValue(this.oid, 'scathaKills');
             }
+            if (this.enabled && /^You did not discover this treasure chest\.$/i.test(message)) {
+                const chest = this.state === 'CHEST' ? this.chest : this.goblinResume?.state === 'CHEST' ? this.goblinResume.chestContext : null;
+                if (chest) chest.unavailable = true;
+            }
             if (/^You hear the sound of something approaching(?:\.{3}|\u2026)?$/i.test(message)) return this.interruptForWorm();
             const goblin = message.match(/^A (Golden|Diamond) Goblin has spawned!$/i);
             if (goblin) return this.interruptForGoblin(goblin[1].toLowerCase());
@@ -137,8 +156,7 @@ class ScathaMacro extends ModuleBase {
         this.on('packetReceived', (packet) => {
             if (!this.enabled) return;
             const goblinResume = this.goblinResume;
-            const chest = this.state === 'CHEST' ? this.chest :
-                goblinResume && goblinResume.state === 'CHEST' ? goblinResume.chestContext : null;
+            const chest = this.state === 'CHEST' ? this.chest : goblinResume && goblinResume.state === 'CHEST' ? goblinResume.chestContext : null;
             if (!chest || !chest.clickedAt || !chest.point) return;
             const data = getLevelParticleData(packet);
             if (data.particle?.getType() !== net.minecraft.core.particles.ParticleTypes.CRIT) return;
@@ -154,8 +172,7 @@ class ScathaMacro extends ModuleBase {
             registerSkyblockEvent(event, () => {
                 if (!this.enabled) return;
                 const goblinResume = this.goblinResume;
-                const chest = this.state === 'CHEST' ? this.chest :
-                    goblinResume && goblinResume.state === 'CHEST' ? goblinResume.chestContext : null;
+                const chest = this.state === 'CHEST' ? this.chest : goblinResume && goblinResume.state === 'CHEST' ? goblinResume.chestContext : null;
                 if (chest && chest.clickedAt) chest.opened = true;
             });
         }
@@ -177,28 +194,29 @@ class ScathaMacro extends ModuleBase {
                 this.lastAbilityUseAt = Date.now();
             });
         }
-        registerSkyblockEvent('emptydrill', () => {
-            if (this.enabled) this.stop('The mining tool is out of fuel. Refuel it before restarting.');
-        });
-        this.createOverlay([
-            {
-                title: 'Status',
-                data: {
-                    State: () => this.state,
-                    'Tunnel Y': () => this.tunnelY ?? this.targetY,
-                    Direction: () => (this.lane ? `${this.lane.sign > 0 ? '+' : '-'}${this.lane.axis.toUpperCase()}` : 'None'),
-                    'Worm spawns': () => OverlayManager.getTrackedValue(this.oid, 'wormSpawns', 0),
-                    'Scatha kills': () => OverlayManager.getTrackedValue(this.oid, 'scathaKills', 0),
-                    'Lobby intensity': () => `${this.lobbyIntensity ?? 0}/${this.lobbyThreshold}`,
-                    'Exit intensity': () => `${this.exitIntensity ?? 0}/${this.exitThreshold}`,
+        registerSkyblockEvent('emptydrill', () => this.beginRefueling());
+        this.createOverlay(
+            [
+                {
+                    title: 'Status',
+                    data: {
+                        State: () => (this.refueling ? 'REFUEL' : this.state),
+                        'Tunnel Y': () => this.tunnelY ?? this.targetY,
+                        Direction: () => (this.lane ? `${this.lane.sign > 0 ? '+' : '-'}${this.lane.axis.toUpperCase()}` : 'None'),
+                        'Worm spawns': () => OverlayManager.getTrackedValue(this.oid, 'wormSpawns', 0),
+                        'Scatha kills': () => OverlayManager.getTrackedValue(this.oid, 'scathaKills', 0),
+                        'Lobby intensity': () => `${this.lobbyIntensity ?? 0}/${this.lobbyThreshold}`,
+                        'Exit intensity': () => `${this.exitIntensity ?? 0}/${this.exitThreshold}`,
+                    },
                 },
-            },
-        ], {
-            sessionTrackedValues: {
-                wormSpawns: 0,
-                scathaKills: 0,
-            },
-        });
+            ],
+            {
+                sessionTrackedValues: {
+                    wormSpawns: 0,
+                    scathaKills: 0,
+                },
+            }
+        );
     }
 
     initSettings() {
@@ -247,7 +265,14 @@ class ScathaMacro extends ModuleBase {
             false
         );
         range('Forward Mining Time (s)', 'forwardTime', 10, 200, 60, 90, 'Random time before each backward pass. Combat and recovery pause this timer.');
-        slider('Skip Backward Under (blocks)', 'skipBackwardUnder', 0, 20, 10, 'Skip backward mining and turn immediately when the forward distance is below this value. 0 always mines backward.');
+        slider(
+            'Skip Backward Under (blocks)',
+            'skipBackwardUnder',
+            0,
+            20,
+            10,
+            'Skip backward mining and turn immediately when the forward distance is below this value. 0 always mines backward.'
+        );
         range('UI Click Delay (ms)', 'clickDelay', 100, 2000, 200, 400, 'Random delay before inventory clicks and chest interactions.');
         range('Action Delay (ms)', 'actionDelay', 500, 5000, 1000, 3000, 'Random delay between macro states.');
         this.overrideRotationSpeed = false;
@@ -262,12 +287,7 @@ class ScathaMacro extends ModuleBase {
             'Use a Scatha Macro-specific rotation speed instead of the global setting.',
             false
         );
-        rotationSpeedSlider = this.addSlider(
-            'Scatha Rotation Speed',
-            30, 60, 40,
-            (value) => (this.scathaRotationSpeed = value * 10),
-            'Degrees per second.'
-        );
+        rotationSpeedSlider = this.addSlider('Scatha Rotation Speed', 30, 60, 40, (value) => (this.scathaRotationSpeed = value * 10), 'Degrees per second.');
         rotationSpeedSlider.visible = this.overrideRotationSpeed;
 
         this.switchForwardPitch = true;
@@ -292,12 +312,21 @@ class ScathaMacro extends ModuleBase {
             true
         );
         forwardRotationTimeSlider = range(
-            'Forward Rotation Time (ms)', 'forwardRotationTime', 100, 1000, 150, 300,
+            'Forward Rotation Time (ms)',
+            'forwardRotationTime',
+            100,
+            1000,
+            150,
+            300,
             'Random duration of forward-mining pitch changes when Switch Forward Pitch is enabled.'
         );
         forwardRotationTimeSlider.visible = this.switchForwardPitch;
         forwardBlockDistanceSlider = slider(
-            'Forward Block Distance (blocks)', 'forwardBlockDistance', 0, 5, 3,
+            'Forward Block Distance (blocks)',
+            'forwardBlockDistance',
+            0,
+            5,
+            3,
             'How far ahead to stop for blocks during forward mining. 0 disables early stopping, but still clears blocks that obstruct movement.'
         );
         forwardBlockDistanceSlider.visible = this.switchForwardPitch;
@@ -363,8 +392,11 @@ class ScathaMacro extends ModuleBase {
 
     onDisable() {
         this.generation++;
+        const refueling = this.refueling;
+        this.refueling = null;
         try {
             this.stopActivities();
+            refueling?.cancel?.();
             if (this.state === 'LOADOUT' || this.hotmRequest) closeInventory();
             this.hotmRequest = null;
             this.state = 'IDLE';
@@ -373,6 +405,7 @@ class ScathaMacro extends ModuleBase {
             this.wormSearch = null;
             this.wormLastStandPosition = null;
             this.wormTargetUuid = null;
+            this.wormTargetFromMotion = false;
             this.wormConfirmation = null;
             this.wormTargets = [];
             this.wormCandidates?.clear();
@@ -380,9 +413,7 @@ class ScathaMacro extends ModuleBase {
             this.returnJob = null;
             this.recovery = null;
             this.chest = null;
-            this.goblinResume = null;
-            this.goblinTargetUuid = null;
-            this.goblinType = null;
+            this.resetGoblin();
         } finally {
             const restoreMouse = this.restoreMouseOnDisable;
             this.restoreMouseOnDisable = false;
@@ -397,6 +428,7 @@ class ScathaMacro extends ModuleBase {
     }
 
     resetLobby() {
+        this.refueling = null;
         this.tunnelY = this.targetY;
         this.lane = null;
         this.currentLoadout = null;
@@ -410,6 +442,7 @@ class ScathaMacro extends ModuleBase {
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
+        this.wormTargetFromMotion = false;
         this.wormConfirmation = null;
         this.wormTargets = [];
         this.wormCandidates = new Map();
@@ -430,9 +463,6 @@ class ScathaMacro extends ModuleBase {
         this.forwardObstacle = null;
         this.backwardObstacle = null;
         this.backwardBlocked = null;
-        this.returnObstacle = null;
-        this.returnBlocked = null;
-        this.returnProgress = null;
         this.forwardRemaining = null;
         this.turnPending = false;
         this.lavaCandidates = [];
@@ -441,12 +471,7 @@ class ScathaMacro extends ModuleBase {
         this.cliffAngles = null;
         this.areaMissingSince = 0;
         this.areaWarpGraceUntil = 0;
-        this.goblinResume = null;
-        this.goblinType = null;
-        this.goblinOrigin = null;
-        this.goblinSpawnedAt = 0;
-        this.goblinTargetUuid = null;
-        this.goblinMissingAt = 0;
+        this.resetGoblin();
     }
 
     stopControls() {
@@ -457,7 +482,6 @@ class ScathaMacro extends ModuleBase {
         this.forwardAligned = false;
         this.forwardBlocked = null;
         this.backwardBlocked = null;
-        this.returnBlocked = null;
         this.correctingLane = false;
         this.freeMiningTarget = null;
     }
@@ -465,8 +489,6 @@ class ScathaMacro extends ModuleBase {
     stopActivities() {
         this.abilityUseAt = 0;
         this.abilityClickPending = false;
-        this.returnTeleport = null;
-        this.returnTeleportBlocked = null;
         if (this.ownsCombat) {
             CombatBot.toggle(false, true);
             CombatBot.clearExternalTargets();
@@ -595,9 +617,8 @@ class ScathaMacro extends ModuleBase {
                 motion.complete = true;
             } else {
                 const progress = motion.initialDistance > 0 ? Math.max(0, Math.min(1, 1 - distance / motion.initialDistance)) : 1;
-                const curve = RotationModule.rotationMode === 'Linear'
-                    ? { x: 0, y: 0 }
-                    : getRotationCurveOffset(progress, motion.initialDistance, motion.curveSeed);
+                const curve =
+                    RotationModule.rotationMode === 'Linear' ? { x: 0, y: 0 } : getRotationCurveOffset(progress, motion.initialDistance, motion.curveSeed);
                 rotation[axis] += delta * ratio + (axis === 'yaw' ? curve.x : curve.y) * ratio;
                 if (axis === 'pitch') rotation.pitch = clampPitch(rotation.pitch);
                 motion.complete = false;
@@ -640,8 +661,44 @@ class ScathaMacro extends ModuleBase {
     }
 
     getMiningSlot() {
-        const backward = this.state === 'BACKWARD' || (this.state === 'CHEST' && this.chest?.resume?.state === 'BACKWARD');
+        const state = this.state === 'LOADOUT' ? this.loadoutRequest?.nextState : this.state;
+        const backward = state === 'BACKWARD' || (state === 'CHEST' && this.chest?.resume?.state === 'BACKWARD');
         return backward ? this.backwardMiningSlot || this.miningSlot : this.miningSlot;
+    }
+
+    beginRefueling() {
+        if (!this.enabled || this.refueling) return;
+        const request = {
+            snapshot: this.snapshot(),
+            toolSlot: MiningUtils.isMiningTool(Player.getHeldItem()) ? Player.getHeldItemIndex() : this.getMiningSlot() - 1,
+            startedAt: Date.now(),
+        };
+        this.refueling = request;
+        if (this.state === 'LOADOUT' || this.hotmRequest) closeInventory();
+        this.hotmRequest = null;
+        this.guiPausedAt = 0;
+        this.stopActivities();
+        this.message('&eThe mining tool has insufficient fuel. Refueling...');
+        request.cancel = refuel(
+            (success) => {
+                if (!this.enabled || this.refueling !== request) return;
+                if (!success) return this.stop('Refueling failed.');
+                if (!MiningUtils.isMiningTool(Player.getInventory()?.getStackInSlot(request.toolSlot)))
+                    return this.stop('The mining tool is missing from its slot after refueling.');
+                const elapsed = Date.now() - request.startedAt;
+                for (const field of ['wormWarningAt', 'wormLastSeenAt', 'wormMissingAt', 'goblinSpawnedAt', 'goblinMissingAt']) {
+                    if (this[field]) this[field] += elapsed;
+                }
+                this.refueling = null;
+                setItemSlot(request.toolSlot);
+                this.message('&aRefueling successful. Resuming the previous state.');
+                if (request.snapshot.state === 'RESUME_PATH' && this.returnJob) this.returnToSnapshot(this.returnJob.snapshot, this.returnJob.after);
+                else this.restore(request.snapshot, 0);
+                if (request.wormPending) this.interruptForWorm();
+                else if (request.goblinPending) this.interruptForGoblin(request.goblinPending);
+            },
+            { allowNpc: false, toolSlot: request.toolSlot }
+        );
     }
 
     selectSlot(slot) {
@@ -671,6 +728,7 @@ class ScathaMacro extends ModuleBase {
     }
 
     onWorldUnload() {
+        if (this.refueling) return this.stop('World changed while refueling.');
         this.generation++;
         this.stopActivities();
         this.currentLoadout = null;
@@ -678,6 +736,7 @@ class ScathaMacro extends ModuleBase {
     }
 
     switchLobby(reason) {
+        if (this.refueling) return this.stop(`Refueling interrupted: ${reason}.`);
         if (this.state === 'HOP') return;
         this.message(`&eSwitching Crystal Hollows lobby: ${reason}`);
         this.previousServer = this.lobbyId || this.getLobbyId() || this.previousServer;
@@ -692,6 +751,11 @@ class ScathaMacro extends ModuleBase {
         this.decayIntensity();
         if (this.exitIntensity >= this.exitThreshold) return this.stop('Exit failsafe threshold reached.');
         if (this.lobbyIntensity >= this.lobbyThreshold && !['HOP', 'WARP'].includes(this.state)) return this.switchLobby('Lobby failsafe threshold reached');
+        if (this.refueling) {
+            if (Date.now() - this.refueling.startedAt > 120000) return this.stop('Refueling timed out.');
+            Client.stopMovement();
+            return;
+        }
         if (!Player.getPlayer() || !World.isLoaded()) return;
         if (['HOP', 'WARP'].includes(this.state) && !cleanChat(Scoreboard.getTitle()).includes('SKYBLOCK')) {
             this.initialized = false;
@@ -778,7 +842,7 @@ class ScathaMacro extends ModuleBase {
             case 'BACKWARD':
                 return this.mineBackward();
             case 'RETURN':
-                return this.returnToFace();
+                return this.returnToSnapshot({ ...this.snapshot(), point: { ...this.breakPoint } }, 'RETURN_RESUME');
             case 'TURN':
                 return this.turnLane();
             case 'CHEST':
@@ -817,12 +881,13 @@ class ScathaMacro extends ModuleBase {
                     const maxX = Math.floor((x + LAVA_SCAN_HALF_SIZE - 1) / 16);
                     const minZ = Math.floor((z - LAVA_SCAN_HALF_SIZE + 1) / 16);
                     const maxZ = Math.floor((z + LAVA_SCAN_HALF_SIZE - 1) / 16);
-                    for (let cx = minX; cx <= maxX; cx++) for (let cz = minZ; cz <= maxZ; cz++) {
-                        const chunkKey = `${cx},${cz}`;
-                        if (seenChunks.has(chunkKey)) continue;
-                        seenChunks.add(chunkKey);
-                        this.scanChunks.push([16 * cx, 16 * cz]);
-                    }
+                    for (let cx = minX; cx <= maxX; cx++)
+                        for (let cz = minZ; cz <= maxZ; cz++) {
+                            const chunkKey = `${cx},${cz}`;
+                            if (seenChunks.has(chunkKey)) continue;
+                            seenChunks.add(chunkKey);
+                            this.scanChunks.push([16 * cx, 16 * cz]);
+                        }
                 }
                 break;
             }
@@ -855,12 +920,6 @@ class ScathaMacro extends ModuleBase {
                 this.backwardPitch = random(-15, -7);
                 this.backwardObstacle = null;
                 this.backwardBlocked = null;
-                break;
-            case 'RETURN':
-                this.returnObstacle = null;
-                this.returnBlocked = null;
-                // Track actual walking progress independently of mining target changes.
-                this.returnProgress = {};
                 break;
             case 'TURN':
                 if (!this.turnGoal) {
@@ -1065,8 +1124,7 @@ class ScathaMacro extends ModuleBase {
         const missing = HOTM_PERKS.find((name) => !perks[name] || perks[name].enabled === null);
         if (missing) {
             if (!request.missingSince) request.missingSince = now;
-            if (now - request.missingSince >= HOTM_PERK_TIMEOUT_MS)
-                this.retryHotm(request, `cannot find or read ${missing}`);
+            if (now - request.missingSince >= HOTM_PERK_TIMEOUT_MS) this.retryHotm(request, `cannot find or read ${missing}`);
             return;
         }
         request.missingSince = 0;
@@ -1180,8 +1238,7 @@ class ScathaMacro extends ModuleBase {
         if (Player.getY() < 80) return this.setState('PATH_LAVA', 0);
         if (Date.now() - this.startedAt > 20000) return this.switchLobby('Could not jump below Y=80');
         this.aimAt(this.cliffAngles, 'lava:jump');
-        const aligned = Math.abs(wrapTo180(Player.getYaw() - this.cliffAngles.yaw)) <= 3 &&
-            Math.abs(Player.getPitch() - this.cliffAngles.pitch) <= 3;
+        const aligned = Math.abs(wrapTo180(Player.getYaw() - this.cliffAngles.yaw)) <= 3 && Math.abs(Player.getPitch() - this.cliffAngles.pitch) <= 3;
         Client.setKey('w', aligned);
         Client.setKey('space', aligned);
     }
@@ -1266,12 +1323,17 @@ class ScathaMacro extends ModuleBase {
         if (!this.enabled || !['golden', 'diamond'].includes(type) || this.goblinResume) return;
         const pendingState = this.state === 'LOADOUT' ? this.loadoutRequest?.nextState : this.state;
         if (!MINING_STATES.has(pendingState)) return;
+        if (this.refueling) {
+            this.refueling.goblinPending = type;
+            return;
+        }
 
         // Keep the exact interrupted state (including any open treasure chest).
         // This snapshot also freezes the remaining forward mining time.
         this.goblinResume = this.snapshot();
         this.goblinType = type;
         this.goblinOrigin = position();
+        this.goblinSearch = this.createTunnelSearch(this.goblinOrigin, pendingState);
         this.goblinSpawnedAt = Date.now();
         this.goblinTargetUuid = null;
         this.goblinMissingAt = 0;
@@ -1292,26 +1354,21 @@ class ScathaMacro extends ModuleBase {
         const candidates = CombatBot.findMob({
             names: [`${this.goblinType} Goblin`],
             allowInvisible: true,
-            boundaryCheck: (x, y, z) =>
-                Math.hypot(x - origin.x, z - origin.z) <= GOBLIN_SPAWN_SEARCH_RADIUS &&
-                Math.abs(y - origin.y) <= 4,
+            boundaryCheck: (x, y, z) => this.inTunnelSearchBounds({ x, y, z }, this.goblinSearch),
         });
-        const target = candidates.sort((a, b) =>
-            Math.hypot(a.getX() - origin.x, a.getY() - origin.y, a.getZ() - origin.z) -
-            Math.hypot(b.getX() - origin.x, b.getY() - origin.y, b.getZ() - origin.z)
+        const target = candidates.sort(
+            (a, b) =>
+                Math.hypot(a.getX() - origin.x, a.getY() - origin.y, a.getZ() - origin.z) -
+                Math.hypot(b.getX() - origin.x, b.getY() - origin.y, b.getZ() - origin.z)
         )[0];
         if (target) this.goblinTargetUuid = CombatBot.getTargetUuid(target);
     }
 
     findLockedGoblinTarget() {
         if (!this.goblinTargetUuid) return null;
-        const target = World.getAllEntities().find((entity) =>
-            CombatBot.getTargetUuid(entity) === this.goblinTargetUuid
-        );
-        if (!target || !CombatBot.isCombatTargetCandidate(target, true) || !this.goblinOrigin) return null;
-        const origin = this.goblinOrigin;
-        return Math.hypot(target.getX() - origin.x, target.getZ() - origin.z) <= GOBLIN_CHASE_RADIUS &&
-            Math.abs(target.getY() - origin.y) <= 6 ? target : null;
+        const target = World.getAllEntities().find((entity) => CombatBot.getTargetUuid(entity) === this.goblinTargetUuid);
+        if (!target || !CombatBot.isCombatTargetCandidate(target, true)) return null;
+        return this.inTunnelSearchBounds({ x: target.getX(), y: target.getY(), z: target.getZ() }, this.goblinSearch) ? target : null;
     }
 
     waitForGoblin() {
@@ -1322,8 +1379,7 @@ class ScathaMacro extends ModuleBase {
             this.message('&aGoblin located. Starting combat.');
             return this.fightGoblin();
         }
-        if (Date.now() - this.startedAt >= GOBLIN_SPAWN_WAIT_MS ||
-            Date.now() - this.goblinSpawnedAt >= GOBLIN_COMBAT_TIMEOUT_MS) {
+        if (Date.now() - this.startedAt >= GOBLIN_SPAWN_WAIT_MS || Date.now() - this.goblinSpawnedAt >= GOBLIN_COMBAT_TIMEOUT_MS) {
             this.message('&eSpawned goblin not found nearby. Resuming the previous state.');
             this.finishGoblinCombat();
         }
@@ -1358,18 +1414,23 @@ class ScathaMacro extends ModuleBase {
         }
     }
 
+    resetGoblin() {
+        this.goblinResume = null;
+        this.goblinType = null;
+        this.goblinOrigin = null;
+        this.goblinSearch = null;
+        this.goblinSpawnedAt = 0;
+        this.goblinTargetUuid = null;
+        this.goblinMissingAt = 0;
+    }
+
     finishGoblinCombat() {
         const snapshot = this.goblinResume;
         if (!snapshot) return this.stop('Missing goblin resume state.');
         const interruptedState = snapshot.state === 'LOADOUT' ? snapshot.loadout?.nextState : snapshot.state;
         const stayInPlace = ['DESCEND', 'CHEST', 'RECOVERY_HEIGHT'].includes(interruptedState);
         this.stopActivities();
-        this.goblinResume = null;
-        this.goblinType = null;
-        this.goblinOrigin = null;
-        this.goblinSpawnedAt = 0;
-        this.goblinTargetUuid = null;
-        this.goblinMissingAt = 0;
+        this.resetGoblin();
 
         // Chasing a fleeing goblin may move away from the original mining lane.
         // Return first when that happened, rather than mining from the wrong spot.
@@ -1503,8 +1564,13 @@ class ScathaMacro extends ModuleBase {
         // Their block above is air even though the player is standing on their collision shape.
         for (const box of world.getBlockState(pos).getCollisionShape(world, pos).toAabbs()) {
             if (box.maxY <= 1 || Math.abs(below.y + box.maxY - feetY) > 0.12) continue;
-            if (bounds.maxX <= below.x + box.minX || bounds.minX >= below.x + box.maxX ||
-                bounds.maxZ <= below.z + box.minZ || bounds.minZ >= below.z + box.maxZ) continue;
+            if (
+                bounds.maxX <= below.x + box.minX ||
+                bounds.minX >= below.x + box.maxX ||
+                bounds.maxZ <= below.z + box.minZ ||
+                bounds.minZ >= below.z + box.maxZ
+            )
+                continue;
             return below;
         }
         return point;
@@ -1720,15 +1786,12 @@ class ScathaMacro extends ModuleBase {
             const point = job.target;
             if (!this.loaded(point)) {
                 this.stopControls();
-                if (obstacleField === 'returnObstacle')
-                    this.checkProgress(10000, () => this.fallbackReturnToPath(), this.returnProgress);
-                else this.checkProgress(10000);
+                this.checkProgress(10000);
                 return false;
             }
             const name = blockName(point);
             if (name === 'minecraft:bedrock') {
-                if (obstacleField === 'returnObstacle') this.fallbackReturnToPath();
-                else if (obstacleField === 'backwardObstacle') this.switchLobby('Bedrock blocks backward mining');
+                if (obstacleField === 'backwardObstacle') this.switchLobby('Bedrock blocks backward mining');
                 else this.beginBackward(true);
                 return false;
             }
@@ -1801,10 +1864,7 @@ class ScathaMacro extends ModuleBase {
         const direction = { ...this.lane, sign: -this.lane.sign };
         // Never scan beyond the return point. Bedrock on the far side of the
         // original start is not an obstacle to this backward pass.
-        const scanDistance = Math.max(0, Math.min(
-            BACKWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2,
-            remaining - BACKWARD_ARRIVAL_DISTANCE
-        ));
+        const scanDistance = Math.max(0, Math.min(BACKWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2, remaining - BACKWARD_ARRIVAL_DISTANCE));
         const overlapping = this.overlappingChest();
         if (overlapping) return this.openChest(overlapping);
         if (this.backwardObstacle) {
@@ -1834,8 +1894,7 @@ class ScathaMacro extends ModuleBase {
             const now = Date.now();
             const obstacleKey = key(obstacle);
             const blocked = this.backwardBlocked;
-            if (!blocked || blocked.key !== obstacleKey || blocked.name !== obstacleName ||
-                (coordinate - blocked.coordinate) * direction.sign > 0.05) {
+            if (!blocked || blocked.key !== obstacleKey || blocked.name !== obstacleName || (coordinate - blocked.coordinate) * direction.sign > 0.05) {
                 this.backwardBlocked = { key: obstacleKey, name: obstacleName, coordinate, dueAt: now + this.delay(this.actionDelay) };
             } else if (now >= blocked.dueAt) {
                 this.backwardBlocked = null;
@@ -1860,128 +1919,6 @@ class ScathaMacro extends ModuleBase {
         this.moveAlongLane(direction);
         if (!this.holdMiningAttack(getLookingAt(4.5))) return;
         this.checkProgress(this.freeMiningTarget ? this.freeMiningTarget.timeoutMs : 15000);
-    }
-
-    returnToFace() {
-        // Unlike forward/backward mining, RETURN used to walk straight into any
-        // newly generated tunnel obstruction and only attempt pathfinding later.
-        // Give mining a chance first, while retaining the old pathing fallback.
-        if (this.checkProgress(this.mineTarget ? this.mineTarget.timeoutMs : 15000,
-            () => this.fallbackReturnToPath(), this.returnProgress)) return;
-
-        const overlapping = this.overlappingChest();
-        if (overlapping) return this.openChest(overlapping);
-
-        const coordinate = position()[this.lane.axis];
-        const delta = this.breakPoint[this.lane.axis] - coordinate;
-        const direction = { axis: this.lane.axis, sign: Math.sign(delta) };
-        if (direction.sign && Math.abs(delta) > 0.3) {
-            // Do not clear beyond the destination, especially if there is
-            // bedrock just past the point where the return walk should stop.
-            const scanDistance = Math.max(0, Math.min(
-                BACKWARD_STOP_DISTANCE - Player.getPlayer().getBbWidth() / 2,
-                Math.abs(delta) - 0.3
-            ));
-            if (this.returnObstacle) {
-                const blocker = this.blockingAhead(direction, scanDistance);
-                if (blocker && !blocker.unknown && isChest(blockName(blocker)) && !this.openedChests.has(key(blocker)))
-                    return this.openChest(blocker);
-                if (!this.clearForwardObstacles(direction, 'returnObstacle')) return;
-            }
-            const obstacle = this.blockingAhead(direction, scanDistance);
-            if (obstacle) {
-                if (obstacle.unknown) {
-                    Client.stopMovement();
-                    Client.setKey('leftclick', false);
-                    return;
-                }
-                const name = blockName(obstacle);
-                if (isChest(name) && !this.openedChests.has(key(obstacle))) return this.openChest(obstacle);
-                if (this.isForwardTunnelBlock(obstacle)) {
-                    Client.stopMovement();
-                    Client.setKey('leftclick', false);
-                    const now = Date.now();
-                    const blocked = this.returnBlocked;
-                    if (!blocked || blocked.key !== key(obstacle) || blocked.name !== name ||
-                        (coordinate - blocked.coordinate) * direction.sign > 0.05) {
-                        this.returnBlocked = {
-                            key: key(obstacle), name, coordinate,
-                            dueAt: now + this.delay(this.actionDelay),
-                        };
-                    } else if (now >= blocked.dueAt) {
-                        this.returnBlocked = null;
-                        if (name === 'minecraft:bedrock') return this.fallbackReturnToPath();
-                        this.returnObstacle = { target: { ...obstacle, name, aim: null }, candidates: null };
-                        this.mineTarget = null;
-                        this.clearForwardObstacles(direction, 'returnObstacle');
-                    }
-                    return;
-                }
-            }
-        }
-        this.returnBlocked = null;
-        Client.setKey('leftclick', false);
-        setKeysForStraightLineCoords(this.breakPoint.x, this.breakPoint.y, this.breakPoint.z, false);
-        if (this.tryReturnTeleport()) return;
-        if (!this.walkTo(this.breakPoint, () => this.fallbackReturnToPath())) return;
-        if (this.turnPending) {
-            this.turnGoal = null;
-            return this.setState('TURN');
-        }
-        this.setState('FORWARD');
-    }
-
-    fallbackReturnToPath() {
-        this.returnObstacle = null;
-        this.returnBlocked = null;
-        this.returnToSnapshot({ ...this.snapshot(), point: { ...this.breakPoint } }, 'RETURN_RESUME');
-    }
-
-    tryReturnTeleport() {
-        const now = Date.now();
-        if (this.returnTeleport) {
-            // Walking also changes position, so space out teleports without treating walking as a teleport response.
-            if (now - this.returnTeleport.sentAt < 1000 && flatDistance(this.breakPoint) > 0.3) return true;
-            this.returnTeleport = null;
-        }
-        if (this.returnTeleportBlocked && flatDistance(this.returnTeleportBlocked) < 0.5) return false;
-        this.returnTeleportBlocked = null;
-        const distance = Aote.FINAL_POINT_NO_AOTE_RADIUS;
-        const player = Player.getPlayer();
-        if (flatDistance(this.breakPoint) <= distance || !player.onGround() || !Aote.hasEnoughMana()) return false;
-        const slot = Aote.findAoteSlot();
-        if (slot === null) return false;
-        const target = calculateAbsoluteAngles({ ...this.breakPoint, y: player.getEyePosition().y() });
-        this.aimAt({ yaw: target.yaw, pitch: 0 }, 'return:aote');
-        Client.setKey('leftclick', false);
-        Client.setKey('shift', false);
-        Client.setKey('sprint', false);
-        this.checkProgress(15000, () => this.fallbackReturnToPath(), this.returnProgress);
-        if (this.state !== 'RETURN') return true;
-        if (this.rotation.motion?.targetId !== 'return:aote' || Math.abs(wrapTo180(Player.getYaw() - target.yaw)) > 0.5 || Math.abs(Player.getPitch()) > 0.5)
-            return true;
-        const direction = Aote.getLookDirection(player);
-        const bounds = player.getBoundingBox();
-        const world = World.getWorld();
-        this.returnTeleportBlocked = position();
-        for (let step = 0; step <= distance; step++) {
-            const point = { x: Player.getX() + direction.x * step, y: this.tunnelY, z: Player.getZ() + direction.z * step };
-            const floor = new BP(Math.floor(point.x), Math.floor(point.y) - 1, Math.floor(point.z));
-            if (!this.loaded(point) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) return false;
-        }
-        if (
-            world
-                .getBlockCollisions(player, bounds.expandTowards(direction.x * distance, 0, direction.z * distance))
-                .iterator()
-                .hasNext()
-        )
-            return false;
-        this.returnTeleportBlocked = null;
-        if (this.returnOriginalSlot === null) this.returnOriginalSlot = Player.getHeldItemIndex();
-        if (!this.selectSlot(slot + 1)) return true;
-        Client.rightClick();
-        this.returnTeleport = { sentAt: now };
-        return true;
     }
 
     turnLane() {
@@ -2047,13 +1984,9 @@ class ScathaMacro extends ModuleBase {
         const duration = this.switchForwardPitch ? this.delay(this.forwardRotationTime) : 0;
         const curveSeed = random(0, Math.PI * 2);
         const pitchFrom = this.rotation?.pitch ?? Player.getPitch();
-        const pitchTarget = this.switchForwardPitch
-            ? (head ? random(5, 10) : random(15, 20))
-            : (this.fixedForwardPitch ??= random(15, 20));
+        const pitchTarget = this.switchForwardPitch ? (head ? random(5, 10) : random(15, 20)) : (this.fixedForwardPitch ??= random(15, 20));
         const yawFrom = this.rotation?.yaw ?? Player.getYaw();
-        const yawTarget = this.switchForwardPitch
-            ? this.yaw(this.lane) + random(-3, 3)
-            : (this.fixedForwardYaw ??= this.yaw(this.lane) + random(-3, 3));
+        const yawTarget = this.switchForwardPitch ? this.yaw(this.lane) + random(-3, 3) : (this.fixedForwardYaw ??= this.yaw(this.lane) + random(-3, 3));
         this.forwardPitch = {
             from: pitchFrom,
             target: pitchTarget,
@@ -2296,13 +2229,12 @@ class ScathaMacro extends ModuleBase {
         const now = Date.now();
         if (!chest) return this.stop('Missing treasure chest position.');
         if (!isChest(blockName(chest.point))) return this.finishChest();
-        if (chest.opened) return this.finishChest();
+        if (chest.opened || chest.unavailable) return this.finishChest();
         if (Client.isInGui()) return;
         if (now - this.startedAt > 120000) return this.switchLobby('Treasure chest did not open');
         if (chest.approach) return this.tickChestApproach();
         const overlapping = this.overlappingChest();
-        const descentChest = chest.resume.state === 'DESCEND' &&
-            Math.floor(Player.getX()) === chest.point.x && Math.floor(Player.getZ()) === chest.point.z;
+        const descentChest = chest.resume.state === 'DESCEND' && Math.floor(Player.getX()) === chest.point.x && Math.floor(Player.getZ()) === chest.point.z;
         if (overlapping && key(overlapping) === key(chest.point) && !descentChest) {
             Client.stopMovement();
             Client.setKey('leftclick', false);
@@ -2329,11 +2261,13 @@ class ScathaMacro extends ModuleBase {
         const player = Player.getPlayer();
         const eye = player.getEyePosition();
         const particle = chest.particle && now - chest.particleAt < 2000;
-        let aim = particle ? chest.particle : {
-            x: chest.point.x + 0.5,
-            y: chest.point.y + (descentChest ? 0.85 : 0.5),
-            z: chest.point.z + 0.5,
-        };
+        let aim = particle
+            ? chest.particle
+            : {
+                  x: chest.point.x + 0.5,
+                  y: chest.point.y + (descentChest ? 0.85 : 0.5),
+                  z: chest.point.z + 0.5,
+              };
         const trace = (point) =>
             World.getWorld().clip(new ClipContext(eye, new Vec3d(point.x, point.y, point.z), ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
         let hit = trace(aim);
@@ -2362,8 +2296,7 @@ class ScathaMacro extends ModuleBase {
             Client.stopMovement();
             Client.setKey('leftclick', false);
             Client.setKey('space', Player.getY() < chest.point.y + 1.05);
-            this.aimAt({ x: chest.point.x + 0.5, y: chest.point.y + 0.85, z: chest.point.z + 0.5 },
-                `shaft-chest:${key(chest.point)}`);
+            this.aimAt({ x: chest.point.x + 0.5, y: chest.point.y + 0.85, z: chest.point.z + 0.5 }, `shaft-chest:${key(chest.point)}`);
             return;
         }
         Client.setKey('space', false);
@@ -2505,7 +2438,7 @@ class ScathaMacro extends ModuleBase {
 
     finishChest() {
         const chest = this.chest;
-        if (chest.opened) this.openedChests.add(key(chest.point));
+        if (chest.opened || chest.unavailable) this.openedChests.add(key(chest.point));
         this.chest = null;
         this.restore(chest.resume, 0);
     }
@@ -2514,8 +2447,15 @@ class ScathaMacro extends ModuleBase {
         if (!this.enabled) return;
         const state = this.state === 'LOADOUT' ? this.loadoutRequest?.nextState : this.state;
         if (state === 'WAIT_WORM' || state === 'WORM') return;
-        if (!MINING_STATES.has(state) && state !== 'COOLDOWN' && state !== 'RESUME_PATH') return;
-        const interruptedState = state === 'CHEST' ? this.chest?.resume.state : state;
+        const goblinActive = state === 'WAIT_GOBLIN' || state === 'GOBLIN';
+        if (!MINING_STATES.has(state) && state !== 'COOLDOWN' && state !== 'RESUME_PATH' && !goblinActive) return;
+        if (this.refueling) {
+            this.refueling.wormPending = true;
+            return;
+        }
+        if (goblinActive && !this.goblinResume) return this.stop('Missing goblin resume state.');
+        const miningState = goblinActive ? (this.goblinResume.state === 'LOADOUT' ? this.goblinResume.loadout?.nextState : this.goblinResume.state) : state;
+        const interruptedState = miningState === 'CHEST' ? this.chest?.resume.state : miningState;
         const recovery = this.recovery;
         const resumingCombat =
             this.combatResume &&
@@ -2525,32 +2465,21 @@ class ScathaMacro extends ModuleBase {
                     recovery &&
                     (['COOLDOWN', 'COMBAT_RESUME'].includes(recovery.after) || (recovery.snapshot && recovery.snapshot.state === 'COOLDOWN'))));
         if (!resumingCombat) {
-            this.combatResume = state === 'RESUME_PATH' ? this.returnJob?.snapshot : this.snapshot();
+            this.combatResume = goblinActive ? this.goblinResume : state === 'RESUME_PATH' ? this.returnJob?.snapshot : this.snapshot();
             if (!this.combatResume) return;
             const pillar = recovery && recovery.pillar;
             if (pillar) this.combatResume.point.y = pillar.y;
         }
         this.wormOrigin = position();
-        // The 1x2 mining corridor, expanded one block in both cross-section axes.
-        // The search remains anchored to the location of this worm warning.
-        const direction = interruptedState === 'TURN' && this.lane ? this.turnDirection() : this.lane;
-        const axis = direction?.axis || 'z';
-        const crossAxis = axis === 'x' ? 'z' : 'x';
-        const crossOrigin = interruptedState === 'TURN' ? this.turnOrigin : this.laneStart;
-        this.wormSearch = {
-            axis,
-            crossAxis,
-            along: this.wormOrigin[axis],
-            cross: crossOrigin?.[crossAxis] ?? Math.floor(this.wormOrigin[crossAxis]) + 0.5,
-            minY: this.tunnelY - 1,
-            maxY: this.tunnelY + 3,
-        };
+        this.wormSearch = this.createTunnelSearch(this.wormOrigin, interruptedState);
+        if (goblinActive) this.resetGoblin();
         this.wormWarningAt = Date.now();
         this.cooldownUntil = this.wormWarningAt + randomInt(25000, 35000);
         OverlayManager.incrementTrackedValue(this.oid, 'wormSpawns');
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
+        this.wormTargetFromMotion = false;
         this.wormConfirmation = null;
         this.wormCandidates.clear();
         this.wormNametags.clear();
@@ -2566,8 +2495,23 @@ class ScathaMacro extends ModuleBase {
         this.message('&eWorm warning received. Mining paused; preparing combat and waiting for the spawn.');
     }
 
-    inWormSearchBounds(point) {
-        const search = this.wormSearch;
+    createTunnelSearch(origin, state) {
+        const interruptedState = state === 'CHEST' ? this.chest?.resume.state : state;
+        const direction = interruptedState === 'TURN' && this.lane ? this.turnDirection() : this.lane;
+        const axis = direction?.axis || 'z';
+        const crossAxis = axis === 'x' ? 'z' : 'x';
+        const crossOrigin = interruptedState === 'TURN' ? this.turnOrigin : this.laneStart;
+        return {
+            axis,
+            crossAxis,
+            along: origin[axis],
+            cross: crossOrigin?.[crossAxis] ?? Math.floor(origin[crossAxis]) + 0.5,
+            minY: this.tunnelY - 1,
+            maxY: this.tunnelY + 3,
+        };
+    }
+
+    inTunnelSearchBounds(point, search) {
         return (
             !!search &&
             Math.abs(point[search.axis] - search.along) <= WORM_TUNNEL_HALF_LENGTH &&
@@ -2580,13 +2524,40 @@ class ScathaMacro extends ModuleBase {
     isWormSegment(entity) {
         try {
             return (
-                this.inWormSearchBounds({ x: entity.getX(), y: entity.getY(), z: entity.getZ() }) &&
+                this.inTunnelSearchBounds({ x: entity.getX(), y: entity.getY(), z: entity.getZ() }, this.wormSearch) &&
                 CombatBot.isCombatTargetCandidate(entity, true, true, true) &&
                 entity.getStackInSlot(5)?.type?.getRegistryName() === 'minecraft:player_head'
             );
         } catch (error) {
             return false;
         }
+    }
+
+    findMovingWormHead(segments, now) {
+        const search = this.wormSearch;
+        const previous = search.motionSample;
+        if (previous && now - previous.seenAt < WORM_CONFIRM_DELAY_MS) return null;
+        const coordinates = new Map();
+        for (const [uuid, segment] of segments) coordinates.set(uuid, search.axis === 'x' ? segment.getX() : segment.getZ());
+        search.motionSample = { coordinates, seenAt: now };
+        if (!previous) return null;
+
+        let direction = 0;
+        let head = null;
+        let front = 0;
+        for (const [uuid, segment] of segments) {
+            const before = previous.coordinates.get(uuid);
+            if (before === undefined) return null;
+            const coordinate = coordinates.get(uuid);
+            const sign = Math.sign(coordinate - before);
+            if (!sign || (direction && sign !== direction)) return null;
+            direction = sign;
+            if (!head || (coordinate - front) * direction > 0) {
+                head = segment;
+                front = coordinate;
+            }
+        }
+        return head;
     }
 
     findWormTargets(requireFresh = false) {
@@ -2601,18 +2572,17 @@ class ScathaMacro extends ModuleBase {
         let nearestApproachDistance = Infinity;
         let nearestStandPoint = null;
         let nearestStandDistance = Infinity;
-        const debug = this.wormDebug && this.state === 'WAIT_WORM'
-            ? { scanned: 0, inBounds: 0, withinTwoBlocks: 0, closestSq: Infinity, pairErrors: 0, headPoints: [] }
-            : null;
+        const debug =
+            this.wormDebug && this.state === 'WAIT_WORM'
+                ? { scanned: 0, inBounds: 0, withinTwoBlocks: 0, closestSq: Infinity, pairErrors: 0, headPoints: [] }
+                : null;
         for (const stand of World.getAllEntitiesOfType(ArmorStandEntity)) {
             if (debug) debug.scanned++;
-            if (!this.inWormSearchBounds({ x: stand.getX(), y: stand.getY(), z: stand.getZ() })) continue;
+            if (!this.inTunnelSearchBounds({ x: stand.getX(), y: stand.getY(), z: stand.getZ() }, this.wormSearch)) continue;
             if (debug) debug.inBounds++;
             const uuid = CombatBot.getTargetUuid(stand);
             if (!uuid) continue;
 
-            // Only the Scatha/Stoneworm nametag identifies the worm. No health
-            // symbol or other worm name is required.
             if (/(?:^|[^a-z])(?:Scatha|Stoneworm)(?![a-z])/i.test(cleanChat(stand.getName()))) {
                 // A visible worm nametag means combat is still in progress even
                 // if its player-head stand is temporarily missing.
@@ -2657,9 +2627,8 @@ class ScathaMacro extends ModuleBase {
         }
         this.wormCandidates = updatedCandidates;
         if (nearestApproachPoint || nearestStandPoint) this.wormLastStandPosition = nearestApproachPoint || nearestStandPoint;
+        const movingHead = this.findMovingWormHead(freshSegments, now);
 
-        // Only select the player-head stand nearest a Scatha/Stoneworm
-        // nametag within two blocks; no isPickable check is required.
         let nearest = null;
         let nearestDistanceSq = Infinity;
         const maxDistanceSq = WORM_NAMETAG_HEAD_MAX_DISTANCE ** 2;
@@ -2681,6 +2650,8 @@ class ScathaMacro extends ModuleBase {
                 }
             }
         }
+        if (!freshNametags.size) nearest = movingHead;
+        this.wormSearch.targetFromMotion = !!nearest && !freshNametags.size;
         if (debug) {
             this.wormDebugScan = {
                 ...debug,
@@ -2689,6 +2660,7 @@ class ScathaMacro extends ModuleBase {
                 nametags: freshNametags.size,
                 cachedHeads: available.size,
                 cachedNametags: this.wormNametags.size,
+                source: freshNametags.size ? 'nametag' : 'motion',
                 matchedUuid: nearest ? CombatBot.getTargetUuid(nearest) : null,
             };
         }
@@ -2696,17 +2668,15 @@ class ScathaMacro extends ModuleBase {
         return nearest ? [nearest] : [];
     }
 
-
     reportWormDebug(now, stage, expectedUuid = null, observedUuid = null) {
         if (!this.wormDebug || this.state !== 'WAIT_WORM' || !this.wormDebugScan) return;
         const scan = this.wormDebugScan;
         let reason = '';
         if (stage === 'verify-failed') {
-            if (!scan.nametags) reason = 'no fresh Worm nametag';
-            else if (!scan.heads) reason = 'no fresh player-head stand';
-            else if (!scan.withinTwoBlocks) reason = scan.pairErrors
-                ? 'no pair within 2 blocks (bounding-box check errors)'
-                : 'nametag/head distance exceeds 2 blocks';
+            if (!scan.heads) reason = 'no fresh player-head stand';
+            else if (!scan.nametags) reason = 'no consistent tunnel-axis movement';
+            else if (!scan.withinTwoBlocks)
+                reason = scan.pairErrors ? 'no pair within 2 blocks (bounding-box check errors)' : 'nametag/head distance exceeds 2 blocks';
             else if (!observedUuid) reason = 'no selected target UUID';
             else if (observedUuid !== expectedUuid) reason = 'head UUID changed';
             else reason = 'second confirmation unsuccessful';
@@ -2720,23 +2690,21 @@ class ScathaMacro extends ModuleBase {
         this.wormDebugLastAt = now;
         this.wormDebugLastEvent = event;
 
-        const shortId = (uuid) => uuid ? String(uuid).slice(0, 8) : '-';
+        const shortId = (uuid) => (uuid ? String(uuid).slice(0, 8) : '-');
         const closest = Number.isFinite(scan.closestSq) ? Math.sqrt(scan.closestSq).toFixed(2) : '-';
         const goal = this.wormLastStandPosition;
-        const distance = goal && this.wormSearch
-            ? Math.abs(goal[this.wormSearch.axis] - position()[this.wormSearch.axis]).toFixed(1)
-            : '-';
+        const distance = goal && this.wormSearch ? Math.abs(goal[this.wormSearch.axis] - position()[this.wormSearch.axis]).toFixed(1) : '-';
         const reasonSuffix = reason ? ' reason=' + reason : '';
         this.message(
             `&8[Worm Debug] &7${stage} ${scan.fresh ? '[fresh]' : '[cached]'} ` +
-            `stands=${scan.scanned}/${scan.inBounds} heads=${scan.heads}/${scan.cachedHeads} ` +
-            `tags=${scan.nametags}/${scan.cachedNametags} pairs<=2=${scan.withinTwoBlocks} ` +
-            `nearest=${closest} match=${shortId(scan.matchedUuid)} ` +
-            `expected=${shortId(expectedUuid)} actual=${shortId(observedUuid)} ` +
-            `approach=${distance}${reasonSuffix}`
+                `stands=${scan.scanned}/${scan.inBounds} heads=${scan.heads}/${scan.cachedHeads} ` +
+                `source=${scan.source} ` +
+                `tags=${scan.nametags}/${scan.cachedNametags} pairs<=2=${scan.withinTwoBlocks} ` +
+                `nearest=${closest} match=${shortId(scan.matchedUuid)} ` +
+                `expected=${shortId(expectedUuid)} actual=${shortId(observedUuid)} ` +
+                `approach=${distance}${reasonSuffix}`
         );
     }
-
 
     // Read TextDisplay's server-synced text rather than its ordinary entity name.
     // getText() and DATA_TEXT_ID are private in Minecraft's TextDisplay class.
@@ -2777,17 +2745,16 @@ class ScathaMacro extends ModuleBase {
 
         const search = this.wormSearch;
         if (!search) return;
-        const format = (value) => JSON.stringify(String(value))
-            .replace(/&/g, String.fromCharCode(92) + 'u0026')
-            .replace(/§/g, String.fromCharCode(92) + 'u00a7');
+        const format = (value) =>
+            JSON.stringify(String(value))
+                .replace(/&/g, String.fromCharCode(92) + 'u0026')
+                .replace(/§/g, String.fromCharCode(92) + 'u00a7');
         const boundFailures = (point) => {
             const failures = [];
             const along = Math.abs(point[search.axis] - search.along);
             const cross = Math.abs(point[search.crossAxis] - search.cross);
-            if (along > WORM_TUNNEL_HALF_LENGTH)
-                failures.push(search.axis + ':' + along.toFixed(2) + '>' + WORM_TUNNEL_HALF_LENGTH);
-            if (cross > WORM_TUNNEL_HALF_WIDTH)
-                failures.push(search.crossAxis + ':' + cross.toFixed(2) + '>' + WORM_TUNNEL_HALF_WIDTH);
+            if (along > WORM_TUNNEL_HALF_LENGTH) failures.push(search.axis + ':' + along.toFixed(2) + '>' + WORM_TUNNEL_HALF_LENGTH);
+            if (cross > WORM_TUNNEL_HALF_WIDTH) failures.push(search.crossAxis + ':' + cross.toFixed(2) + '>' + WORM_TUNNEL_HALF_WIDTH);
             if (point.y < search.minY) failures.push('y:' + point.y.toFixed(2) + '<' + search.minY);
             if (point.y > search.maxY) failures.push('y:' + point.y.toFixed(2) + '>' + search.maxY);
             return failures.length ? failures.join(',') : 'inside';
@@ -2800,8 +2767,7 @@ class ScathaMacro extends ModuleBase {
                 const point = { x: entity.getX(), y: entity.getY(), z: entity.getZ() };
                 let distanceSq = Infinity;
                 for (const head of scan.headPoints) {
-                    distanceSq = Math.min(distanceSq,
-                        (point.x - head.x) ** 2 + (point.y - head.y) ** 2 + (point.z - head.z) ** 2);
+                    distanceSq = Math.min(distanceSq, (point.x - head.x) ** 2 + (point.y - head.y) ** 2 + (point.z - head.z) ** 2);
                 }
                 if (distanceSq > WORM_DEBUG_NEARBY_RADIUS ** 2) continue;
 
@@ -2816,30 +2782,50 @@ class ScathaMacro extends ModuleBase {
                 const mc = entity.toMC();
                 const type = String(entity.getClassName());
                 const uuid = CombatBot.getTargetUuid(entity) || '-';
-                const getComponentText = (component) => component ? String(component.getString()) : '<null>';
+                const getComponentText = (component) => (component ? String(component.getString()) : '<null>');
                 let displayName = '<unavailable>';
                 let customName = '<unavailable>';
                 let customVisible = '<unavailable>';
                 let scoreboardName = '<unavailable>';
-                try { displayName = getComponentText(mc.getDisplayName()); }
-                catch (error) { displayName = '<error: ' + String(error) + '>'; }
-                try { customName = getComponentText(mc.getCustomName()); }
-                catch (error) { customName = '<error: ' + String(error) + '>'; }
-                try { customVisible = String(mc.isCustomNameVisible()); }
-                catch (error) { customVisible = '<error: ' + String(error) + '>'; }
-                try { scoreboardName = String(mc.getScoreboardName()); }
-                catch (error) { scoreboardName = '<error: ' + String(error) + '>'; }
+                try {
+                    displayName = getComponentText(mc.getDisplayName());
+                } catch (error) {
+                    displayName = '<error: ' + String(error) + '>';
+                }
+                try {
+                    customName = getComponentText(mc.getCustomName());
+                } catch (error) {
+                    customName = '<error: ' + String(error) + '>';
+                }
+                try {
+                    customVisible = String(mc.isCustomNameVisible());
+                } catch (error) {
+                    customVisible = '<error: ' + String(error) + '>';
+                }
+                try {
+                    scoreboardName = String(mc.getScoreboardName());
+                } catch (error) {
+                    scoreboardName = '<error: ' + String(error) + '>';
+                }
                 const isTextDisplay = type.indexOf('TextDisplay') >= 0;
                 const displayText = isTextDisplay ? this.getWormDebugTextDisplay(mc) : null;
                 const wormName = /(?:^|[^a-z])(?:Scatha|Stoneworm)(?![a-z])/i;
-                const isWormName = [name, componentText, displayName, customName, displayText?.text]
-                    .some((text) => text && wormName.test(cleanChat(text)));
+                const isWormName = [name, componentText, displayName, customName, displayText?.text].some((text) => text && wormName.test(cleanChat(text)));
                 const isStand = mc instanceof ArmorStandEntity;
                 nearby.push({
-                    point, distance: Math.sqrt(distanceSq), type, uuid, name, componentText,
-                    displayName, customName, customVisible, scoreboardName, displayText,
+                    point,
+                    distance: Math.sqrt(distanceSq),
+                    type,
+                    uuid,
+                    name,
+                    componentText,
+                    displayName,
+                    customName,
+                    customVisible,
+                    scoreboardName,
+                    displayText,
                     bounds: boundFailures(point),
-                    rank: isWormName ? 0 : (isTextDisplay ? 1 : (isStand ? 2 : 3)),
+                    rank: isWormName ? 0 : isTextDisplay ? 1 : isStand ? 2 : 3,
                 });
             } catch (error) {
                 errors++;
@@ -2848,24 +2834,46 @@ class ScathaMacro extends ModuleBase {
         nearby.sort((a, b) => a.rank - b.rank || a.distance - b.distance);
         this.message(
             '&8[Worm Debug] &7Nearby head scan (8 blocks, no tunnel bounds): ' +
-            nearby.length + ' entities, showing ' + Math.min(nearby.length, WORM_DEBUG_NEARBY_MAX_ENTITIES) +
-            (errors ? ', errors=' + errors : '')
+                nearby.length +
+                ' entities, showing ' +
+                Math.min(nearby.length, WORM_DEBUG_NEARBY_MAX_ENTITIES) +
+                (errors ? ', errors=' + errors : '')
         );
         const count = Math.min(nearby.length, WORM_DEBUG_NEARBY_MAX_ENTITIES);
         for (let i = 0; i < count; i++) {
             const entity = nearby[i];
             const point = entity.point;
             this.message(
-                '&8[Worm Debug] &7#' + (i + 1) + ' type=' + entity.type +
-                ' uuid=' + entity.uuid +
-                ' pos=(' + point.x.toFixed(2) + ',' + point.y.toFixed(2) + ',' + point.z.toFixed(2) + ')' +
-                ' dist=' + entity.distance.toFixed(2) + ' bounds=' + entity.bounds +
-                ' name=' + format(entity.name) + ' component=' + format(entity.componentText) +
-                ' display=' + format(entity.displayName) + ' custom=' + format(entity.customName) +
-                ' visible=' + entity.customVisible + ' scoreboard=' + format(entity.scoreboardName) +
-                (entity.displayText
-                    ? ' text_display=' + format(entity.displayText.text) + ' text_source=' + format(entity.displayText.source)
-                    : '')
+                '&8[Worm Debug] &7#' +
+                    (i + 1) +
+                    ' type=' +
+                    entity.type +
+                    ' uuid=' +
+                    entity.uuid +
+                    ' pos=(' +
+                    point.x.toFixed(2) +
+                    ',' +
+                    point.y.toFixed(2) +
+                    ',' +
+                    point.z.toFixed(2) +
+                    ')' +
+                    ' dist=' +
+                    entity.distance.toFixed(2) +
+                    ' bounds=' +
+                    entity.bounds +
+                    ' name=' +
+                    format(entity.name) +
+                    ' component=' +
+                    format(entity.componentText) +
+                    ' display=' +
+                    format(entity.displayName) +
+                    ' custom=' +
+                    format(entity.customName) +
+                    ' visible=' +
+                    entity.customVisible +
+                    ' scoreboard=' +
+                    format(entity.scoreboardName) +
+                    (entity.displayText ? ' text_display=' + format(entity.displayText.text) + ' text_source=' + format(entity.displayText.source) : '')
             );
         }
     }
@@ -2875,7 +2883,7 @@ class ScathaMacro extends ModuleBase {
         const goal = this.wormLastStandPosition;
         Client.setKey('leftclick', false);
         Client.setKey('rightclick', false);
-        if (!search || !goal || !this.inWormSearchBounds(goal) || !this.lane || !this.selectSlot(this.attackSlot)) return Client.stopMovement();
+        if (!search || !goal || !this.inTunnelSearchBounds(goal, search) || !this.lane || !this.selectSlot(this.attackSlot)) return Client.stopMovement();
 
         const here = position();
         const coordinate = goal[search.axis];
@@ -2911,8 +2919,6 @@ class ScathaMacro extends ModuleBase {
 
         const now = Date.now();
         const verifying = !!this.wormConfirmation && now - this.wormConfirmation.startedAt >= WORM_CONFIRM_DELAY_MS;
-        // Require a current nametag-to-head match for the second sample.
-        // The previous entity caches are only used for preliminary detection.
         const targets = this.findWormTargets(verifying);
         const target = targets[0] || null;
         const uuid = target ? CombatBot.getTargetUuid(target) : null;
@@ -2921,6 +2927,7 @@ class ScathaMacro extends ModuleBase {
             if (uuid && uuid === this.wormConfirmation.uuid) {
                 this.reportWormDebug(now, 'verified', this.wormConfirmation.uuid, uuid);
                 this.wormTargetUuid = uuid;
+                this.wormTargetFromMotion = this.wormSearch.targetFromMotion;
                 this.wormTargets = [target];
                 this.wormConfirmation = null;
                 this.setState('WORM', 0);
@@ -2949,9 +2956,7 @@ class ScathaMacro extends ModuleBase {
 
         // The nametag and player-head equipment are needed only for initial
         // detection. Follow the same armor stand by UUID during combat.
-        const loaded = World.getAllEntitiesOfType(ArmorStandEntity).find(
-            (entity) => CombatBot.getTargetUuid(entity) === uuid
-        );
+        const loaded = World.getAllEntitiesOfType(ArmorStandEntity).find((entity) => CombatBot.getTargetUuid(entity) === uuid);
         const target = loaded || this.wormTargets.find((entity) => CombatBot.getTargetUuid(entity) === uuid);
         return target && CombatBot.isCombatTargetCandidate(target, true, true, true) ? target : null;
     }
@@ -2960,6 +2965,14 @@ class ScathaMacro extends ModuleBase {
         const now = Date.now();
         if (!this.combatResume) return this.stop('Missing combat return position.');
         if (now - this.startedAt > 120000) return this.switchLobby('Worm combat timed out');
+        if (this.wormTargetFromMotion) {
+            const targets = this.findWormTargets(true);
+            if (targets.length && !this.wormSearch.targetFromMotion) {
+                this.wormTargetUuid = CombatBot.getTargetUuid(targets[0]);
+                this.wormTargets = targets;
+                this.wormTargetFromMotion = false;
+            }
+        }
         if (!Pathfinder.isPathing() && !this.selectSlot(this.attackSlot)) return;
         const target = this.findLockedWormTarget();
         if (target) {
@@ -3000,6 +3013,7 @@ class ScathaMacro extends ModuleBase {
         this.wormSearch = null;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
+        this.wormTargetFromMotion = false;
         this.wormConfirmation = null;
         this.wormTargets = [];
         this.wormCandidates.clear();
@@ -3008,8 +3022,20 @@ class ScathaMacro extends ModuleBase {
     }
 
     returnToSnapshot(snapshot, after) {
-        this.returnJob = { snapshot, after, result: null, alignmentAttempted: false, alignment: null };
-        this.setState('RESUME_PATH');
+        let state = snapshot.state === 'LOADOUT' ? snapshot.loadout?.nextState : snapshot.state;
+        if (state === 'CHEST') state = snapshot.chestContext?.resume.state;
+        const direction = state === 'TURN' && this.lane ? this.turnDirection() : this.lane;
+        const origin = state === 'TURN' ? this.turnOrigin : this.laneStart;
+        const crossAxis = direction?.axis === 'x' ? 'z' : 'x';
+        const tunnel = direction
+            ? {
+                  axis: direction.axis,
+                  crossAxis,
+                  cross: origin?.[crossAxis] ?? Math.floor(snapshot.point[crossAxis]) + 0.5,
+              }
+            : null;
+        this.returnJob = { snapshot, after, tunnel, result: null, alignmentAttempted: false, alignment: null };
+        this.setState('RESUME_PATH', after === 'RETURN_RESUME' ? 0 : this.actionDelay);
     }
 
     startReturnPath() {
@@ -3020,47 +3046,40 @@ class ScathaMacro extends ModuleBase {
             job.result = true;
             return;
         }
-        // Worm combat may leave us beside the narrow tunnel. Reenter the
-        // no-correction range, then walk back before attempting pathfinding.
-        if (!job.alignmentAttempted && (job.after === 'COOLDOWN' || job.after === 'COMBAT_RESUME')) {
+        if (!job.alignmentAttempted) {
             job.alignmentAttempted = true;
-            job.alignment = this.createTunnelReturnAlignment(point);
+            job.alignment = this.createTunnelReturnAlignment(point, job.tunnel);
             if (job.alignment) return;
         }
         this.startPath([[Math.floor(point.x), Math.floor(point.y) - 1, Math.floor(point.z)]], job);
     }
 
-    createTunnelReturnAlignment(returnPoint) {
-        const search = this.wormSearch;
+    createTunnelReturnAlignment(returnPoint, tunnel) {
         const here = position();
-        if (!search || !this.lane || !Player.getPlayer().onGround() ||
-            Math.abs(here.y - this.tunnelY) > 0.25 || Math.abs(returnPoint.y - this.tunnelY) > 0.25) return null;
+        if (!tunnel || !Player.getPlayer().onGround() || Math.abs(returnPoint.y - this.tunnelY) > 0.25) return null;
 
-        const axis = search.crossAxis;
-        const delta = search.cross - here[axis];
+        const axis = tunnel.crossAxis;
+        const delta = tunnel.cross - here[axis];
         if (Math.abs(delta) > TUNNEL_RETURN_ALIGN_MAX_DISTANCE) return null;
-        const goal = { ...here, y: this.tunnelY };
-        goal[axis] = search.cross;
+        const goal = { ...here };
+        goal[axis] = tunnel.cross;
         const alignment = { point: goal, startedAt: Date.now() };
         // Already within the normal mining corridor's no-correction range:
         // turn toward the return point without moving to the exact center.
-        if (this.inLaneRange(here[axis], search.cross)) return alignment;
+        if (this.inLaneRange(here[axis], tunnel.cross)) return alignment;
 
         const direction = { axis, sign: Math.sign(delta) };
-        const laneBlock = Math.floor(search.cross);
-        const nearestEdge = direction.sign > 0
-            ? laneBlock + LANE_CORRECTION_MIN
-            : laneBlock + LANE_CORRECTION_MAX;
+        const laneBlock = Math.floor(tunnel.cross);
+        const nearestEdge = direction.sign > 0 ? laneBlock + LANE_CORRECTION_MIN : laneBlock + LANE_CORRECTION_MAX;
         const travel = Math.abs(nearestEdge - here[axis]);
         const world = World.getWorld();
         // Check only as far as the nearest point inside the no-correction
         // range, not all the way to the center of the tunnel.
         for (let step = 0; step <= travel + 0.5; step += 0.5) {
             const test = this.offset(here, direction, Math.min(step, travel));
-            test.y = this.tunnelY;
             const floor = new BP(Math.floor(test.x), Math.floor(test.y) - 1, Math.floor(test.z));
-            if (!this.passable(test) || !this.passable({ ...test, y: test.y + 1 }) ||
-                !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) return null;
+            if (!this.passable(test) || !this.passable({ ...test, y: test.y + 1 }) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP))
+                return null;
         }
         if (this.blockingAhead(direction, travel)) return null;
         return alignment;
@@ -3070,36 +3089,47 @@ class ScathaMacro extends ModuleBase {
         const alignment = job.alignment;
         const now = Date.now();
         const distance = flatDistance(alignment.point);
-        if (now - alignment.startedAt > TUNNEL_RETURN_ALIGN_TIMEOUT_MS ||
-            !Player.getPlayer().onGround() || Math.abs(Player.getY() - this.tunnelY) > 0.25) {
+        if (
+            now - alignment.startedAt > TUNNEL_RETURN_ALIGN_TIMEOUT_MS ||
+            !Player.getPlayer().onGround() ||
+            Math.abs(Player.getY() - alignment.point.y) > 0.25
+        ) {
             return this.fallbackTunnelReturnPath(job);
         }
-        const axis = this.wormSearch.crossAxis;
-        if (!this.inLaneRange(position()[axis], this.wormSearch.cross)) {
+        const axis = job.tunnel.crossAxis;
+        if (!this.inLaneRange(position()[axis], job.tunnel.cross)) {
             const direction = { axis, sign: Math.sign(alignment.point[axis] - position()[axis]) };
-            if (direction.sign === 0 || this.blockingAhead(direction, Math.min(distance, 0.8)))
-                return this.fallbackTunnelReturnPath(job);
+            if (direction.sign === 0 || this.blockingAhead(direction, Math.min(distance, 0.8))) return this.fallbackTunnelReturnPath(job);
             if (this.checkProgress(1500, () => this.fallbackTunnelReturnPath(job), alignment)) return;
             Client.setKey('leftclick', false);
             setKeysForStraightLineCoords(alignment.point.x, alignment.point.y, alignment.point.z, false);
             return;
         }
         Client.stopMovement();
+        const point = job.snapshot.point;
+        const returnAxis = job.tunnel.axis;
+        const delta = point[returnAxis] - position()[returnAxis];
+        if (Math.abs(delta) <= BACKWARD_ARRIVAL_DISTANCE) {
+            job.alignment = null;
+            job.result = true;
+            return;
+        }
         const target = calculateAbsoluteAngles({ ...job.snapshot.point, y: Player.getY() + 1.4 });
         // Match the +/-3 degree yaw variation used by forward/backward mining.
         // Keep one offset per alignment so the target does not jitter each tick.
         alignment.faceYaw ??= target.yaw + random(-3, 3);
         this.aimAt({ yaw: alignment.faceYaw, pitch: 0 }, 'return:face');
-        if (this.rotation.motion?.targetId !== 'return:face' || !this.rotation.motion.complete ||
-            Math.abs(wrapTo180(Player.getYaw() - alignment.faceYaw)) > 3 || Math.abs(Player.getPitch()) > 3) return;
+        if (
+            this.rotation.motion?.targetId !== 'return:face' ||
+            !this.rotation.motion.complete ||
+            Math.abs(wrapTo180(Player.getYaw() - alignment.faceYaw)) > 3 ||
+            Math.abs(Player.getPitch()) > 3
+        )
+            return;
         job.alignment = null;
-        const point = job.snapshot.point;
-        const returnAxis = this.wormSearch.axis;
-        const sign = Math.sign(point[returnAxis] - position()[returnAxis]);
-        if (!sign) return this.fallbackTunnelReturnPath(job);
         job.directReturn = {
             yaw: alignment.faceYaw,
-            direction: { axis: returnAxis, sign },
+            direction: { axis: returnAxis, sign: Math.sign(delta) },
             startedAt: now,
         };
     }
@@ -3110,22 +3140,22 @@ class ScathaMacro extends ModuleBase {
         const now = Date.now();
         const axis = direct.direction.axis;
         const remaining = (point[axis] - position()[axis]) * direct.direction.sign;
-        const crossAxis = this.wormSearch.crossAxis;
-        const inTunnel = this.inLaneRange(position()[crossAxis], this.wormSearch.cross);
+        const crossAxis = job.tunnel.crossAxis;
+        const inTunnel = this.inLaneRange(position()[crossAxis], job.tunnel.cross);
 
-        // Finish the long walk within the ordinary return point tolerance;
-        // the existing walkTo() handles any final short position adjustment.
-        if (inTunnel && remaining >= -0.3 && remaining <= 0.45 &&
-            Math.abs(Player.getY() - point.y) <= 0.25) {
+        if (inTunnel && remaining <= BACKWARD_ARRIVAL_DISTANCE && Math.abs(Player.getY() - point.y) <= 0.25) {
             Client.stopMovement();
             job.directReturn = null;
             job.result = true;
             return;
         }
-        if (now - direct.startedAt > TUNNEL_DIRECT_RETURN_TIMEOUT_MS ||
-            !Player.getPlayer().onGround() || Math.abs(Player.getY() - point.y) > 0.25 ||
-            !inTunnel || remaining < -0.3 ||
-            this.blockingAhead(direct.direction, Math.min(0.6, Math.max(0, remaining)))) {
+        if (
+            now - direct.startedAt > TUNNEL_DIRECT_RETURN_TIMEOUT_MS ||
+            !Player.getPlayer().onGround() ||
+            Math.abs(Player.getY() - point.y) > 0.25 ||
+            !inTunnel ||
+            this.blockingAhead(direct.direction, Math.min(0.6, Math.max(0, remaining)))
+        ) {
             return this.fallbackTunnelReturnPath(job);
         }
 
@@ -3133,8 +3163,7 @@ class ScathaMacro extends ModuleBase {
         const next = this.offset(position(), direct.direction, Math.min(0.6, remaining));
         const floor = new BP(Math.floor(next.x), Math.floor(this.tunnelY) - 1, Math.floor(next.z));
         const world = World.getWorld();
-        if (!this.passable(next) || !this.passable({ ...next, y: this.tunnelY + 1 }) ||
-            !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) {
+        if (!this.passable(next) || !this.passable({ ...next, y: this.tunnelY + 1 }) || !world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)) {
             return this.fallbackTunnelReturnPath(job);
         }
         if (this.checkProgress(TUNNEL_DIRECT_RETURN_STALL_MS, () => this.fallbackTunnelReturnPath(job), direct)) return;
@@ -3149,11 +3178,30 @@ class ScathaMacro extends ModuleBase {
         Client.setKey('space', false);
         Client.setKey('shift', false);
         Client.setKey('sprint', false);
-        Client.setKey('w', Math.abs(wrapTo180(Player.getYaw() - direct.yaw)) <= 3 && Math.abs(Player.getPitch()) <= 3);
+        const facing = Math.abs(wrapTo180(Player.getYaw() - direct.yaw)) <= 3 && Math.abs(Player.getPitch()) <= 3;
+        Client.setKey('w', facing);
+        if (facing && job.after === 'RETURN_RESUME') this.tryReturnTeleport(job);
+    }
+
+    tryReturnTeleport(job) {
+        const slot = Aote.findAoteSlot();
+        if (slot === null || !Aote.hasEnoughMana()) return;
+        const now = Date.now();
+        const direct = job.directReturn;
+        if (this.returnOriginalSlot === null) this.returnOriginalSlot = Player.getHeldItemIndex();
+        if (!this.selectSlot(slot + 1)) {
+            direct.teleportDueAt = now + this.delay(this.clickDelay);
+            return;
+        }
+        direct.teleportDueAt ??= now + this.delay(this.clickDelay);
+        if (now < direct.teleportDueAt) return;
+        Client.rightClick();
+        direct.teleportDueAt = now + Math.max(1000, this.delay(this.clickDelay));
     }
 
     fallbackTunnelReturnPath(job) {
-        this.stopControls();
+        this.stopActivities();
+        job.alignmentAttempted = true;
         job.alignment = null;
         job.directReturn = null;
         this.progressPoint = null;
@@ -3170,34 +3218,32 @@ class ScathaMacro extends ModuleBase {
             if (!Pathfinder.isPathing()) this.startReturnPath();
             return;
         }
-        if (Math.abs(Player.getY() - job.snapshot.point.y) > 0.25) {
-            if (!this.confirmHeightChange()) return;
-            if (!this.lane || this.nearbyPlayer()) return this.switchLobby('Return path ended at the wrong height near a player or outside the tunnel');
-            this.recovery = { snapshot: job.snapshot, after: job.after, goalY: job.snapshot.point.y, startedAt: Date.now(), pillar: null };
-            this.returnJob = null;
-            return this.switchLoadout(this.forwardLoadout, 'RECOVERY_HEIGHT');
-        }
-        this.heightCheckAt = 0;
+        if (this.checkHeight()) return;
         if (this.ownsPath) {
             Pathfinder.resetPath();
             this.ownsPath = false;
         }
-        if (!this.walkTo(job.snapshot.point, () => this.fallbackTunnelReturnPath(job))) return;
         this.returnJob = null;
         if (job.after === 'COOLDOWN') {
             if (Date.now() < this.cooldownUntil) this.setState('COOLDOWN', 0);
             else this.finishCombat();
         } else if (job.after === 'COMBAT_RESUME') this.finishCombat();
-        else this.restore(job.snapshot);
+        else if (job.after === 'RETURN_RESUME') {
+            if (this.turnPending) this.turnGoal = null;
+            this.setState(this.turnPending ? 'TURN' : 'FORWARD');
+        } else this.restore(job.snapshot);
     }
 
     checkHeight() {
         let state = this.state;
         if (state === 'LOADOUT') state = this.loadoutRequest?.nextState;
         if (state === 'CHEST') state = this.chest?.resume.state;
-        if (!HORIZONTAL_STATES.has(state) && state !== 'COOLDOWN') return false;
+        const returning = state === 'RESUME_PATH' ? this.returnJob : null;
+        if (returning && returning.result !== true && (!returning.tunnel || !this.inLaneRange(position()[returning.tunnel.crossAxis], returning.tunnel.cross)))
+            return false;
+        if (!HORIZONTAL_STATES.has(state) && state !== 'COOLDOWN' && !returning) return false;
         if (this.state === 'COOLDOWN' && !this.initialized) return false;
-        const expectedY = state === 'COOLDOWN' ? this.cooldownY : this.tunnelY;
+        const expectedY = returning ? returning.snapshot.point.y : state === 'COOLDOWN' ? this.cooldownY : this.tunnelY;
         if (!Number.isFinite(expectedY)) return false;
         if (Math.abs(Player.getY() - expectedY) <= 0.25) {
             this.heightCheckAt = 0;
@@ -3213,10 +3259,11 @@ class ScathaMacro extends ModuleBase {
             this.switchLobby('Height changed before the tunnel was established');
             return true;
         }
-        const snapshot = this.snapshot();
-        const goalY = Math.floor(expectedY);
-        snapshot.point = this.safePoint ? { ...this.safePoint, y: goalY } : { ...position(), y: goalY };
-        this.recovery = { snapshot, goalY, startedAt: Date.now(), pillar: null };
+        const snapshot = returning ? returning.snapshot : this.snapshot();
+        const goalY = returning ? expectedY : Math.floor(expectedY);
+        if (!returning) snapshot.point = this.safePoint ? { ...this.safePoint, y: goalY } : { ...position(), y: goalY };
+        this.recovery = { snapshot, after: returning?.after, goalY, startedAt: Date.now(), pillar: null };
+        if (returning) this.returnJob = null;
         if (this.state === 'LOADOUT') closeInventory();
         this.switchLoadout(this.forwardLoadout, 'RECOVERY_HEIGHT');
         return true;

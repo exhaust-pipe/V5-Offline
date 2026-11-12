@@ -483,6 +483,7 @@ class RefuelService {
             RESTORE_ABIPHONE_2: 23,
             RESTORE_ABIPHONE_3: 24,
             CLOSE_PLAYER_INV_RESTORE: 25,
+            RETURN_TOOL: 26,
         };
 
         this.reset();
@@ -501,6 +502,7 @@ class RefuelService {
         this.waitTicks = 0;
         this.timeoutTicks = null;
         this.callback = null;
+        this.cancel = null;
         this.contactSlot = -1;
         this.npcRotationToken = 0;
         this.npcRotationPending = false;
@@ -517,6 +519,7 @@ class RefuelService {
         this.swapState = 0;
         this.finalSuccess = false;
         this.allowNpc = true;
+        this.toolSlot = null;
         if (this.tickRegister) this.tickRegister.unregister();
     }
 
@@ -527,16 +530,33 @@ class RefuelService {
         this.tickRegister.register();
     }
 
-    refuel(callback, { allowNpc = true } = {}) {
+    refuel(callback, { allowNpc = true, toolSlot = null } = {}) {
         if (this.state !== this.STATES.IDLE) {
             Chat.message('Refuel already running!');
+            if (callback) callback(false);
+            return;
+        }
+        if (toolSlot !== null && (!Number.isInteger(toolSlot) || toolSlot < 0 || toolSlot > 8)) {
             if (callback) callback(false);
             return;
         }
 
         this.callback = callback;
         this.allowNpc = allowNpc;
+        this.toolSlot = toolSlot;
         this.setState(this.STATES.FIND_ABIPHONE);
+        const cancel = () => {
+            if (this.cancel === cancel) this.abort('Refueling canceled.');
+        };
+        this.cancel = cancel;
+        return cancel;
+    }
+
+    getTool() {
+        if (this.toolSlot === null) return ToolFinder.findBest();
+        const item = Player.getInventory()?.getStackInSlot(this.toolSlot);
+        if (!item || !ToolFinder.matchTool(ChatLib.removeFormatting(String(item.getName())))?.fuel) return null;
+        return { item, slot: this.toolSlot };
     }
 
     tick() {
@@ -550,7 +570,9 @@ class RefuelService {
         if (!guiReady) return;
 
         if (
-            [this.STATES.WAIT_ANVIL_READY, this.STATES.ADD_FUEL, this.STATES.CONFIRM_FUEL, this.STATES.TAKE_TOOL].includes(this.state) &&
+            [this.STATES.WAIT_ANVIL_READY, this.STATES.ADD_FUEL, this.STATES.CONFIRM_FUEL, this.STATES.TAKE_TOOL, this.STATES.RETURN_TOOL].includes(
+                this.state
+            ) &&
             Guis.guiName() !== 'Drill Anvil'
         ) {
             if (this.state === this.STATES.WAIT_ANVIL_READY) {
@@ -593,7 +615,7 @@ class RefuelService {
                 if (foundSlot !== -1) {
                     this.originalAbiphoneSlot = foundSlot;
 
-                    let bestTool = ToolFinder.findBest();
+                    let bestTool = this.getTool();
                     let drillSlot = bestTool ? bestTool.slot : -1;
 
                     let targetSlot = -1;
@@ -768,7 +790,7 @@ class RefuelService {
                 break;
 
             case this.STATES.WAIT_ANVIL_READY:
-                let tool = ToolFinder.findBest();
+                let tool = this.getTool();
                 if (!tool) return this.fail('No drill found!');
 
                 Guis.clickSlot(tool.slot + 81, true);
@@ -794,7 +816,13 @@ class RefuelService {
                 break;
 
             case this.STATES.TAKE_TOOL:
-                Guis.clickSlot(13, true);
+                Guis.clickSlot(13, this.toolSlot === null);
+                this.guiStability.reset();
+                this.setState(this.toolSlot === null ? this.STATES.CLOSE : this.STATES.RETURN_TOOL, 10);
+                break;
+
+            case this.STATES.RETURN_TOOL:
+                Guis.clickSlot(this.toolSlot + 81);
                 this.guiStability.reset();
                 this.setState(this.STATES.CLOSE, 10);
                 break;
@@ -1224,7 +1252,7 @@ export const MiningUtils = {
         };
     },
     doRefueling: function (isComm, callback, options = {}) {
-        refueler.refuel(callback, options);
+        return refueler.refuel(callback, options);
     },
     MaxGreatExplorer: function (callback) {
         explorer.upgrade(callback);
