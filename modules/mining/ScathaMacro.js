@@ -70,6 +70,9 @@ const WORM_APPROACH_STOP_DISTANCE = 3.5;
 const WORM_NAMETAG_GRACE_MS = 3000;
 const WORM_SEGMENT_GRACE_MS = 1500;
 const WORM_DEBUG_INTERVAL_MS = 2000;
+const WORM_DEBUG_NEARBY_INTERVAL_MS = 5000;
+const WORM_DEBUG_NEARBY_RADIUS = 8;
+const WORM_DEBUG_NEARBY_MAX_ENTITIES = 12;
 const WORM_TUNNEL_HALF_LENGTH = 32;
 const WORM_TUNNEL_HALF_WIDTH = 1.5;
 const BACKWARD_STOP_DISTANCE = 2;
@@ -414,6 +417,7 @@ class ScathaMacro extends ModuleBase {
         this.wormDebugScan = null;
         this.wormDebugLastAt = 0;
         this.wormDebugLastEvent = null;
+        this.wormDebugNearbyAt = 0;
         this.returnJob = null;
         this.recovery = null;
         this.chest = null;
@@ -2553,6 +2557,7 @@ class ScathaMacro extends ModuleBase {
         this.wormDebugScan = null;
         this.wormDebugLastAt = 0;
         this.wormDebugLastEvent = null;
+        this.wormDebugNearbyAt = 0;
         if (this.state === 'LOADOUT') {
             this.currentLoadout = null;
             closeInventory();
@@ -2597,7 +2602,7 @@ class ScathaMacro extends ModuleBase {
         let nearestStandPoint = null;
         let nearestStandDistance = Infinity;
         const debug = this.wormDebug && this.state === 'WAIT_WORM'
-            ? { scanned: 0, inBounds: 0, withinTwoBlocks: 0, closestSq: Infinity, pairErrors: 0 }
+            ? { scanned: 0, inBounds: 0, withinTwoBlocks: 0, closestSq: Infinity, pairErrors: 0, headPoints: [] }
             : null;
         for (const stand of World.getAllEntitiesOfType(ArmorStandEntity)) {
             if (debug) debug.scanned++;
@@ -2628,6 +2633,7 @@ class ScathaMacro extends ModuleBase {
             // Remember actual coordinates separately from entity wrappers:
             // unloaded stands must not erase the last place we saw one.
             const point = { x: stand.getX(), y: stand.getY(), z: stand.getZ() };
+            if (debug) debug.headPoints.push(point);
             const distance = Math.abs(point[this.wormSearch.axis] - position()[this.wormSearch.axis]);
             if (distance < nearestStandDistance) {
                 nearestStandPoint = point;
@@ -2731,6 +2737,86 @@ class ScathaMacro extends ModuleBase {
         );
     }
 
+
+    // Diagnostic only: inspect entities near a head without the tunnel search limits.
+    reportWormNearbyEntities(now) {
+        if (!this.wormDebug || this.state !== 'WAIT_WORM') return;
+        const scan = this.wormDebugScan;
+        if (!scan || !scan.heads || scan.nametags || !scan.headPoints?.length) return;
+        if (this.wormDebugNearbyAt && now - this.wormDebugNearbyAt < WORM_DEBUG_NEARBY_INTERVAL_MS) return;
+        this.wormDebugNearbyAt = now;
+
+        const search = this.wormSearch;
+        if (!search) return;
+        const format = (value) => JSON.stringify(String(value))
+            .replace(/&/g, String.fromCharCode(92) + 'u0026')
+            .replace(/§/g, String.fromCharCode(92) + 'u00a7');
+        const boundFailures = (point) => {
+            const failures = [];
+            const along = Math.abs(point[search.axis] - search.along);
+            const cross = Math.abs(point[search.crossAxis] - search.cross);
+            if (along > WORM_TUNNEL_HALF_LENGTH)
+                failures.push(search.axis + ':' + along.toFixed(2) + '>' + WORM_TUNNEL_HALF_LENGTH);
+            if (cross > WORM_TUNNEL_HALF_WIDTH)
+                failures.push(search.crossAxis + ':' + cross.toFixed(2) + '>' + WORM_TUNNEL_HALF_WIDTH);
+            if (point.y < search.minY) failures.push('y:' + point.y.toFixed(2) + '<' + search.minY);
+            if (point.y > search.maxY) failures.push('y:' + point.y.toFixed(2) + '>' + search.maxY);
+            return failures.length ? failures.join(',') : 'inside';
+        };
+
+        const nearby = [];
+        let errors = 0;
+        for (const entity of World.getAllEntities()) {
+            try {
+                const point = { x: entity.getX(), y: entity.getY(), z: entity.getZ() };
+                let distanceSq = Infinity;
+                for (const head of scan.headPoints) {
+                    distanceSq = Math.min(distanceSq,
+                        (point.x - head.x) ** 2 + (point.y - head.y) ** 2 + (point.z - head.z) ** 2);
+                }
+                if (distanceSq > WORM_DEBUG_NEARBY_RADIUS ** 2) continue;
+
+                const name = String(entity.getName());
+                let componentText;
+                try {
+                    const component = entity.getNameComponent();
+                    componentText = component ? String(component.getUnformattedText()) : '<null>';
+                } catch (error) {
+                    componentText = '<error: ' + String(error) + '>';
+                }
+                const type = String(entity.getClassName());
+                const uuid = CombatBot.getTargetUuid(entity) || '-';
+                const wormName = /(?:^|[^a-z])(?:Scatha|Stoneworm)(?![a-z])/i;
+                const isWormName = wormName.test(cleanChat(name)) || wormName.test(cleanChat(componentText));
+                const isStand = entity.toMC() instanceof ArmorStandEntity;
+                nearby.push({
+                    point, distance: Math.sqrt(distanceSq), type, uuid, name, componentText,
+                    bounds: boundFailures(point), rank: isWormName ? 0 : (isStand ? 1 : 2),
+                });
+            } catch (error) {
+                errors++;
+            }
+        }
+        nearby.sort((a, b) => a.rank - b.rank || a.distance - b.distance);
+        this.message(
+            '&8[Worm Debug] &7Nearby head scan (8 blocks, no tunnel bounds): ' +
+            nearby.length + ' entities, showing ' + Math.min(nearby.length, WORM_DEBUG_NEARBY_MAX_ENTITIES) +
+            (errors ? ', errors=' + errors : '')
+        );
+        const count = Math.min(nearby.length, WORM_DEBUG_NEARBY_MAX_ENTITIES);
+        for (let i = 0; i < count; i++) {
+            const entity = nearby[i];
+            const point = entity.point;
+            this.message(
+                '&8[Worm Debug] &7#' + (i + 1) + ' type=' + entity.type +
+                ' uuid=' + entity.uuid +
+                ' pos=(' + point.x.toFixed(2) + ',' + point.y.toFixed(2) + ',' + point.z.toFixed(2) + ')' +
+                ' dist=' + entity.distance.toFixed(2) + ' bounds=' + entity.bounds +
+                ' name=' + format(entity.name) + ' component=' + format(entity.componentText)
+            );
+        }
+    }
+
     approachLastWormPosition() {
         const search = this.wormSearch;
         const goal = this.wormLastStandPosition;
@@ -2796,6 +2882,7 @@ class ScathaMacro extends ModuleBase {
             this.reportWormDebug(now, 'first-match', uuid, uuid);
         }
         this.reportWormDebug(now, 'waiting', this.wormConfirmation?.uuid || null, uuid);
+        this.reportWormNearbyEntities(now);
 
         if (now - this.wormWarningAt >= WORM_SPAWN_TIMEOUT_MS) return this.switchLobby('No Stoneworm or Scatha appeared within 60 seconds');
         // Approach the latest observed head while confirmation is pending or
