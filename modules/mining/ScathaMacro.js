@@ -415,7 +415,6 @@ class ScathaMacro extends ModuleBase {
             this.wormSearch = null;
             this.wormLastStandPosition = null;
             this.wormTargetUuid = null;
-            this.wormTargetFromMotion = false;
             this.wormConfirmation = null;
             this.wormTargets = [];
             this.wormCandidates?.clear();
@@ -452,7 +451,6 @@ class ScathaMacro extends ModuleBase {
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
-        this.wormTargetFromMotion = false;
         this.wormConfirmation = null;
         this.wormTargets = [];
         this.wormCandidates = new Map();
@@ -2521,7 +2519,6 @@ class ScathaMacro extends ModuleBase {
         this.wormLastSeenAt = 0;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
-        this.wormTargetFromMotion = false;
         this.wormConfirmation = null;
         this.wormCandidates.clear();
         this.wormNametags.clear();
@@ -2565,11 +2562,7 @@ class ScathaMacro extends ModuleBase {
 
     isWormSegment(entity) {
         try {
-            return (
-                this.inTunnelSearchBounds({ x: entity.getX(), y: entity.getY(), z: entity.getZ() }, this.wormSearch) &&
-                CombatBot.isCombatTargetCandidate(entity, true, true, true) &&
-                entity.getStackInSlot(5)?.type?.getRegistryName() === 'minecraft:player_head'
-            );
+            return CombatBot.isCombatTargetCandidate(entity, true, true, true) && entity.getStackInSlot(5)?.type?.getRegistryName() === 'minecraft:player_head';
         } catch (error) {
             return false;
         }
@@ -2634,7 +2627,6 @@ class ScathaMacro extends ModuleBase {
         if (conflicting) head = null;
         if (motion) {
             motion.direction = conflicting ? 0 : direction;
-            motion.headUuid = head ? headUuid : null;
             if (previous)
                 motion.status = conflicting
                     ? 'conflicting-directions'
@@ -2643,6 +2635,25 @@ class ScathaMacro extends ModuleBase {
                       : motion.newSegments === segments.size
                         ? 'no-shared-segments'
                         : 'no-moving-segments';
+        }
+        const trackedUuid = search.motionHeadUuid;
+        if (trackedUuid) {
+            head = segments.get(trackedUuid) || null;
+            headUuid = head ? trackedUuid : null;
+            if (!head && now - search.motionHeadSeenAt > WORM_SEGMENT_GRACE_MS) search.motionHeadUuid = null;
+            if (motion) {
+                const measured = motion.segments.get(trackedUuid);
+                motion.status = head ? 'tracking-head' : 'missing-head';
+                motion.direction = measured ? measured.sign : 0;
+            }
+        }
+        if (head) {
+            search.motionHeadUuid = headUuid;
+            search.motionHeadSeenAt = now;
+        }
+        if (motion) {
+            motion.headUuid = head ? headUuid : null;
+            motion.trackedUuid = search.motionHeadUuid || null;
         }
         return head;
     }
@@ -2661,14 +2672,19 @@ class ScathaMacro extends ModuleBase {
         let nearestStandDistance = Infinity;
         const debug =
             this.wormDebug && this.state === 'WAIT_WORM'
-                ? { scanned: 0, inBounds: 0, withinTwoBlocks: 0, closestSq: Infinity, pairErrors: 0, headPoints: [] }
+                ? { scanned: 0, inBounds: 0, trackedOutside: 0, withinTwoBlocks: 0, closestSq: Infinity, pairErrors: 0, headPoints: [] }
                 : null;
         for (const stand of World.getAllEntitiesOfType(ArmorStandEntity)) {
             if (debug) debug.scanned++;
-            if (!this.inTunnelSearchBounds({ x: stand.getX(), y: stand.getY(), z: stand.getZ() }, this.wormSearch)) continue;
-            if (debug) debug.inBounds++;
+            const point = { x: stand.getX(), y: stand.getY(), z: stand.getZ() };
+            const inBounds = this.inTunnelSearchBounds(point, this.wormSearch);
+            if (debug && inBounds) debug.inBounds++;
             const uuid = CombatBot.getTargetUuid(stand);
             if (!uuid) continue;
+            const candidate = this.wormCandidates.get(uuid);
+            const knownNametag = this.wormNametags.get(uuid);
+            const tracked = uuid === this.wormSearch.motionHeadUuid || (candidate && now - candidate.seenAt <= WORM_SEGMENT_GRACE_MS);
+            if (!inBounds && !tracked && !(knownNametag && now - knownNametag.seenAt <= WORM_NAMETAG_GRACE_MS)) continue;
 
             if (/(?:^|[^a-z])(?:Scatha|Stoneworm)(?![a-z])/i.test(cleanChat(stand.getName()))) {
                 // A visible worm nametag means combat is still in progress even
@@ -2683,13 +2699,13 @@ class ScathaMacro extends ModuleBase {
             }
 
             if (!this.isWormSegment(stand)) continue;
+            if (debug && !inBounds) debug.trackedOutside++;
             available.set(uuid, stand);
             freshSegments.set(uuid, stand);
             updatedCandidates.set(uuid, { target: stand, seenAt: now });
 
             // Remember actual coordinates separately from entity wrappers:
             // unloaded stands must not erase the last place we saw one.
-            const point = { x: stand.getX(), y: stand.getY(), z: stand.getZ() };
             if (debug) debug.headPoints.push(point);
             const distance = Math.abs(point[this.wormSearch.axis] - position()[this.wormSearch.axis]);
             if (distance < nearestStandDistance) {
@@ -2737,8 +2753,8 @@ class ScathaMacro extends ModuleBase {
                 }
             }
         }
-        if (!freshNametags.size) nearest = movingHead;
-        this.wormSearch.targetFromMotion = !!nearest && !freshNametags.size;
+        const fromMotion = !!this.wormSearch.motionHeadUuid || !freshNametags.size;
+        if (fromMotion) nearest = movingHead;
         if (debug) {
             this.wormDebugScan = {
                 ...debug,
@@ -2747,7 +2763,7 @@ class ScathaMacro extends ModuleBase {
                 nametags: freshNametags.size,
                 cachedHeads: available.size,
                 cachedNametags: this.wormNametags.size,
-                source: freshNametags.size ? 'nametag' : 'motion',
+                source: fromMotion ? 'motion' : 'nametag',
                 matchedUuid: nearest ? CombatBot.getTargetUuid(nearest) : null,
             };
         }
@@ -2761,8 +2777,8 @@ class ScathaMacro extends ModuleBase {
         let reason = '';
         if (stage === 'verify-failed') {
             if (!scan.heads) reason = 'no fresh player-head stand';
-            else if (!scan.nametags && !observedUuid) reason = 'motion ' + (scan.motion?.status || 'unavailable');
-            else if (scan.nametags && !scan.withinTwoBlocks)
+            else if (scan.source === 'motion' && !observedUuid) reason = 'motion ' + (scan.motion?.status || 'unavailable');
+            else if (scan.source === 'nametag' && !scan.withinTwoBlocks)
                 reason = scan.pairErrors ? 'no pair within 2 blocks (bounding-box check errors)' : 'nametag/head distance exceeds 2 blocks';
             else if (!observedUuid) reason = 'no selected target UUID';
             else if (observedUuid !== expectedUuid) reason = 'head UUID changed';
@@ -2784,14 +2800,14 @@ class ScathaMacro extends ModuleBase {
         const reasonSuffix = reason ? ' reason=' + reason : '';
         const motion = scan.motion;
         const motionSuffix =
-            !scan.nametags && motion
+            scan.source === 'motion' && motion
                 ? ` motion=${motion.status} sample=${motion.ageMs}ms ` +
                   `dir=${motion.direction ? (motion.direction > 0 ? '+' : '-') + this.wormSearch.axis : '-'} ` +
-                  `moving=+${motion.positive}/-${motion.negative} still=${motion.stationary} new=${motion.newSegments}`
+                  `moving=+${motion.positive}/-${motion.negative} still=${motion.stationary} new=${motion.newSegments} tracked=${shortId(motion.trackedUuid)}`
                 : '';
         this.message(
             `&8[Worm Debug] &7${stage} ${scan.fresh ? '[fresh]' : '[cached]'} ` +
-                `stands=${scan.scanned}/${scan.inBounds} heads=${scan.heads}/${scan.cachedHeads} ` +
+                `stands=${scan.scanned}/${scan.inBounds} trackedOutside=${scan.trackedOutside} heads=${scan.heads}/${scan.cachedHeads} ` +
                 `source=${scan.source} ` +
                 `tags=${scan.nametags}/${scan.cachedNametags} pairs<=2=${scan.withinTwoBlocks} ` +
                 `nearest=${closest} match=${shortId(scan.matchedUuid)} ` +
@@ -2918,7 +2934,9 @@ class ScathaMacro extends ModuleBase {
                     }
                 }
                 const segmentStatus = motion
-                    ? 'included'
+                    ? bounds === 'inside'
+                        ? 'included'
+                        : 'tracked-outside'
                     : !isStand
                       ? 'not-armor-stand'
                       : uuid === '-'
@@ -3035,7 +3053,14 @@ class ScathaMacro extends ModuleBase {
         const goal = this.wormLastStandPosition;
         Client.setKey('leftclick', false);
         Client.setKey('rightclick', false);
-        if (!search || !goal || !this.inTunnelSearchBounds(goal, search) || !this.lane || !this.selectSlot(this.attackSlot)) return Client.stopMovement();
+        if (
+            !search ||
+            !goal ||
+            (!search.motionHeadUuid && !this.wormTargetUuid && !this.inTunnelSearchBounds(goal, search)) ||
+            !this.lane ||
+            !this.selectSlot(this.attackSlot)
+        )
+            return Client.stopMovement();
 
         const here = position();
         const coordinate = goal[search.axis];
@@ -3079,7 +3104,6 @@ class ScathaMacro extends ModuleBase {
             if (uuid && uuid === this.wormConfirmation.uuid) {
                 this.reportWormDebug(now, 'verified', this.wormConfirmation.uuid, uuid);
                 this.wormTargetUuid = uuid;
-                this.wormTargetFromMotion = this.wormSearch.targetFromMotion;
                 this.wormTargets = [target];
                 this.wormConfirmation = null;
                 this.setState('WORM', 0);
@@ -3117,14 +3141,6 @@ class ScathaMacro extends ModuleBase {
         const now = Date.now();
         if (!this.combatResume) return this.stop('Missing combat return position.');
         if (now - this.startedAt > 120000) return this.switchLobby('Worm combat timed out');
-        if (this.wormTargetFromMotion) {
-            const targets = this.findWormTargets(true);
-            if (targets.length && !this.wormSearch.targetFromMotion) {
-                this.wormTargetUuid = CombatBot.getTargetUuid(targets[0]);
-                this.wormTargets = targets;
-                this.wormTargetFromMotion = false;
-            }
-        }
         if (!Pathfinder.isPathing() && !this.selectSlot(this.attackSlot)) return;
         const target = this.findLockedWormTarget();
         if (target) {
@@ -3165,7 +3181,6 @@ class ScathaMacro extends ModuleBase {
         this.wormSearch = null;
         this.wormLastStandPosition = null;
         this.wormTargetUuid = null;
-        this.wormTargetFromMotion = false;
         this.wormConfirmation = null;
         this.wormTargets = [];
         this.wormCandidates.clear();
