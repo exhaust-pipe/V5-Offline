@@ -278,9 +278,9 @@ class ScathaMacro extends ModuleBase {
             'Skip Backward Under (blocks)',
             'skipBackwardUnder',
             0,
-            20,
-            10,
-            'Skip backward mining and turn immediately when the forward distance is below this value. 0 always mines backward.'
+            30,
+            15,
+            'Skip entering or resuming backward mining when its remaining distance is below this value. Short forward passes turn immediately. 0 always mines backward.'
         );
         range('UI Click Delay (ms)', 'clickDelay', 100, 2000, 200, 400, 'Random delay before inventory clicks and chest interactions.');
         range('Action Delay (ms)', 'actionDelay', 500, 5000, 1000, 3000, 'Random delay between macro states.');
@@ -472,6 +472,7 @@ class ScathaMacro extends ModuleBase {
         this.backwardBlocked = null;
         this.forwardRemaining = null;
         this.turnPending = false;
+        this.lobbyAfterBackward = null;
         this.lavaCandidates = [];
         this.lavaTarget = null;
         this.lavaAttempts = 0;
@@ -513,6 +514,7 @@ class ScathaMacro extends ModuleBase {
     }
 
     setState(state, transitionDelay = this.actionDelay) {
+        if (state === 'BACKWARD' && this.shouldSkipBackward()) return this.finishBackward(transitionDelay);
         if (this.hotmRequest && /heart of the mountain/i.test(String(getGuiName() || ''))) closeInventory();
         this.hotmRequest = null;
         this.stopActivities();
@@ -809,7 +811,7 @@ class ScathaMacro extends ModuleBase {
             this.forwardUntil += elapsed;
             this.progressAt += elapsed;
             if (this.state === 'RESUME_PATH') {
-                for (const tracker of [this.returnJob, this.returnJob?.alignment, this.returnJob?.directReturn]) {
+                for (const tracker of [this.returnJob, this.returnJob?.alignment, this.returnJob?.directReturn, this.returnJob?.obstacle]) {
                     if (tracker?.progressAt != null) tracker.progressAt += elapsed;
                     if (tracker?.startedAt != null) tracker.startedAt += elapsed;
                 }
@@ -994,6 +996,7 @@ class ScathaMacro extends ModuleBase {
     }
 
     switchLoadout(number, nextState, transitionDelay = this.actionDelay) {
+        if (nextState === 'BACKWARD' && this.shouldSkipBackward()) return this.finishBackward(transitionDelay);
         if (nextState === 'WAIT_WORM') transitionDelay = 0;
         if (this.currentLoadout === number) return this.setState(nextState, transitionDelay);
         // Loadout switching is independent of automatic HOTM perk toggling.
@@ -1666,7 +1669,7 @@ class ScathaMacro extends ModuleBase {
                 this.stopControls();
                 return this.checkProgress(10000);
             }
-            if (scan.open) return this.switchLobby('No five-column enclosed tunnel starts within the next 30 blocks');
+            if (scan.open) return this.beginBackward(false, 'No five-column enclosed tunnel starts within the next 30 blocks');
             this.nextTunnelCheck = Date.now() + 5000;
         }
         if (Date.now() >= this.forwardUntil) return this.beginBackward(false);
@@ -1879,27 +1882,56 @@ class ScathaMacro extends ModuleBase {
         return true;
     }
 
-    beginBackward(atBoundary) {
-        // A short forward pass can turn directly, whether it ended on time or at bedrock.
-        // A threshold of zero disables skipping backward mining entirely.
-        if (this.skipBackwardUnder > 0 && this.forwardStart && flatDistance(this.forwardStart) < this.skipBackwardUnder) {
-            this.forwardObstacle = null;
-            this.forwardBlocked = null;
-            this.turnPending = false;
-            this.turnGoal = null;
-            return this.setState('TURN', 0);
-        }
+    shouldSkipBackward(point = position(), forwardStart = this.forwardStart) {
+        if (this.skipBackwardUnder <= 0 || !forwardStart || !this.lane) return false;
+        const remaining = (point[this.lane.axis] - forwardStart[this.lane.axis]) * this.lane.sign;
+        return remaining < this.skipBackwardUnder;
+    }
+
+    resolveBackwardResume(snapshot) {
+        const state = snapshot.state === 'LOADOUT' ? snapshot.loadout?.nextState : snapshot.state;
+        if (state === 'RETURN') return { ...snapshot, point: { ...this.breakPoint } };
+        if (state !== 'BACKWARD' || !this.shouldSkipBackward(snapshot.point, snapshot.forwardStart)) return snapshot;
+        return {
+            ...snapshot,
+            state: 'RETURN',
+            point: { ...this.breakPoint },
+            loadout: null,
+            currentLoadout: this.forwardLoadout,
+            forwardRemaining: null,
+        };
+    }
+
+    beginBackward(atBoundary, lobbyReason = null) {
         this.forwardObstacle = null;
+        this.forwardBlocked = null;
         this.breakPoint = position();
         this.breakPoint.y = this.tunnelY;
-        this.turnPending = atBoundary;
+        this.turnPending = atBoundary || this.shouldSkipBackward();
+        this.lobbyAfterBackward = lobbyReason;
         this.switchLoadout(this.backwardLoadout, 'BACKWARD');
+    }
+
+    finishBackward(transitionDelay = this.actionDelay) {
+        this.backwardObstacle = null;
+        this.backwardBlocked = null;
+        if (this.lobbyAfterBackward) return this.switchLobby(this.lobbyAfterBackward);
+        const crossAxis = this.lane.axis === 'x' ? 'z' : 'x';
+        if (
+            flatDistance(this.breakPoint) < 0.6 &&
+            Math.abs(Player.getY() - this.breakPoint.y) < 0.25 &&
+            this.inLaneRange(position()[crossAxis], this.laneStart[crossAxis])
+        ) {
+            if (this.turnPending) this.turnGoal = null;
+            return this.switchLoadout(this.forwardLoadout, this.turnPending ? 'TURN' : 'FORWARD', transitionDelay);
+        }
+        this.switchLoadout(this.forwardLoadout, 'RETURN', transitionDelay);
     }
 
     mineBackward() {
         const coordinate = this.lane.axis === 'x' ? Player.getX() : Player.getZ();
         const remaining = (coordinate - this.forwardStart[this.lane.axis]) * this.lane.sign;
-        if (remaining <= BACKWARD_ARRIVAL_DISTANCE) return this.switchLoadout(this.forwardLoadout, 'RETURN');
+        if (remaining <= BACKWARD_ARRIVAL_DISTANCE) return this.finishBackward();
         const direction = { ...this.lane, sign: -this.lane.sign };
         // Never scan beyond the return point. Bedrock on the far side of the
         // original start is not an obstacle to this backward pass.
@@ -2226,14 +2258,19 @@ class ScathaMacro extends ModuleBase {
                 forward && this.initialized ? Math.max(0, this.forwardUntil - Date.now()) : forward || resumingForward ? this.forwardRemaining : null,
             recoveryElapsed: this.recovery ? Date.now() - this.recovery.startedAt : null,
             recoveryContext: this.recovery,
+            returnElapsed: this.returnJob ? Date.now() - this.returnJob.startedAt : null,
+            returnContext: this.returnJob,
             chestContext: this.chest,
         };
     }
 
     restore(snapshot, transitionDelay = this.actionDelay) {
+        snapshot = this.resolveBackwardResume(snapshot);
+        if (snapshot.state === 'RETURN' && this.lobbyAfterBackward) return this.switchLobby(this.lobbyAfterBackward);
         this.forwardStart = snapshot.forwardStart;
         this.forwardRemaining = snapshot.forwardRemaining;
         this.recovery = snapshot.recoveryContext;
+        this.returnJob = snapshot.returnContext;
         this.chest = snapshot.chestContext;
         if (this.chest) {
             this.chest.approach = null;
@@ -2242,6 +2279,18 @@ class ScathaMacro extends ModuleBase {
         if (this.recovery && snapshot.recoveryElapsed !== null) {
             this.recovery.startedAt = Date.now() - snapshot.recoveryElapsed;
             this.recovery.pillar = null;
+        }
+        if (this.returnJob) {
+            this.returnJob.startedAt = Date.now() - snapshot.returnElapsed;
+            this.returnJob.progressPoint = null;
+            this.returnJob.obstacle = null;
+            if (this.returnJob.alignment) {
+                this.returnJob.alignment.startedAt = Date.now();
+                this.returnJob.alignment.progressPoint = null;
+            }
+            if (this.returnJob.directReturn) {
+                this.returnJob.directReturn.progressPoint = null;
+            }
         }
         if (snapshot.state === 'COOLDOWN' && Date.now() >= this.cooldownUntil) return this.tickCooldown();
         if (snapshot.state === 'LOADOUT') return this.switchLoadout(snapshot.loadout.number, snapshot.loadout.nextState, transitionDelay);
@@ -3188,6 +3237,10 @@ class ScathaMacro extends ModuleBase {
     }
 
     returnToSnapshot(snapshot, after) {
+        const resume = this.resolveBackwardResume(snapshot);
+        if (this.combatResume === snapshot) this.combatResume = resume;
+        snapshot = resume;
+        if (snapshot.state === 'RETURN' && this.lobbyAfterBackward) return this.switchLobby(this.lobbyAfterBackward);
         let state = snapshot.state === 'LOADOUT' ? snapshot.loadout?.nextState : snapshot.state;
         if (state === 'CHEST') state = snapshot.chestContext?.resume.state;
         const direction = state === 'TURN' && this.lane ? this.turnDirection() : this.lane;
@@ -3215,7 +3268,7 @@ class ScathaMacro extends ModuleBase {
 
     hasReachedReturnPoint(job) {
         const point = job.snapshot.point;
-        if (flatDistance(point) >= 0.6 || Math.abs(Player.getY() - point.y) >= 0.25) return false;
+        if (!Player.getPlayer().onGround() || flatDistance(point) >= 0.6 || Math.abs(Player.getY() - point.y) >= 0.25) return false;
         return !job.tunnel || !this.needsLaneCorrection(position()[job.tunnel.crossAxis], job.tunnel.cross, job.alignment?.correctingLane);
     }
 
@@ -3227,12 +3280,13 @@ class ScathaMacro extends ModuleBase {
             job.result = true;
             return;
         }
+        if (job.alignment || job.directReturn) return;
         if (!job.alignmentAttempted) {
             job.alignmentAttempted = true;
             job.alignment = this.createTunnelReturnAlignment(point, job.tunnel);
             if (job.alignment) return;
         }
-        this.startPath([[Math.floor(point.x), Math.floor(point.y) - 1, Math.floor(point.z)]], job);
+        this.fallbackTunnelReturnPath(job);
     }
 
     createTunnelReturnAlignment(returnPoint, tunnel) {
@@ -3247,17 +3301,17 @@ class ScathaMacro extends ModuleBase {
         return { point: goal, startedAt: Date.now(), correctingLane: false };
     }
 
-    canWalkTunnelReturn(direction, distance, y) {
+    scanTunnelReturn(direction, distance, y) {
         const next = this.offset(position(), direction, distance);
         next.y = y;
         const floor = new BP(Math.floor(next.x), Math.floor(y) - 1, Math.floor(next.z));
         const world = World.getWorld();
-        return (
-            !this.blockingAhead(direction, distance) &&
-            this.passable(next) &&
-            this.passable({ ...next, y: y + 1 }) &&
-            world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP)
-        );
+        const obstacle = this.blockingAhead(direction, distance);
+        return {
+            obstacle,
+            walkable:
+                !obstacle && this.passable(next) && this.passable({ ...next, y: y + 1 }) && world.getBlockState(floor).isFaceSturdy(world, floor, Direction.UP),
+        };
     }
 
     tickTunnelReturnAlignment(job) {
@@ -3276,14 +3330,18 @@ class ScathaMacro extends ModuleBase {
         alignment.correctingLane = this.needsLaneCorrection(position()[axis], job.tunnel.cross, alignment.correctingLane);
         if (alignment.correctingLane) {
             const direction = { axis, sign: Math.sign(alignment.point[axis] - position()[axis]) };
-            if (direction.sign === 0 || !this.canWalkTunnelReturn(direction, Math.min(distance, 0.6), alignment.point.y))
-                return this.fallbackTunnelReturnPath(job);
+            if (direction.sign === 0) return this.fallbackTunnelReturnPath(job);
+            const scan = this.scanTunnelReturn(direction, Math.min(distance, 0.6), alignment.point.y);
+            if (scan.obstacle) return this.clearTunnelReturnObstacle(job, scan.obstacle);
+            if (!scan.walkable) return this.fallbackTunnelReturnPath(job);
+            this.finishTunnelReturnObstacle(job);
             if (this.checkProgress(1500, () => this.fallbackTunnelReturnPath(job), alignment)) return;
             Client.setKey('leftclick', false);
             Client.setKey('shift', true);
             setKeysForStraightLineCoords(alignment.point.x, alignment.point.y, alignment.point.z, false);
             return;
         }
+        this.finishTunnelReturnObstacle(job);
         Client.setKey('shift', false);
         Client.stopMovement();
         const point = job.snapshot.point;
@@ -3319,7 +3377,7 @@ class ScathaMacro extends ModuleBase {
         const crossAxis = job.tunnel.crossAxis;
         const inTunnel = this.inLaneRange(position()[crossAxis], job.tunnel.cross);
 
-        if (inTunnel && remaining <= BACKWARD_ARRIVAL_DISTANCE && Math.abs(Player.getY() - point.y) <= 0.25) {
+        if (Player.getPlayer().onGround() && inTunnel && remaining <= BACKWARD_ARRIVAL_DISTANCE && Math.abs(Player.getY() - point.y) <= 0.25) {
             Client.stopMovement();
             job.directReturn = null;
             job.result = true;
@@ -3336,12 +3394,17 @@ class ScathaMacro extends ModuleBase {
         if (!inTunnel) {
             const alignment = this.createTunnelReturnAlignment(point, job.tunnel);
             if (!alignment) return this.fallbackTunnelReturnPath(job);
+            this.finishTunnelReturnObstacle(job);
             Client.stopMovement();
             job.alignment = alignment;
             job.directReturn = null;
             return;
         }
-        if (!this.canWalkTunnelReturn(direct.direction, Math.min(0.6, Math.max(0, remaining)), point.y)) return this.fallbackTunnelReturnPath(job);
+        const scanDistance = Math.min(0.6, Math.max(0, remaining));
+        const scan = this.scanTunnelReturn(direct.direction, scanDistance, point.y);
+        if (scan.obstacle) return this.clearTunnelReturnObstacle(job, scan.obstacle);
+        if (!scan.walkable) return this.fallbackTunnelReturnPath(job);
+        this.finishTunnelReturnObstacle(job);
         if (this.checkProgress(TUNNEL_DIRECT_RETURN_STALL_MS, () => this.fallbackTunnelReturnPath(job), direct)) return;
 
         this.aimAt({ yaw: direct.yaw, pitch: 0 }, 'return:face');
@@ -3355,6 +3418,36 @@ class ScathaMacro extends ModuleBase {
         const facing = Math.abs(wrapTo180(Player.getYaw() - direct.yaw)) <= 3 && Math.abs(Player.getPitch()) <= 3;
         Client.setKey('w', facing);
         if (facing && job.after === 'RETURN_RESUME') this.tryReturnTeleport(job);
+    }
+
+    clearTunnelReturnObstacle(job, obstacle) {
+        const name = obstacle && !obstacle.unknown ? blockName(obstacle) : null;
+        const floorY = Math.floor(job.snapshot.point.y);
+        if (!name || AIR.has(name) || name === 'minecraft:bedrock' || (obstacle.y !== floorY && obstacle.y !== floorY + 1))
+            return this.fallbackTunnelReturnPath(job);
+
+        const obstacleKey = key(obstacle);
+        if (!job.obstacle || job.obstacle.key !== obstacleKey || job.obstacle.name !== name) {
+            this.stopActivities();
+            this.mineTarget = this.createMineTarget(obstacle, name);
+            job.obstacle = { key: obstacleKey, name, startedAt: Date.now(), timeoutMs: this.mineTarget.timeoutMs };
+        }
+        if (Date.now() - job.obstacle.startedAt >= job.obstacle.timeoutMs) return this.fallbackTunnelReturnPath(job);
+        Client.stopMovement();
+        if (job.alignment) {
+            job.alignment.startedAt = Date.now();
+            job.alignment.progressPoint = null;
+        }
+        if (job.directReturn) job.directReturn.progressPoint = null;
+        job.progressPoint = null;
+        this.mineBlock(obstacle, true);
+    }
+
+    finishTunnelReturnObstacle(job) {
+        if (!job.obstacle) return;
+        job.obstacle = null;
+        this.mineTarget = null;
+        this.stopControls();
     }
 
     tryReturnTeleport(job) {
@@ -3378,6 +3471,8 @@ class ScathaMacro extends ModuleBase {
         job.alignmentAttempted = true;
         job.alignment = null;
         job.directReturn = null;
+        job.obstacle = null;
+        this.mineTarget = null;
         this.progressPoint = null;
         const point = job.snapshot.point;
         this.startPath([[Math.floor(point.x), Math.floor(point.y) - 1, Math.floor(point.z)]], job);
@@ -3422,6 +3517,11 @@ class ScathaMacro extends ModuleBase {
         if (state === 'LOADOUT') state = this.loadoutRequest?.nextState;
         if (state === 'CHEST') state = this.chest?.resume.state;
         const returning = state === 'RESUME_PATH' ? this.returnJob : null;
+        // Let the pathfinder finish jumps and steps before enforcing the mining height.
+        if (returning && returning.result !== true && this.ownsPath && Pathfinder.isPathing()) {
+            this.heightCheckAt = 0;
+            return false;
+        }
         if (returning && returning.result !== true && (!returning.tunnel || !this.inLaneRange(position()[returning.tunnel.crossAxis], returning.tunnel.cross)))
             return false;
         if (!HORIZONTAL_STATES.has(state) && state !== 'COOLDOWN' && !returning) return false;
