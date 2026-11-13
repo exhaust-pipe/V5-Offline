@@ -92,8 +92,9 @@ const LANE_CORRECTION_MIN = 0.29;
 const LANE_CORRECTION_MAX = 0.71;
 const LANE_CORRECTION_SETTLE_DISTANCE = 0.15;
 const BACKWARD_ARRIVAL_DISTANCE = 0.45;
+const RETURN_STALL_GRACE_MS = 2000;
 const RETURN_STALL_TIMEOUT_MS = 20000;
-const RETURN_TIMEOUT_MS = 120000;
+const RETURN_CUMULATIVE_STALL_TIMEOUT_MS = 60000;
 const TUNNEL_RETURN_ALIGN_MAX_DISTANCE = 6;
 const TUNNEL_RETURN_ALIGN_TIMEOUT_MS = 6000;
 const TUNNEL_DIRECT_RETURN_STALL_MS = 2000;
@@ -459,6 +460,7 @@ class ScathaMacro extends ModuleBase {
         this.wormDebugLastEvent = null;
         this.wormDebugNearbyAt = 0;
         this.returnJob = null;
+        this.returnStalledMs = 0;
         this.recovery = null;
         this.chest = null;
         this.safePoint = null;
@@ -815,6 +817,7 @@ class ScathaMacro extends ModuleBase {
                     if (tracker?.progressAt != null) tracker.progressAt += elapsed;
                     if (tracker?.startedAt != null) tracker.startedAt += elapsed;
                 }
+                if (this.returnJob?.stallCheckedAt != null) this.returnJob.stallCheckedAt += elapsed;
             }
             if (this.chest) {
                 this.chest.progressAt += elapsed;
@@ -1301,7 +1304,7 @@ class ScathaMacro extends ModuleBase {
     tickLavaPath() {
         const target = this.lavaTarget;
         const atShore = target.goals.some(([x, y, z]) => flatDistance({ x, z }) <= 0.8 && Math.abs(Player.getY() - y - 1) <= 0.6);
-        const atLava = flatDistance(center(target.point)) <= 0.45 && Math.abs(Player.getY() - target.point.y) <= 1.5;
+        const atLava = flatDistance(center(target.point)) <= 1 && Math.abs(Player.getY() - target.point.y) <= 1.5;
         if (atShore || atLava) return this.setState('ENTER_LAVA', 0);
         if (this.checkLavaTimeout()) return;
         if (target.result !== null || !Pathfinder.isPathing()) this.setState('PATH_LAVA');
@@ -2258,7 +2261,6 @@ class ScathaMacro extends ModuleBase {
                 forward && this.initialized ? Math.max(0, this.forwardUntil - Date.now()) : forward || resumingForward ? this.forwardRemaining : null,
             recoveryElapsed: this.recovery ? Date.now() - this.recovery.startedAt : null,
             recoveryContext: this.recovery,
-            returnElapsed: this.returnJob ? Date.now() - this.returnJob.startedAt : null,
             returnContext: this.returnJob,
             chestContext: this.chest,
         };
@@ -2281,7 +2283,6 @@ class ScathaMacro extends ModuleBase {
             this.recovery.pillar = null;
         }
         if (this.returnJob) {
-            this.returnJob.startedAt = Date.now() - snapshot.returnElapsed;
             this.returnJob.progressPoint = null;
             this.returnJob.obstacle = null;
             if (this.returnJob.alignment) {
@@ -3258,7 +3259,6 @@ class ScathaMacro extends ModuleBase {
             after,
             tunnel,
             yawOffset: random(-3, 3),
-            startedAt: Date.now(),
             result: null,
             alignmentAttempted: false,
             alignment: null,
@@ -3486,8 +3486,12 @@ class ScathaMacro extends ModuleBase {
             job.result = true;
         }
         if (job.result !== true) {
-            if (Date.now() - job.startedAt >= RETURN_TIMEOUT_MS) return this.switchLobby('Return timed out after 120 seconds');
             if (this.checkProgress(RETURN_STALL_TIMEOUT_MS, () => this.switchLobby('Return stopped making progress for 20 seconds'), job)) return;
+            const now = Date.now();
+            const stalledSince = Math.max(job.progressAt + RETURN_STALL_GRACE_MS, job.stallCheckedAt ?? now, this.readyAt);
+            this.returnStalledMs += Math.max(0, now - stalledSince);
+            job.stallCheckedAt = now;
+            if (this.returnStalledMs >= RETURN_CUMULATIVE_STALL_TIMEOUT_MS) return this.switchLobby('Return stalled for a total of 60 seconds in this lobby');
         }
         if (job.result === false) return this.setState('RESUME_PATH');
         if (job.alignment) return this.tickTunnelReturnAlignment(job);
