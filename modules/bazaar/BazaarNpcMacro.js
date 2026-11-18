@@ -2,6 +2,19 @@ import requestV2 from '../../utils/Request';
 import { chat } from '../../utils/Chat';
 import { DataComponents } from '../../utils/Constants';
 import { ModuleBase } from '../../utils/ModuleBase';
+import { MacroState } from '../../utils/MacroState';
+import {
+    BAZAAR_URL,
+    ITEMS_URL,
+    MAX_ORDER_ITEMS,
+    clean,
+    lore,
+    formatCoins,
+    findBazaarSlot,
+    skyblockItemId,
+    topBuyOrderPrice,
+    unitPrice,
+} from '../../utils/BazaarOrders';
 import { setSignLine } from '../../utils/Sign';
 import { regrab, ungrab } from '../../utils/Ungrab';
 import { v5Command } from '../../utils/V5Commands';
@@ -10,9 +23,6 @@ import { clickSlot, closeInventory, getGuiName } from '../../utils/player/Invent
 
 // This entire macro is AI generated, good luck!
 
-const BAZAAR_URL = 'https://api.hypixel.net/v2/skyblock/bazaar';
-const ITEMS_URL = 'https://api.hypixel.net/v2/resources/skyblock/items';
-const MAX_ORDER_ITEMS = 4096;
 const NPC_DAILY_LIMIT = 500_000_000;
 const NPC_CLEANUP_LIMIT = 490_000_000;
 const TRACKER_FILE = 'bazaar-npc-tracker.json';
@@ -24,19 +34,6 @@ const ERROR_RETRY_DELAY = { low: 30_000, high: 60_000 };
 const MAX_ERROR_RETRIES = 3;
 const COMMAND_CAPACITY = 10;
 const COMMAND_RESTORE_TIME = 1_050; // +50ms to tolerate server lag, if server lags too much it can still kick for spam tho
-const clean = (value) =>
-    ChatLib.removeFormatting(String(value ?? ''))
-        .trim()
-        .replace(/^[^a-z0-9]+/i, '')
-        .toLowerCase();
-const lore = (item) => (item?.getLore?.() || []).map((line) => ChatLib.removeFormatting(String(line)).trim());
-const formatCoins = (value) => {
-    const unit = [
-        { minimum: 1e6, suffix: 'M' },
-        { minimum: 1e3, suffix: 'K' },
-    ].find(({ minimum }) => Math.abs(value) >= minimum);
-    return unit ? `${(value / unit.minimum).toFixed(2)}${unit.suffix}` : Math.round(value).toLocaleString();
-};
 
 class BazaarNpcMacro extends ModuleBase {
     constructor() {
@@ -157,6 +154,12 @@ class BazaarNpcMacro extends ModuleBase {
     }
 
     onEnable() {
+        if (MacroState.getModule('Buy Order to Sacks')?.enabled || MacroState.getModule('Gemstone Flip')?.enabled) {
+            this.startBlocked = true;
+            this.cleanupOnEnable = false;
+            this.message('&cStop the other Bazaar macro before starting Bazaar to NPC.');
+            return this.toggle(false);
+        }
         const cleanupMode = this.cleanupOnEnable;
         const cleanupInventory = this.cleanupInventory;
         this.cleanupOnEnable = false;
@@ -184,6 +187,10 @@ class BazaarNpcMacro extends ModuleBase {
     }
 
     onDisable() {
+        if (this.startBlocked) {
+            this.startBlocked = false;
+            return;
+        }
         if (this.realisedProfitStartedAt) this.realisedProfitElapsedMs += Date.now() - this.realisedProfitStartedAt;
         this.realisedProfitStartedAt = 0;
         const cleanupFinished = this.cleanupFinished;
@@ -1033,14 +1040,7 @@ class BazaarNpcMacro extends ModuleBase {
     }
 
     findSlot(name, exact = false) {
-        const items = Player.getContainer()?.getItems() || [];
-        const upperSize = Math.max(0, items.length - 36);
-        const target = clean(name);
-        for (let slot = 0; slot < upperSize; slot++) {
-            const itemName = clean(items[slot]?.getName?.());
-            if ((exact && itemName === target) || (!exact && itemName.includes(target))) return slot;
-        }
-        return -1;
+        return findBazaarSlot(name, exact);
     }
 
     scanOpenOrders() {
@@ -1075,10 +1075,7 @@ class BazaarNpcMacro extends ModuleBase {
     }
 
     topBuyOrderPrice(item) {
-        const prices = lore(item)
-            .map((line) => Number(line.match(/^- ([\d,.]+) coins? each\b/i)?.[1]?.replace(/,/g, '')))
-            .filter(Number.isFinite);
-        return prices.length ? Math.max(...prices) : NaN;
+        return topBuyOrderPrice(item);
     }
 
     findOrderSlot(target, excluded = new Set()) {
@@ -1097,12 +1094,7 @@ class BazaarNpcMacro extends ModuleBase {
     }
 
     skyblockItemId(item) {
-        let data = '';
-        try {
-            data = String(item?.toMC?.()?.get?.(DataComponents.CUSTOM_DATA)?.copyTag?.() || '');
-        } catch (error) {}
-        if (!data) data = String(item?.getNBT?.() || '');
-        return data.match(/\bid\s*[:=]\s*"?([^",}\s]+)/i)?.[1] || null;
+        return skyblockItemId(item);
     }
 
     itemKey(item) {
@@ -1166,8 +1158,7 @@ class BazaarNpcMacro extends ModuleBase {
     }
 
     unitPrice(item) {
-        const line = lore(item).find((value) => /^(?:price per unit|unit price):\s*[\d,.]+/i.test(value));
-        return Number(line?.match(/[\d,.]+/)?.[0]?.replace(/,/g, ''));
+        return unitPrice(item);
     }
 
     isProfitablePrice(target, price) {

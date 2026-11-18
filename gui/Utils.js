@@ -265,10 +265,14 @@ export const setGuiClickSoundEnabled = (enabled) => {
 
 export const playClickSound = () => {
     if (!guiClickSoundEnabled) return;
-    World.getWorld().playPlayerSound(
-        SoundEvent.createVariableRangeEvent(Identifier.fromNamespaceAndPath('minecraft', 'entity.experience_orb.pickup')),
-        SoundCategory.MASTER,
-        0.5,
-        1.0
-    );
+    Client.scheduleTask(0, () => {
+        const world = World.getWorld();
+        if (!guiClickSoundEnabled || !world) return;
+        world.playPlayerSound(
+            SoundEvent.createVariableRangeEvent(Identifier.fromNamespaceAndPath('minecraft', 'entity.experience_orb.pickup')),
+            SoundCategory.MASTER,
+            0.5,
+            1.0
+        );
+    });
 };

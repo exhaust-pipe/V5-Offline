@@ -63,6 +63,8 @@ import './rift/MirrorverseMacro';
 
 /* BAZAAR */
 import './bazaar/BazaarNpcMacro';
+import './bazaar/BuyOrderToSacks';
+import './bazaar/GemstoneFlip';
 
 /* OTHER */
 import './other/AfkMacro';
