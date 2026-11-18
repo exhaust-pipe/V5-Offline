@@ -6,8 +6,9 @@
 
 ## Buy Order to Sacks
 
-- 未完成订单：左键领取，打开 `/sacks`，点击 `Insert inventory`，确认物品已转走后继续，直到没有可领取物品。
-- 已完成订单：右键打开 `Order options`，选择 `Flip Order`，输入最低即时买入价的 120%（四舍五入到一位小数），取消新生成的 Sell Offer，然后打开 `/viewstash material`，点击 `Insert Into Sacks`。确认 stash 转移完成后，再额外打开一次 `/sacks` 并点击 `Insert inventory`，确认物品栏中的该物品转走后继续处理订单；中断后也会恢复这一步。价格来自 Hypixel Bazaar API 的 `buy_summary` 最低价。
+- 未完成的买单通过左键领取。物品栏收到该物品后，打开 `/sacks` 并点击 `Insert inventory`，确认转走后继续。
+- 撤单时若 Bazaar 提示 `[Bazaar] You have goods to claim on this order!`，会重新打开订单列表，领取该单的新成交部分，再撤销剩余数量。只退还金币的买单会跳过 sacks 和 stash。
+- 已完成的买单通过 `Order options` 中的 `Flip Order` 转成临时卖单，价格取 Hypixel Bazaar API 的 `buy_summary` 最低价的 120%，四舍五入到一位小数。撤销临时卖单时若已有成交，会先领取销售款。若物品栏已收到整笔卖单的物品，会直接存入 sacks。可能还有物品在 stash 时，先通过 `/viewstash material` 的 `Insert Into Sacks` 转移，再将实际进入物品栏的部分存入 sacks。中断后会继续尚未完成的转移。
 - 只操作匹配名单的 BUY 订单；SELL 订单只会处理本次流程创建且按名称、价格、数量核对的临时卖单。已有完全相同的卖单时停止，避免无法区分。
 - 白名单为空时领取所有订单；黑名单优先。GUI 名单使用逗号分隔的完整物品名或 SkyBlock ID，不区分大小写。
 - 每个订单槽位独立扫描，同名订单不会合并或跳过。等待菜单和订单内容稳定后再操作，结束前重新打开订单菜单复查。数量、单价完整且没有领取提示的订单视为当前无可领取物品，包括只显示成交百分比或暂不显示成交数量的订单；明确的无物品可领取提示也会正常跳过。独立运行时复查无可领取订单后正常结束，由 Gemstone Flip 调用时继续检查和等待。其余无法确认领取状态的订单仍会报错停止。

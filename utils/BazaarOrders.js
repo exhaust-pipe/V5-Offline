@@ -4,6 +4,7 @@ import { getGuiName } from './player/Inventory';
 export const BAZAAR_URL = 'https://api.hypixel.net/v2/skyblock/bazaar';
 export const ITEMS_URL = 'https://api.hypixel.net/v2/resources/skyblock/items';
 export const MAX_ORDER_ITEMS = 4096;
+export const CANCEL_REQUIRES_CLAIM = '[Bazaar] You have goods to claim on this order!';
 export const clean = (value) =>
     ChatLib.removeFormatting(String(value ?? ''))
         .trim()

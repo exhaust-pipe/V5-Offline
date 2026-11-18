@@ -1,5 +1,5 @@
 import { BazaarMacro } from '../../utils/BazaarMacro';
-import { clean, findBazaarSlot, lore, marketItem, number, sacksFull, sameOrder, skyblockItemId } from '../../utils/BazaarOrders';
+import { CANCEL_REQUIRES_CLAIM, clean, findBazaarSlot, lore, marketItem, number, sacksFull, sameOrder, skyblockItemId } from '../../utils/BazaarOrders';
 import { MacroState } from '../../utils/MacroState';
 import { regrab, ungrab } from '../../utils/Ungrab';
 import { setSignLine } from '../../utils/Sign';
@@ -100,41 +100,43 @@ class BuyOrderToSacks extends BazaarMacro {
         this.commandAndWait('managebazaarorders', this.inspectOrders, 'Opening Bazaar orders');
     }
 
-    inspectOrders() {
+    inspectOrders(rejectedOrder = null) {
         const orders = this.readOrders();
         if (!orders) return;
         this.orders = orders;
-        if (this.pendingTransfer) {
+        const transfer = this.pendingTransfer;
+        if (transfer) {
             this.verifyingCompletion = false;
-            if (!this.matches(this.pendingTransfer)) return this.fail('A previous inventory/stash transfer needs recovery with a matching whitelist.');
-            this.target = this.pendingTransfer;
-            if (this.pendingTransfer.stage === 'cancelling') {
-                if (orders.filter((order) => sameOrder(order, this.pendingTransfer)).length < this.pendingTransfer.beforeCount) {
-                    this.pendingTransfer.stage = 'inventoryStash';
-                } else {
-                    this.pendingTransfer = null;
-                    return this.setAction(this.inspectOrders, 'Resuming interrupted order');
-                }
+            this.target = transfer.order;
+            if (!this.matches(this.target)) return this.fail('A previous inventory transfer needs recovery with a matching whitelist.');
+            if (transfer.stage === 'stash') return this.openStash();
+            if (transfer.stage === 'cancelling' && orders.filter((order) => sameOrder(order, this.target)).length < transfer.beforeCount) {
+                this.cancelledOrders.push(this.target);
+                transfer.stage = 'cancelled';
             }
-            if (this.pendingTransfer.stage === 'stash') return this.openStash();
-            if (this.pendingTransfer.stage === 'inventoryStash') return this.openSacks(this.openStash);
-            if (this.inventoryCount() > 0) return this.openSacks(this.openOrders);
-            this.pendingTransfer = null;
+            return this.openSacks();
         }
         if (this.pendingFlip) {
             this.verifyingCompletion = false;
             if (!this.matches(this.pendingFlip)) return this.fail('A previous temporary sell offer needs recovery with a matching whitelist.');
             this.target = this.pendingFlip;
             if (this.pendingFlip.stage === 'stash') return this.openStash();
-            if (this.pendingFlip.stage === 'inventory') return this.openSacks(this.transferDone);
+            if (this.pendingFlip.stage === 'inventory') return this.openSacks();
             return this.findTemporaryOffer();
         }
-        this.target = orders.find(
-            (order) =>
-                order.side === 'buy' &&
-                this.matches(order) &&
-                (this.shouldCancel(order) || (order.canClaim && (!this.runOptions.filledOnly || order.completed)))
-        );
+        const matches = rejectedOrder ? orders.filter((order) => sameOrder(order, rejectedOrder) && this.matches(order)) : [];
+        const toReclaim =
+            matches.find((order) => order.slot === rejectedOrder.slot && order.canClaim) ||
+            matches.find((order) => order.canClaim) ||
+            (matches.length === 1 ? matches[0] : null);
+        this.target =
+            toReclaim ||
+            orders.find(
+                (order) =>
+                    order.side === 'buy' &&
+                    this.matches(order) &&
+                    (this.shouldCancel(order) || (order.canClaim && (!this.runOptions.filledOnly || order.completed)))
+            );
         if (!this.target) {
             if (!this.verifyingCompletion || this.completionSnapshot !== this.orderSnapshot) {
                 this.verifyingCompletion = true;
@@ -150,33 +152,50 @@ class BuyOrderToSacks extends BazaarMacro {
             if (Date.now() - this.market.loadedAt >= 5_000) return this.loadMarket(() => this.setAction(this.inspectOrders, 'Checking filled order'));
             return this.prepareFlip();
         }
-        if (this.target.canClaim) {
-            this.beforeClaim = this.inventoryCount();
-            this.pendingTransfer = { ...this.target, stage: 'inventory' };
+        if (this.target.canClaim || toReclaim) {
+            const inventoryBefore = this.inventoryCount();
+            if (!Number.isFinite(inventoryBefore)) return;
+            this.pendingTransfer = { order: this.target, stage: 'claiming', inventoryBefore };
             return this.clickAndWait(this.target.slot, this.waitForClaim, 'Claiming items');
         }
         this.openCancellation(this.target);
     }
 
     inventoryCount() {
-        return (Player.getInventory()?.getItems() || []).slice(0, 36).reduce((total, item) => {
+        const items = Player.getInventory()?.getItems();
+        if (!items || items.length < 36) return NaN;
+        return items.slice(0, 36).reduce((total, item) => {
             const matches = clean(item?.getName?.()) === clean(this.target?.name) || (this.target?.id && skyblockItemId(item) === this.target.id);
             return total + (matches ? Number(item?.getStackSize?.() || 0) : 0);
         }, 0);
     }
 
     waitForClaim() {
-        if (this.inventoryCount() <= this.beforeClaim) return;
-        this.openSacks(this.openOrders);
+        const count = this.inventoryCount();
+        if (!Number.isFinite(count)) return;
+        if (count > this.pendingTransfer.inventoryBefore) return this.openSacks();
+        if (clean(getGuiName()).includes('order options')) return this.openOrders();
+        const orders = this.readOrders();
+        if (!orders || !this.target.canClaim) return;
+        const hasGoods = (order) => sameOrder(order, this.target) && (order.canClaim || !order.claimStateKnown);
+        if (orders.filter(hasGoods).length < this.orders.filter(hasGoods).length) this.openOrders();
     }
 
-    openSacks(next) {
-        this.afterSacks = next;
+    openSacks() {
+        const transfer = this.pendingTransfer || this.pendingFlip;
+        const count = this.inventoryCount();
+        if (!Number.isFinite(count)) return;
+        const inserting = transfer.stage === 'inventory' || transfer.stage === 'inventoryStash';
+        if (count <= (inserting ? 0 : transfer.inventoryBefore)) return this.inventoryDone();
+        if (!inserting) transfer.stage = transfer.stage === 'cancelled' ? 'inventoryStash' : 'inventory';
         this.commandAndWait('sacks', this.insertInventory, 'Opening sacks');
     }
 
     insertInventory() {
         if (!clean(getGuiName()).includes('sack')) return;
+        const count = this.inventoryCount();
+        if (!Number.isFinite(count)) return;
+        if (count === 0) return this.inventoryDone();
         const slot = findBazaarSlot('Insert inventory', true);
         if (slot === -1) return;
         this.transferWaitUntil = Date.now() + 1_000;
@@ -184,12 +203,16 @@ class BuyOrderToSacks extends BazaarMacro {
     }
 
     waitForInventoryInsert() {
-        if (Date.now() < this.transferWaitUntil || this.inventoryCount() > 0) return;
-        if (this.pendingTransfer) {
-            if (this.afterSacks === this.openStash) this.pendingTransfer.stage = 'stash';
-            else this.pendingTransfer = null;
+        if (Date.now() < this.transferWaitUntil || this.inventoryCount() !== 0) return;
+        this.inventoryDone();
+    }
+
+    inventoryDone() {
+        if (this.pendingTransfer?.stage === 'inventoryStash') {
+            this.pendingTransfer.stage = 'stash';
+            return this.openStash();
         }
-        this.afterSacks.call(this);
+        this.transferDone();
     }
 
     prepareFlip() {
@@ -236,6 +259,7 @@ class BuyOrderToSacks extends BazaarMacro {
         const matches = orders.filter((order) => sameOrder(order, this.pendingFlip));
         if (matches.length > 1) return this.fail('Multiple identical sell offers found; leaving them untouched.');
         if (!matches.length) {
+            if (this.pendingFlip.stage === 'claimProceeds' || this.pendingFlip.stage === 'claimingProceeds') return this.transferDone();
             if (this.pendingFlip.stage !== 'cancelling') {
                 if (
                     Date.now() - this.pendingFlip.submittedAt > 8_000 &&
@@ -251,7 +275,11 @@ class BuyOrderToSacks extends BazaarMacro {
         }
         this.target = matches[0];
         this.orders = orders;
-        this.openCancellation(matches[0]);
+        if (this.pendingFlip.stage === 'claimProceeds') {
+            this.pendingFlip.stage = 'claimingProceeds';
+            return this.clickAndWait(this.target.slot, this.openOrders, 'Claiming temporary sell offer proceeds');
+        }
+        this.openCancellation(this.target);
     }
 
     openCancellation(order) {
@@ -265,6 +293,8 @@ class BuyOrderToSacks extends BazaarMacro {
         if (!clean(getGuiName()).includes('order options')) return;
         const slot = findBazaarSlot('Cancel Order', true);
         if (slot === -1) return;
+        const inventoryBefore = this.inventoryCount();
+        if (!Number.isFinite(inventoryBefore)) return;
         if (this.cancelling.side === 'buy') {
             const remaining = number(
                 lore(Player.getContainer()?.getStackInSlot(slot))
@@ -273,9 +303,11 @@ class BuyOrderToSacks extends BazaarMacro {
             );
             if (!Number.isSafeInteger(remaining) || remaining < 0) return this.fail('Could not read the unfilled quantity before cancelling.');
             this.cancelling = { ...this.cancelling, remaining };
+            this.pendingTransfer = { order: this.cancelling, stage: 'cancelling', beforeCount: this.cancelCount, inventoryBefore };
+        } else {
+            this.pendingFlip.inventoryBefore = inventoryBefore;
+            this.pendingFlip.stage = 'cancelling';
         }
-        if (this.pendingFlip) this.pendingFlip.stage = 'cancelling';
-        else this.pendingTransfer = { ...this.cancelling, stage: 'cancelling', beforeCount: this.cancelCount };
         this.clickAndWait(slot, this.waitForCancellation, 'Cancelling order');
     }
 
@@ -288,11 +320,12 @@ class BuyOrderToSacks extends BazaarMacro {
             this.pendingFlip.stage = 'stash';
             return this.openStash();
         }
-        this.pendingTransfer.stage = 'inventoryStash';
-        this.openSacks(this.openStash);
+        this.pendingTransfer.stage = 'cancelled';
+        this.setAction(this.openSacks, 'Checking returned items', 0);
     }
 
     openStash() {
+        if (this.pendingFlip && this.inventoryCount() - this.pendingFlip.inventoryBefore >= this.pendingFlip.amount) return this.openSacks();
         this.awaitingStash = true;
         this.stashEmpty = false;
         this.commandAndWait('viewstash material', this.insertStash, 'Opening material stash');
@@ -301,9 +334,10 @@ class BuyOrderToSacks extends BazaarMacro {
     insertStash() {
         if (this.stashEmpty) return this.stashDone();
         if (!clean(getGuiName()).includes('view stash')) return;
+        if (findBazaarSlot('No Materials', true) !== -1) return this.stashDone();
         const slot = findBazaarSlot('Insert Into Sacks', true);
         if (slot === -1) {
-            if (findBazaarSlot('Empty Stash', true) !== -1 || findBazaarSlot('No Materials', true) !== -1) this.stashDone();
+            if (findBazaarSlot('Empty Stash', true) !== -1) this.stashDone();
             return;
         }
         this.transferWaitUntil = Date.now() + 1_000;
@@ -333,10 +367,7 @@ class BuyOrderToSacks extends BazaarMacro {
 
     stashDone() {
         this.awaitingStash = false;
-        if (this.pendingFlip) {
-            this.pendingFlip.stage = 'inventory';
-            return this.openSacks(this.transferDone);
-        }
+        if (this.pendingFlip) return this.openSacks();
         this.transferDone();
     }
 
@@ -347,6 +378,15 @@ class BuyOrderToSacks extends BazaarMacro {
     }
 
     onChat(message) {
+        if (this.action === this.waitForCancellation && message === CANCEL_REQUIRES_CLAIM) {
+            if (this.pendingFlip) {
+                this.pendingFlip.stage = 'claimProceeds';
+                return this.openOrders();
+            }
+            const rejected = this.cancelling;
+            this.pendingTransfer = null;
+            return this.commandAndWait('managebazaarorders', () => this.inspectOrders(rejected), 'Rechecking order with new fills');
+        }
         if (sacksFull(message)) {
             return this.fail(`Inventory or sacks are full: ${message}`);
         }

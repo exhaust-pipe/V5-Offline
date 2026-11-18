@@ -5,12 +5,14 @@ import { ModuleBase } from '../../utils/ModuleBase';
 import { MacroState } from '../../utils/MacroState';
 import {
     BAZAAR_URL,
+    CANCEL_REQUIRES_CLAIM,
     ITEMS_URL,
     MAX_ORDER_ITEMS,
     clean,
     lore,
     formatCoins,
     findBazaarSlot,
+    readBazaarOrders,
     skyblockItemId,
     topBuyOrderPrice,
     unitPrice,
@@ -19,6 +21,7 @@ import { setSignLine } from '../../utils/Sign';
 import { regrab, ungrab } from '../../utils/Ungrab';
 import { v5Command } from '../../utils/V5Commands';
 import { getConfigFile, randomInt, writeConfigFile } from '../../utils/Utils';
+import { GuiStability } from '../../utils/player/GuiStability';
 import { clickSlot, closeInventory, getGuiName } from '../../utils/player/Inventory';
 
 // This entire macro is AI generated, good luck!
@@ -150,6 +153,7 @@ class BazaarNpcMacro extends ModuleBase {
         this.cleanupOnEnable = false;
         this.cleanupInventory = null;
         this.cleanupFinished = false;
+        this.orderGuiStability = new GuiStability();
         this.reset();
     }
 
@@ -804,9 +808,11 @@ class BazaarNpcMacro extends ModuleBase {
     }
 
     cancelCleanupOrder() {
-        if (!clean(getGuiName()).includes('order options')) return;
+        const gui = clean(getGuiName());
+        if (gui.includes('bazaar orders') && !this.pendingClaim) return this.openOrders();
+        if (!gui.includes('order options')) return;
         const slot = this.findSlot('Cancel Order', true);
-        if (slot !== -1) this.clickAndWait(slot, this.inspectOrder, 'Cancelling buy order');
+        if (slot !== -1) this.clickAndWait(slot, this.afterOrderCancelled, 'Cancelling buy order');
     }
 
     checkNextOrder() {
@@ -840,13 +846,23 @@ class BazaarNpcMacro extends ModuleBase {
                 ? `&eFound ${duplicateCount} ${this.target.name} orders; cancelling all before relisting.`
                 : `&e${this.target.name} was outbid at ${topPrice.toLocaleString()} coins; relisting.`
         );
+        this.reopenOutbidOrder();
+    }
+
+    reopenOutbidOrder() {
         this.commandAndWait('managebazaarorders', this.openOutbidOrder, 'Opening outbid order');
     }
 
+    targetBuyOrders() {
+        if (!this.orderGuiStability.update()) return null;
+        return readBazaarOrders()?.filter((order) => order.side === 'buy' && clean(order.name) === clean(this.target.name));
+    }
+
     openOutbidOrder() {
-        if (!clean(getGuiName()).includes('bazaar orders')) return;
-        const slot = this.findOrderSlot(this.target);
-        if (slot === -1) {
+        const orders = this.targetBuyOrders();
+        if (!orders) return;
+        const order = orders.find((order) => Math.abs(order.price - this.target.orderPrice) <= 0.001) || orders[0];
+        if (!order) {
             if (!this.orderMissingSince) this.orderMissingSince = Date.now();
             if (Date.now() - this.orderMissingSince < STUCK_RETRY_DELAY * 2) return;
             this.orderMissingSince = 0;
@@ -854,19 +870,19 @@ class BazaarNpcMacro extends ModuleBase {
         }
         this.orderMissingSince = 0;
         if (this.inventoryFull()) {
-            if (this.hasInventoryIncrease()) return this.setAction(this.openTrades, 'Inventory full', 0, 0);
+            if (this.hasInventoryIncrease()) return this.setAction(() => this.openTrades(this.reopenOutbidOrder), 'Inventory full', 0, 0);
             return this.fail('Inventory is full, but none of it was added by this macro.');
         }
-        const item = Player.getContainer()?.getStackInSlot(slot);
-        this.pendingClaim = { price: this.unitPrice(item) };
-        this.clickAndWait(slot, this.cancelOutbidOrder, 'Opening outbid order');
+        this.outbidCount = orders.length;
+        this.pendingClaim = { price: order.price };
+        this.clickAndWait(order.slot, this.cancelOutbidOrder, 'Opening outbid order');
     }
 
     cancelOutbidOrder() {
         const gui = clean(getGuiName());
         if (gui.includes('bazaar orders')) {
-            if (this.findOrderSlot(this.target) !== -1) return;
-            return this.openOutbidOrder();
+            if (!this.pendingClaim || this.targetBuyOrders()?.length < this.outbidCount) return this.reopenOutbidOrder();
+            return;
         }
         if (!gui.includes('order options')) return;
         const slot = this.findSlot('Cancel Order', true);
@@ -876,20 +892,21 @@ class BazaarNpcMacro extends ModuleBase {
         const quantity = Number(missingLine?.match(/([\d,]+)x missing items?/i)?.[1]?.replace(/,/g, ''));
         if (!Number.isFinite(quantity) || quantity <= 0) return this.fail('Could not read the remaining quantity before relisting.');
 
-        this.cancelQuantity += quantity;
+        this.pendingCancelQuantity = quantity;
+        this.clickAndWait(slot, this.afterOrderCancelled, 'Cancelling outbid order');
+    }
+
+    afterOrderCancelled() {
+        if (this.cleanupMode) return this.inspectOrder();
+        const orders = this.targetBuyOrders();
+        if (!orders || orders.length >= this.outbidCount) return;
+        this.cancelQuantity += this.pendingCancelQuantity;
         const name = clean(this.target.name);
         this.activeTargets = this.activeTargets.filter((active) => clean(active.name) !== name);
         this.orderCheckQueue = this.orderCheckQueue.filter((target) => clean(target.name) !== name);
         this.orderQueue = this.orderQueue.filter((target) => clean(target.name) !== name);
 
-        this.clickAndWait(slot, this.afterOrderCancelled, 'Cancelling outbid order');
-    }
-
-    afterOrderCancelled() {
-        if (!clean(getGuiName()).includes('bazaar orders')) return;
-        const slot = this.findOrderSlot(this.target);
-        if (slot !== -1) return this.openOutbidOrder();
-        this.finishOrderCancellation();
+        this.setAction(orders.length ? this.openOutbidOrder : this.finishOrderCancellation, 'Checking remaining outbid orders', 0);
     }
 
     finishOrderCancellation() {
@@ -914,7 +931,8 @@ class BazaarNpcMacro extends ModuleBase {
         this.checkNextOrder();
     }
 
-    openTrades() {
+    openTrades(afterTrades = null) {
+        this.afterTrades = afterTrades;
         this.sellEmptySince = 0;
         this.commandAndWait('trades', this.sellItems, 'Opening Trades');
     }
@@ -977,13 +995,12 @@ class BazaarNpcMacro extends ModuleBase {
 
         this.lastCheckedInventory = this.inventorySnapshot();
         this.clearErrorRetries();
-        const nextAction = this.cleanupMode
-            ? this.openOrders
-            : this.cancelQuantity > 0
-              ? this.finishOrderCancellation
-              : this.orderQueue.length
-                ? this.placeNextOrder
-                : this.openOrders;
+        let nextAction = this.openOrders;
+        if (!this.cleanupMode) {
+            if (this.afterTrades) nextAction = this.afterTrades;
+            else if (this.cancelQuantity > 0) nextAction = this.finishOrderCancellation;
+            else if (this.orderQueue.length) nextAction = this.placeNextOrder;
+        }
         this.setAction(nextAction, 'Resuming Bazaar', 0, 0);
     }
 
@@ -1011,7 +1028,11 @@ class BazaarNpcMacro extends ModuleBase {
             if (this.enabled) this.checkNpcLimit();
         }
         this.recordClaim(message);
-        if (!this.enabled || this.cleanupMode || this.waitingForRetry) return;
+        if (!this.enabled || this.waitingForRetry) return;
+        if (this.action === this.afterOrderCancelled && message === CANCEL_REQUIRES_CLAIM) {
+            return this.cleanupMode ? this.openOrders() : this.reopenOutbidOrder();
+        }
+        if (this.cleanupMode) return;
         if (/^\[Bazaar\] You reached your maximum of [\d,]+ Bazaar orders!$/.test(message)) {
             this.orderLimitReached = true;
             this.orderQueue = [];
