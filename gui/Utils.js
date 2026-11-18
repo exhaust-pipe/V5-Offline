@@ -1,4 +1,4 @@
-import { Color, IS_MC_26_3, Identifier, SoundCategory, SoundEvent } from '../utils/Constants';
+import { Color, IS_MC_26_3, Identifier, SoundCategory, SoundEvent, isMac } from '../utils/Constants';
 
 const DEFAULT_FONT = Render2D.getDefaultFont();
 
@@ -44,6 +44,19 @@ export const startTextInput = (owner, rect) => {
     if (rect) setTextInputArea(rect);
 };
 export const stopTextInput = (owner) => Keyboard.INSTANCE.stopTextInput(owner);
+
+export const isTextShortcutDown = () =>
+    (isMac && (Keyboard.isKeyDown(Keyboard.KEY_LMETA) || Keyboard.isKeyDown(Keyboard.KEY_RMETA))) ||
+    (!Keyboard.isKeyDown(Keyboard.KEY_RMENU) && (Keyboard.isKeyDown(Keyboard.KEY_LCONTROL) || Keyboard.isKeyDown(Keyboard.KEY_RCONTROL)));
+
+export const getClipboardText = () => {
+    try {
+        return String(Client.paste() ?? '').replace(/[\r\n]+/g, ' ');
+    } catch (error) {
+        console.error(error);
+        return '';
+    }
+};
 
 const UNSHIFTED_CHARACTERS = "`1234567890-=[]\\;',./";
 const SHIFTED_CHARACTERS = '~!@#$%^&*()_+{}|:"<>?';

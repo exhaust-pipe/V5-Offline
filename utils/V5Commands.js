@@ -1,8 +1,10 @@
 import { Chat } from './Chat';
 import { File } from './Constants';
 import { isDeveloperModeEnabled, setDeveloperModeEnabled } from './DeveloperModeState';
+import { GameState } from './GameState';
 import { ServerInfo } from './player/ServerInfo';
 import { togglePiP } from './PiP';
+import { formatDurationMs, parseDurationMs } from './TimeUtils';
 
 const commandRegistry = new Map();
 let developerModeEnableConfirmationPending = false;
@@ -89,6 +91,59 @@ const showServerInfo = () => {
 
 v5Command('tps', showServerInfo);
 v5Command('ping', showServerInfo);
+
+let activeTimer = null;
+
+const timerStep = register('step', () => {
+    if (!activeTimer || Date.now() < activeTimer.deadline) return;
+
+    const { action } = activeTimer;
+    clearTimer();
+    if (action === 'closegame') Client.getMinecraft().stop();
+    else if (Client.getConnection()) GameState.disconnect('V5 timer expired', 'timer');
+    else Chat.message('&cTimer expired while offline.');
+})
+    .setFps(20)
+    .unregister();
+
+function clearTimer() {
+    activeTimer = null;
+    timerStep.unregister();
+}
+
+const showTimerHelp = () => {
+    Chat.message('&7/v5 timer <duration> <leave|closegame>');
+    Chat.message('&7/v5 timer cancel');
+    Chat.message('&7Use d, h, m, or s. Combine units or use decimals.');
+    Chat.message('&7/v5 timer 3m 15s leave &8| &7/v5 timer 3.25m closegame');
+    Chat.message('&7A new timer replaces the active timer.');
+};
+
+v5Command('timer help', showTimerHelp);
+v5Command('timer cancel', () => {
+    if (!activeTimer) return Chat.message('&cThere is no active timer.');
+    clearTimer();
+    Chat.message('&aTimer cancelled.');
+});
+
+v5Command(
+    'timer',
+    (...args) => {
+        if (args.length < 2) return showTimerHelp();
+
+        const action = args.pop().toLowerCase();
+        if (action !== 'leave' && action !== 'closegame') return Chat.message('&cInvalid action. Choose leave or closegame.');
+
+        const duration = parseDurationMs(args.join(' '));
+        const deadline = Date.now() + duration;
+        if (duration === null || !Number.isSafeInteger(deadline)) return Chat.message('&cInvalid duration. Use /v5 timer help for examples.');
+
+        activeTimer = { action, deadline };
+        if (!timerStep.isRegistered()) timerStep.register();
+        Chat.message(`&aTimer set to ${action === 'leave' ? 'leave the server' : 'close the game'} in ${formatDurationMs(duration)}.`);
+    },
+    ['greedyString']
+);
 
 v5Command('pip', () => {
     togglePiP();

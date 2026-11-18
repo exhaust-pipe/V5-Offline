@@ -7,6 +7,8 @@ import { Mouse } from '../../utils/Ungrab';
 import { Utils } from '../../utils/Utils';
 
 const STATE = { IDLE: 'Idle', RUNNING: 'Running', PAUSED: 'Paused', RESTING: 'Resting', RETURNING: 'Returning', WORLD: 'Changing world' };
+const stopsAutomaticRecovery = ({ state, cause, source }) =>
+    state === 'DISCONNECTED' && (cause === 'manual' || cause === 'banned' || (cause === 'script' && source === 'timer'));
 
 const scheduleForCurrentGeneration = (callback) => {
     const generation = ChatTriggers.getScriptGeneration();
@@ -141,7 +143,7 @@ class MacroScheduler extends ModuleBase {
 
     onEnable() {
         const event = GameState.current;
-        if (event.state === 'DISCONNECTED' && ['manual', 'banned'].includes(event.cause)) this.cancelRecovery(true);
+        if (stopsAutomaticRecovery(event)) this.cancelRecovery(true);
         if (event.state === 'PLAYING') this.readyAt = Date.now() + 5000;
         this.updateOverlay();
         this.message('&aStarted.');
@@ -159,10 +161,7 @@ class MacroScheduler extends ModuleBase {
 
     onGameState(event) {
         if (!this.enabled) return;
-        if (
-            (event.state === 'DISCONNECTED' && ['manual', 'banned'].includes(event.cause)) ||
-            (event.state === 'CONNECTING' && event.cause !== 'transfer' && event.source !== 'scheduler')
-        ) {
+        if (stopsAutomaticRecovery(event) || (event.state === 'CONNECTING' && event.cause !== 'transfer' && event.source !== 'scheduler')) {
             this.cancelRecovery(true);
             if (event.cause === 'banned') this.message('&cBan detected. Automatic recovery cancelled.');
             return;

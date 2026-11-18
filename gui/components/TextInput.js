@@ -1,4 +1,4 @@
-import { DataFlavor, IS_MC_26_3, ScriptKey, Toolkit } from '../../utils/Constants';
+import { IS_MC_26_3, ScriptKey } from '../../utils/Constants';
 import {
     FontSizes,
     PADDING,
@@ -8,9 +8,11 @@ import {
     drawRect,
     drawRoundedRectangle,
     drawText,
+    getClipboardText,
     getTypedCharacter,
     getTextWidth,
     isInside,
+    isTextShortcutDown,
     playClickSound,
     setTextInputArea,
     startTextInput,
@@ -217,23 +219,6 @@ export class TextInput {
             return true;
         }
 
-        const ctrlDown = Keyboard.isKeyDown(Keyboard.KEY_LCONTROL) || Keyboard.isKeyDown(Keyboard.KEY_RCONTROL);
-        if (ctrlDown && keyCode === ScriptKey.V) {
-            try {
-                const clipboard = Toolkit.getDefaultToolkit().getSystemClipboard().getData(DataFlavor.stringFlavor);
-                if (clipboard !== null && clipboard !== undefined) {
-                    const pasted = String(clipboard).replace(/[\r\n]+/g, ' ');
-                    if (pasted.length > 0) {
-                        this.text = this.text.slice(0, this.cursorIndex) + pasted + this.text.slice(this.cursorIndex);
-                        this.cursorIndex += pasted.length;
-                    }
-                }
-            } catch (e) {
-                console.error(e);
-            }
-            return true;
-        }
-
         if (keyCode === ScriptKey.LEFT) {
             if (this.cursorIndex > 0) {
                 this.cursorIndex -= 1;
@@ -252,6 +237,15 @@ export class TextInput {
             if (this.cursorIndex > 0) {
                 this.text = this.text.slice(0, this.cursorIndex - 1) + this.text.slice(this.cursorIndex);
                 this.cursorIndex -= 1;
+            }
+            return true;
+        }
+
+        if (isTextShortcutDown()) {
+            if (keyCode === ScriptKey.V) {
+                const pasted = getClipboardText();
+                this.text = this.text.slice(0, this.cursorIndex) + pasted + this.text.slice(this.cursorIndex);
+                this.cursorIndex += pasted.length;
             }
             return true;
         }

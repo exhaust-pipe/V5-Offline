@@ -292,9 +292,9 @@ class Finder {
                     this.recalculate('invalid_walk_look_points');
                     return;
                 }
-                this.applyPathRuntimeHints(result);
                 Aote.onPathTick(Rotations);
                 Jump.detectJump(result.path_between_key_nodes, result.path_flags, result.path_flag_bits);
+                this.applyPathRuntimeHints(result);
                 Movement.beginMovement();
 
                 if (this.recalculateAttempts > 0 && Recovery.hasMadeProgress()) {
@@ -530,7 +530,8 @@ class Finder {
         if (!result || this.isFly || Recovery.isStallRecoveryActive()) return;
         if (!Array.isArray(result.path_flags) || !result.path_flags.length) return;
 
-        const pathIndex = Math.max(0, Math.min(result.path_flags.length - 1, Math.floor(Rotations.currentPathPosition || 0)));
+        if (Jump.lastNearestPath !== result.path_between_key_nodes || Jump.lastNearestIndex < 0) return;
+        const pathIndex = Math.min(result.path_flags.length - 1, Jump.lastNearestIndex + 1);
         const flags = result.path_flags[pathIndex] || 0;
 
         const bits = Array.isArray(result.path_flag_bits) && result.path_flag_bits.length >= 8 ? result.path_flag_bits : null;
@@ -539,7 +540,6 @@ class Finder {
         const TIGHT = bits ? bits[7] : 1 << 7;
 
         if (flags & LOW_HEAD) {
-            Jump.suppressJump(4);
             Rotations.setTemporaryLookahead(Rotations.RECOVERY_MIN_LOOKAHEAD, 8);
             return;
         }

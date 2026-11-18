@@ -1,3 +1,19 @@
+# Upstream sync — 2026-11-18
+
+Adapted the four script commits from `5.2.2-r13` through `5.2.2-r16` on `dev` at `627d57b`. [Upstream scripts comparison](https://github.com/V5-Client/V5/compare/5.2.2-r12...5.2.2-r16)
+
+- `r13` and `r14` add `/v5 timer <duration> <leave|closegame>`, `/v5 timer help`, and `/v5 timer cancel`. The timer uses elapsed time even on paused screens. The offline scheduler treats a disconnect initiated by the timer as a user-requested stop.
+- `r15` reads walking hints from the next raw path node. The nearest-node index keeps updating during low-ceiling jump suppression and is reacquired after a teleport.
+- `r16` uses Minecraft's clipboard for both the settings text fields and category search. The fields accept Cmd+V on macOS and Ctrl+V, and keep AltGr available for text input.
+
+Loader `5.2.2-r8` and its upstream default branch both point to `4e9dccc`. The public branches and tags have no newer Loader changes to port. [Upstream Loader comparison](https://github.com/V5-Client/V5Loader/compare/5.2.2-r8...26.1.2)
+
+## Validation
+
+Prettier passed for all eight changed JavaScript files. The 214-file scripts ZIP contains all eight updated files. `./gradlew build` produced Loader JARs for Minecraft 26.1.2, 26.2, and 26.3. Gameplay and macOS clipboard behavior still need in-client verification.
+
+---
+
 # Minecraft 26.3 support — 2026-10-29
 
 Ported the previously deferred compatibility changes from upstream [26.3 support (`d5a2057`)](https://github.com/V5-Client/V5/commit/d5a20571ef8da76bea363335ac289e854be28e6b) onto `dev` at `0cd52efd688d0aceb0f76ff39cae384a15d56f30`, together with the matching V5Loader-Offline migration.

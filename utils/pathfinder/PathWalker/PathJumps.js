@@ -139,8 +139,8 @@ class PathJumps {
         }
     }
 
-    drawPathAndPlayerLookAhead(path) {
-        if (!Player.getPlayer() || !path || path.length === 0) return { lookahead: [], closestIndex: -1 };
+    findNearestIndex(path) {
+        if (!Player.getPlayer() || !path || path.length === 0) return -1;
 
         const pX = Player.getX(),
             pY = Player.getY(),
@@ -161,15 +161,19 @@ class PathJumps {
             }
         }
 
-        if (closestIndex === -1) return { lookahead: [], closestIndex: -1 };
+        if (closestIndex === -1) return -1;
         this.lastNearestPath = path;
         this.lastNearestIndex = closestIndex;
+        return closestIndex;
+    }
 
+    drawPathAndPlayerLookAhead(path) {
+        const closestIndex = this.findNearestIndex(path);
         const lookahead = [];
-        const end = Math.min(closestIndex + 1 + this.LOOKAHEAD_NODES, path.length);
         const world = World.getWorld();
-        if (!world) return { lookahead: [], closestIndex: -1 };
+        if (closestIndex === -1 || !world) return { lookahead, closestIndex: -1 };
 
+        const end = Math.min(closestIndex + 1 + this.LOOKAHEAD_NODES, path.length);
         for (let i = closestIndex + 1; i < end; i++) {
             const node = path[i];
             const floorY = Math.round(node.y);
@@ -332,6 +336,8 @@ class PathJumps {
         if (!Player.getPlayer()) return this.reset();
         this.applyFlagBits(pathFlagBits);
         if (this.jumpSuppressTicks > 0) {
+            // A teleport invalidates the local search window until jump suppression ends.
+            if (this.lastNearestPath === path) this.findNearestIndex(path);
             Client.setKey('space', false);
             return;
         }

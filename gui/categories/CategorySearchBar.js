@@ -1,4 +1,4 @@
-import { DataFlavor, IS_MC_26_3, ScriptKey, Toolkit, globalAssetsDir } from '../../utils/Constants';
+import { IS_MC_26_3, ScriptKey, globalAssetsDir } from '../../utils/Constants';
 import {
     colorWithAlpha,
     drawImage,
@@ -7,9 +7,11 @@ import {
     drawRoundedRectangleWithBorder,
     drawText,
     FontSizes,
+    getClipboardText,
     getTypedCharacter,
     getTextWidth,
     isInside,
+    isTextShortcutDown,
     PADDING,
     playClickSound,
     setTextInputArea,
@@ -247,19 +249,8 @@ export const SearchBar = {
             return true;
         }
 
-        const ctrlDown = Keyboard.isKeyDown(Keyboard.KEY_LCONTROL) || Keyboard.isKeyDown(Keyboard.KEY_RCONTROL);
-        if (ctrlDown && keyCode === ScriptKey.V) {
-            try {
-                const clipboard = Toolkit.getDefaultToolkit().getSystemClipboard().getData(DataFlavor.stringFlavor);
-                if (clipboard !== null && clipboard !== undefined) {
-                    const pasted = String(clipboard).replace(/[\r\n]+/g, ' ');
-                    if (pasted.length > 0) {
-                        this.insertText(pasted);
-                    }
-                }
-            } catch (e) {
-                console.error(e);
-            }
+        if (isTextShortcutDown()) {
+            if (keyCode === ScriptKey.V) this.insertText(getClipboardText());
             return true;
         }
 
